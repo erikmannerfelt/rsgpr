@@ -19,9 +19,9 @@ fn main()-> Result<(), Box<dyn std::error::Error>> {
 
     let gpr_locations = gpr_meta.find_cor(33).unwrap();
 
-    eprintln!("No zero corr yet!");
-
     let mut gpr = GPR::from_meta_and_loc(gpr_locations, gpr_meta).unwrap();//.subset(Some(0), Some(1000), Some(40), Some(1000));
+
+    gpr.zero_corr(None);
 
     println!("Width: {} Height: {}\nNormalizing horizontal magnitudes...", gpr.width(), gpr.height());
     gpr.normalize_horizontal_magnitudes();
@@ -406,6 +406,35 @@ impl GPR {
         Ok(())
     }
 
+    fn zero_corr(&mut self, threshold_multiplier: Option<f32>) {
+
+        let mean_trace = self.data.mean_axis(Axis(1)).unwrap();
+
+        let threshold = 0.5 * mean_trace.std(1.0) * threshold_multiplier.unwrap_or(1.0);
+
+        let mut first_rise = 0_isize;
+
+        for i in 1..mean_trace.shape()[0] {
+            if (mean_trace[i] - mean_trace[i - 1]).abs() > threshold {
+                first_rise = i as isize;
+                break
+            };
+        };
+
+        if first_rise == 0 {
+            return
+        };
+
+        let mean_silent_val = mean_trace.slice_axis(Axis(0), Slice::new(0, Some(first_rise), 1)).mean().unwrap();
+
+
+        self.data = self.data.slice_axis(Axis(0), Slice::new(first_rise, None, 1)).to_owned();
+        self.data -= mean_silent_val;
+
+        self.metadata.time_window = self.metadata.time_window * (self.height() as f32 / self.metadata.samples as f32);
+        self.metadata.samples = self.height() as u32;
+    }
+
     fn dewow(&mut self, window: u32)  {
 
         let height = self.height() as u32;
@@ -465,7 +494,6 @@ view *= (i as f32) * linear;
         let normal_velocity = quantiles(&velocities, &[0.6])[0];
 
         let mut seconds_moving = 0_f32;
-
         for i in 1..self.width() {
             if velocities[i] < (0.3 * normal_velocity) {
                 continue
@@ -496,7 +524,11 @@ view *= (i as f32) * linear;
                 k += 1;
             };
 
-            let old_data_slice = self.data.slice_axis(Axis(1), Slice::new(j, Some(k + 1) , 1)).mean_axis(Axis(1)).unwrap();
+            let old_data_slice = if k > j {
+                self.data.slice_axis(Axis(1), Slice::new(j, Some(k + 1) , 1)).mean_axis(Axis(1)).unwrap()
+            } else {
+                self.data.column(0).to_owned()
+            };
 
             new_data_slice.assign(&old_data_slice.insert_axis(Axis(1)));
             new_coords.push(self.location.cor_points[j as usize]);
@@ -508,7 +540,6 @@ view *= (i as f32) * linear;
         self.data = new_data;
         self.metadata.last_trace = nominal_data_width as u32;
         self.location = GPRLocation{cor_points: new_coords};
-
     }
 
     fn kirchoff_migration2d(&mut self, velocity_m_per_ns: f32) {
@@ -535,10 +566,9 @@ view *= (i as f32) * linear;
 
         let old_data = self.data.iter().collect::<Vec<&f32>>();
 
-        //let mut output = Array2::<f32>::zeros(((max_depth / z_diff).ceil() as usize, self.width()));
         let old_height = self.height();
         let new_height = (max_depth / z_diff).ceil() as usize;
-        let mut output2: Vec<f32> = (0..(self.width() * new_height)).map(|_| 0_f32).collect();
+        let mut output: Vec<f32> = (0..(self.width() * new_height)).map(|_| 0_f32).collect();
         let width = self.width();
 
         let mut ampl = Array1::from_elem((512,), f32::NAN);
@@ -571,11 +601,7 @@ view *= (i as f32) * linear;
 
 
                 // The index of the sample in the migrated output
-                //sample_idx = int(np.floor(trace_z[sample_i] / z_diff))
-                //let sample_idx = trace_n * width + ((trace_z / z_diff)  as usize + 1);
                 let row = (trace_z / z_diff) as usize;
-                //let sample_idx = row + new_height * trace_n;
-                //let sample_idx_old = trace_i + old_height * trace_n;
                 let sample_idx = row * width + trace_n;
 
 
@@ -593,7 +619,7 @@ view *= (i as f32) * linear;
                 // take the old value and put it in the topographically correct place.
                 if fresnel_width == 0 {
                     if trace_i < old_height {
-                        output2[sample_idx] = old_data[(t_0_px * width) + trace_n].to_owned();
+                        output[sample_idx] = old_data[(t_0_px * width) + trace_n].to_owned();
                     };
                     continue;
                 };
@@ -648,13 +674,13 @@ view *= (i as f32) * linear;
                 };
                 //# If there was any valid value at the location, add the mean amplitude.
                 if n_ampl > 0 {
-                    output2[sample_idx] = ampl.slice(ndarray::s![..n_ampl]).mean().unwrap();
+                    output[sample_idx] = ampl.slice(ndarray::s![..n_ampl]).mean().unwrap();
                     n_ampl = 0;
                 };
             };
         };
 
-        self.data = Array2::from_shape_vec((new_height, width), output2).unwrap();
+        self.data = Array2::from_shape_vec((new_height, width), output).unwrap();
 
     }
 
