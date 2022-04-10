@@ -633,29 +633,48 @@ view *= (i as f32) * linear;
             let fresnel_radius = 0.5 * (logical_res * 2. * (sample_z - trace_top_z)).sqrt();
 
             // Derive the radius in pixel space
-            let fresnel_width = (fresnel_radius / x_diff).round() as usize;
+            let fresnel_width = fresnel_radius / x_diff;
 
             // If the fresnel width is zero pixels, no neighbors will change the sample. Therefore, just
             // take the old value and put it in the topographically correct place.
-            if fresnel_width == 0 {
+            if fresnel_width < 0.1 {
                 //if row < old_height {
                     return old_data[(t_0_px * width) + trace_n].to_owned();
                 //};
             };
 
             // Derive all of the neighboring columns that may affect the sample
-            let min_neighbor = if fresnel_width < trace_n {trace_n - fresnel_width} else {trace_n};
-            let max_neighbor = (trace_n + fresnel_width).clamp(0, width);
+            let min_neighbor = (trace_n as f32 - fresnel_width).floor().clamp(0_f32, width as f32) as usize;
+            let max_neighbor = (trace_n as f32 + fresnel_width + 1.).ceil().clamp(0_f32, width as f32) as usize;
 
-            //let mut ampl = [0_f32; 128];
+            let neighbors = (min_neighbor..(max_neighbor)).collect::<Vec<usize>>();
+
             let mut ampl: Vec<f32> = Vec::new();
-            //let mut n_ampl = 0;
 
-            for neighbor_n in min_neighbor..max_neighbor {
+            // Pixels that are entirely within the fresnel width should be included fully. Pixels
+            // outside should be excluded. Pixels that border the fresnel width should be included
+            // in a weighted average. Here, these weights are created. If the neighbour-trace
+            // distance is larger than the fresnel width, the weight is first assigned 1.0.
+            // The ones bordering the fresnel width are given the fraction how how much is covered
+            // , e.g. 24% (0.24). With a fresnel width of e.g. 1.2, there would be three weights:
+            // [0.2, 1.0, 0.2]
+            let mut horizontal_weights = neighbors.iter().map(|n| if *n == trace_n {1.0} else {1.0 - ((trace_n as f32 - *n as f32).abs() - fresnel_width).abs().clamp(0_f32, 1_f32)}).collect::<Vec<f32>>();
+
+            // Since the weighting above will lower the magnitude of the final average, the values
+            // with 1.0 weights have to be overweighted to fix the magnitude
+            let weight_corr = horizontal_weights.len() as f32 / horizontal_weights.iter().filter(|v| v == &&1.0).count() as f32;
+            for v in horizontal_weights.iter_mut() {
+                if *v != 1.0 {
+                    continue
+                };
+                *v *= weight_corr;
+            };
+
+            for (neighbor_i, neighbor_n) in neighbors.iter().enumerate() {
 
                 // If the "neighbor" is the middle sample, no geometric assumptions need to be
                 // made.
-                if neighbor_n == trace_n {
+                if neighbor_n == &trace_n {
                     if t_0_px < old_height {
                         ampl.push(old_data[(t_0_px * width) + trace_n].to_owned());
                     };
@@ -664,10 +683,10 @@ view *= (i as f32) * linear;
 
 
                 // Get the vertical component of the two-way time to the neighboring sample.
-                let t_top = t_0 - 2. * (z_coords[neighbor_n] - trace_top_z) / velocity_m_per_ns;
+                let t_top = t_0 - 2. * (z_coords[*neighbor_n] - trace_top_z) / velocity_m_per_ns;
 
                 // Get the travel time to the sample accounting for the x distance
-                let t_x = (t_top.powi(2) + 4. * (x_coords[neighbor_n] - trace_x).powi(2)  / velocity_m_per_ns.powi(2)).sqrt() / t_diff;
+                let t_x = (t_top.powi(2) + 4. * (x_coords[*neighbor_n] - trace_x).powi(2)  / velocity_m_per_ns.powi(2)).sqrt() / t_diff;
                 // The sample will be in either the pixel when rounding down or when rounding up
                 // ... so these will both be evaluated
                 // These values have pixel units, as they are normalized to pixel resolution
@@ -688,6 +707,7 @@ view *= (i as f32) * linear;
                         * (t_top / t_x) // Account for the vertical distance
                         * (1. - weight) * old_data[(t_1 * width) + neighbor_n] + weight *
                         * old_data[(t_2 * width) + neighbor_n] // Account for the neigbour's value
+                        * horizontal_weights[neighbor_i]
                     );
                 };
 
