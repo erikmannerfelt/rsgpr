@@ -16,3 +16,4 @@ image = "*"
 ndarray-linalg = {version = "0.13", features = ["openblas-static"]}
 smartcore = "*"
 noisy_float = "*"
+rayon = "*"

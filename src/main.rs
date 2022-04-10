@@ -12,6 +12,7 @@ use ndarray::{Array2, Axis, Slice, Array1, ArrayView1, ArrayBase, array};
 use smartcore::linalg::BaseMatrix;
 use smartcore::linear::linear_regression::{LinearRegression, LinearRegressionParameters, LinearRegressionSolverName};
 use smartcore::linalg::naive::dense_matrix::DenseMatrix;
+use rayon::prelude::*;
 
 fn main()-> Result<(), Box<dyn std::error::Error>> {
 
@@ -19,23 +20,26 @@ fn main()-> Result<(), Box<dyn std::error::Error>> {
 
     let gpr_locations = gpr_meta.find_cor(33).unwrap();
 
-    let mut gpr = GPR::from_meta_and_loc(gpr_locations, gpr_meta).unwrap();//.subset(Some(0), None, Some(0), None);
+    let mut gpr = GPR::from_meta_and_loc(gpr_locations, gpr_meta).unwrap().subset(Some(0), None, Some(0), None);
 
+    let start = std::time::SystemTime::now();
+    println!("Width: {} Height: {}\nt+0ms Running zero-corr", gpr.width(), gpr.height());
     gpr.zero_corr(None);
 
-    println!("Width: {} Height: {}\nNormalizing horizontal magnitudes...", gpr.width(), gpr.height());
+    println!("t+{:?} Normalizing horizontal magnitudes...", std::time::SystemTime::now().duration_since(start).unwrap());
     gpr.normalize_horizontal_magnitudes();
-    println!("Making traces equidistant");
+    println!("t+{:?} Making traces equidistant", std::time::SystemTime::now().duration_since(start).unwrap());
     gpr.make_equidistant();
-    println!("Running dewow");
+    println!("t+{:?} Running dewow", std::time::SystemTime::now().duration_since(start).unwrap());
     gpr.dewow(5);
-    println!("Automatically finding gain");
+    println!("t+{:?} Automatically finding gain", std::time::SystemTime::now().duration_since(start).unwrap());
     gpr.auto_gain(50);
 
+    println!("t+{:?} Migrating", std::time::SystemTime::now().duration_since(start).unwrap());
     gpr.kirchoff_migration2d(0.168);
 
+    println!("t+{:?} Saving ", std::time::SystemTime::now().duration_since(start).unwrap());
     gpr.render(&Path::new("img.jpg"))?;
-
 
     Ok(())
 }
@@ -515,6 +519,7 @@ view *= (i as f32) * linear;
             if i >= j {
                 j = i + 1;
             };
+            new_coords.push(self.location.cor_points[j]);
             if j >= (old_width - 1) {
                 break
             };
@@ -533,7 +538,6 @@ view *= (i as f32) * linear;
             let mut new_data_slice = self.data.column_mut(i);
 
             new_data_slice.assign(&old_data_slice);
-            new_coords.push(self.location.cor_points[j]);
 
             j = k + 1;
         };
@@ -569,117 +573,112 @@ view *= (i as f32) * linear;
 
         let old_height = self.height();
         let new_height = (max_depth / z_diff).ceil() as usize;
-        let mut output: Vec<f32> = (0..(self.width() * new_height)).map(|_| 0_f32).collect();
+        //let mut output: Vec<f32> = (0..(self.width() * new_height)).map(|_| 0_f32).collect();
         let width = self.width();
 
-        let mut ampl = Array1::from_elem((512,), f32::NAN);
-        let mut n_ampl = 0;
+        let output: Vec<f32> = (0..(self.width() * new_height)).into_par_iter().map(|sample_idx| {
+            let row = sample_idx / width;
+            let trace_n = sample_idx - (row * width);
 
-
-        for trace_n in 0..width {
-
-            if trace_n % 500 == 0 {
-                println!("Migrating {} / {}", trace_n, self.width());
-
-            };
             let trace_x = x_coords[trace_n];
             let trace_top_z = z_coords[trace_n];
 
-            
-            for (trace_i, trace_z) in Array1::<f32>::range(trace_top_z, max_depth, z_diff).iter().enumerate() {
+            let sample_z = row as f32 * z_diff;
+
+            if sample_z < trace_top_z {
+                return 0.
+            };
 
 
-                // The expected two-way time of the sample (assuming it is straight down)
-                let t_0 = 2. * (trace_z - trace_top_z) / velocity_m_per_ns;
-                let t_0_px = (t_0 / t_diff) as usize;
+            // The expected two-way time of the sample (assuming it is straight down)
+            let t_0 = 2. * (sample_z - trace_top_z) / velocity_m_per_ns;
+            //let t_0 = t_diff * row as f32;
+            let t_0_px = (t_0 / t_diff) as usize;
 
 
-                // If the expected two-way time is larger than the time window, there's no use in
-                // continuing
-                if t_0 > self.metadata.time_window {
-                    continue
+            // If the expected two-way time is larger than the time window, there's no use in
+            // continuing
+            if t_0 > self.metadata.time_window {
+                return 0.
+            };
+
+            // Derive the Fresnel zone
+            // This is the radius in which the sample may be affected horizontally
+            // Pérez-Gracia et al. (2008) Horizontal resolution in a non-destructive
+            // shallow GPR survey: An experimental evaluation. NDT & E International,
+            // 41(8): 611–620. doi:10.1016/j.ndteint.2008.06.002
+            let fresnel_radius = 0.5 * (logical_res * 2. * (sample_z - trace_top_z)).sqrt();
+
+            // Derive the radius in pixel space
+            let fresnel_width = (fresnel_radius / x_diff).round() as usize;
+
+            // If the fresnel width is zero pixels, no neighbors will change the sample. Therefore, just
+            // take the old value and put it in the topographically correct place.
+            if fresnel_width == 0 {
+                if row < old_height {
+                    return old_data[(t_0_px * width) + trace_n].to_owned();
                 };
+            };
 
+            // Derive all of the neighboring columns that may affect the sample
+            let min_neighbor = if fresnel_width < trace_n {trace_n - fresnel_width} else {trace_n};
+            let max_neighbor = (trace_n + fresnel_width).clamp(0, width);
 
-                // The index of the sample in the migrated output
-                let row = (trace_z / z_diff) as usize;
-                let sample_idx = row * width + trace_n;
+            let mut ampl = [0_f32; 512];
+            let mut n_ampl = 0;
 
+            for neighbor_n in min_neighbor..max_neighbor {
 
-                // Derive the Fresnel zone
-                // This is the radius in which the sample may be affected horizontally
-                // Pérez-Gracia et al. (2008) Horizontal resolution in a non-destructive
-                // shallow GPR survey: An experimental evaluation. NDT & E International,
-                // 41(8): 611–620. doi:10.1016/j.ndteint.2008.06.002
-                let fresnel_radius = 0.5 * (logical_res * 2. * (trace_z - trace_top_z)).sqrt();
-
-                // Derive the radius in pixel space
-                let fresnel_width = (fresnel_radius / x_diff).round() as usize;
-
-                // If the fresnel width is zero pixels, no neighbors will change the sample. Therefore, just
-                // take the old value and put it in the topographically correct place.
-                if fresnel_width == 0 {
-                    if trace_i < old_height {
-                        output[sample_idx] = old_data[(t_0_px * width) + trace_n].to_owned();
+                // If the "neighbor" is the middle sample, no geometric assumptions need to be
+                // made.
+                if neighbor_n == trace_n {
+                    if t_0_px < old_height {
+                        ampl[neighbor_n - min_neighbor] = old_data[(t_0_px * width) + trace_n].to_owned();
+                        n_ampl += 1;
                     };
                     continue;
                 };
 
-                // Derive all of the neighboring columns that may affect the sample
-                let min_neighbor = if fresnel_width < trace_n {trace_n - fresnel_width} else {trace_n};
-                let max_neighbor = (trace_n + fresnel_width).clamp(0, width);
 
-                for neighbor_n in min_neighbor..max_neighbor {
+                // Get the vertical component of the two-way time to the neighboring sample.
+                let t_top = t_0 - 2. * (z_coords[neighbor_n] - trace_top_z) / velocity_m_per_ns;
 
-                    // If the "neighbor" is the middle sample, no geometric assumptions need to be
-                    // made.
-                    if neighbor_n == trace_n {
-                        if t_0_px < old_height {
-                            ampl[neighbor_n - min_neighbor] = old_data[(t_0_px * width) + trace_n].to_owned();
-                            n_ampl += 1;
-                        };
-                        continue;
-                    };
+                // Get the travel time to the sample accounting for the x distance
+                let t_x = (t_top.powi(2) + 4. * (x_coords[neighbor_n] - trace_x).powi(2)  / velocity_m_per_ns.powi(2)).sqrt() / t_diff;
+                // The sample will be in either the pixel when rounding down or when rounding up
+                // ... so these will both be evaluated
+                // These values have pixel units, as they are normalized to pixel resolution
+                let t_1 = t_x.floor() as usize;
+                let mut t_2 = t_x.ceil() as usize;
 
-
-                    // Get the vertical component of the two-way time to the neighboring sample.
-                    let t_top = t_0 - 2. * (z_coords[neighbor_n] - trace_top_z) / velocity_m_per_ns;
-
-                    // Get the travel time to the sample accounting for the x distance
-                    let t_x = (t_top.powi(2) + 4. * (x_coords[neighbor_n] - trace_x).powi(2)  / velocity_m_per_ns.powi(2)).sqrt() / t_diff;
-                    // The sample will be in either the pixel when rounding down or when rounding up
-                    // ... so these will both be evaluated
-                    // These values have pixel units, as they are normalized to pixel resolution
-                    let t_1 = t_x.floor() as usize;
-                    let mut t_2 = t_x.ceil() as usize;
-
-                    if t_2 >= old_height {
-                        t_2 = t_1;
-
-                    };
-
-                    // If the travel times are within the bounds of the data and the pixel displacement is not zero,
-                    // ... append a weighted amplitude accounting for the displacement distance
-                    if t_1 < old_height {
-
-                        let weight = match t_1 == t_2 {true => 0_f32, false => ((t_1 as f32 - t_x) / (t_1 as f32 - t_2 as f32)).abs()};
-                        ampl[neighbor_n - min_neighbor] = 
-                            (x_diff / (2. * std::f32::consts::PI * t_x * velocity_m_per_ns)) // Account for the horizontal distance
-                            * (t_top / t_x) // Account for the vertical distance
-                            * (1. - weight) * old_data[(t_1 * width) + neighbor_n] + weight *
-                            * old_data[(t_2 * width) + neighbor_n] // Account for the neigbour's value
-                        ;
-                        n_ampl += 1;
-                    };
-
+                if t_2 >= old_height {
+                    t_2 = t_1;
                 };
-                //# If there was any valid value at the location, add the mean amplitude.
-                if n_ampl > 0 {
-                    output[sample_idx] = ampl.slice(ndarray::s![..n_ampl]).mean().unwrap();
-                    n_ampl = 0;
+
+                // If the travel times are within the bounds of the data and the pixel displacement is not zero,
+                // ... append a weighted amplitude accounting for the displacement distance
+                if t_1 < old_height {
+
+                    let weight = match t_1 == t_2 {true => 0_f32, false => ((t_1 as f32 - t_x) / (t_1 as f32 - t_2 as f32)).abs()};
+                    ampl[neighbor_n - min_neighbor] = 
+                        (x_diff / (2. * std::f32::consts::PI * t_x * velocity_m_per_ns)) // Account for the horizontal distance
+                        * (t_top / t_x) // Account for the vertical distance
+                        * (1. - weight) * old_data[(t_1 * width) + neighbor_n] + weight *
+                        * old_data[(t_2 * width) + neighbor_n] // Account for the neigbour's value
+                    ;
+                    n_ampl += 1;
                 };
+
             };
-        };
+
+
+            if n_ampl > 0 {
+                ampl.iter().sum::<f32>() / n_ampl as f32
+            } else {
+                0.
+            }
+
+        }).collect();
 
         self.data = Array2::from_shape_vec((new_height, width), output).unwrap();
 

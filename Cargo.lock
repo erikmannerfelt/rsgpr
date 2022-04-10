@@ -949,6 +949,7 @@ dependencies = [
  "ndarray-stats",
  "noisy_float",
  "nshare",
+ "rayon",
  "smartcore",
  "utm",
 ]
