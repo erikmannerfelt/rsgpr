@@ -6,14 +6,15 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ndarray = "*"
-ndarray-stats = "*"
-utm = "*"
-chrono = "*"
-nshare = "*"
+ndarray = "*"   # For base ndarrays
+ndarray-stats = "*"  # For ndarray statistics
+utm = "*"  # To convert lat/lon to easting/northing
+chrono = "*"  # Convert timestamps to seconds before epoch
+nshare = "*"  # Write to an image as an ndarray
 #show-image = "*"
-image = "*"
-ndarray-linalg = {version = "0.13", features = ["openblas-static"]}
-smartcore = "*"
-noisy_float = "*"
-rayon = "*"
+image = "*"  # Write images
+#ndarray-linalg = {version = "0.13", features = ["openblas-static"]}
+smartcore = "*"  # (Linear) regression packages
+noisy_float = "*"  # For inputs to ndarray-stats 
+rayon = "*"  # For parallelization of functions
+gdal = {version = "*", features = ["ndarray"]}  # For reading DEMs

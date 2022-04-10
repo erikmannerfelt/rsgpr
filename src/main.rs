@@ -1,25 +1,26 @@
-use std::ops::Mul;
 use std::path::{Path,PathBuf};
 use std::collections::HashMap;
 use std::error::Error;
 
 use nshare::MutNdarray2;
-use image::{GrayImage};
-use ndarray_stats::{QuantileExt, Quantile1dExt};
-//use show_image::{ImageView, ImageInfo, create_window};
+use image::GrayImage;
+use ndarray_stats::QuantileExt;
 
-use ndarray::{Array2, Axis, Slice, Array1, ArrayView1, ArrayBase, array};
+use ndarray::{Array2, Axis, Slice, Array1};
 use smartcore::linalg::BaseMatrix;
 use smartcore::linear::linear_regression::{LinearRegression, LinearRegressionParameters, LinearRegressionSolverName};
 use smartcore::linalg::naive::dense_matrix::DenseMatrix;
 use rayon::prelude::*;
 
-fn main()-> Result<(), Box<dyn std::error::Error>> {
+mod dem;
 
+fn main()-> Result<(), Box<dyn std::error::Error>> {
     let gpr_meta = load_rad(Path::new("/media/hdd/Erik/Data/GPR/2022/AG325/glacier_radar/Slakbreen/20220330/DAT_0251_A1.rad")).unwrap();
 
-    let gpr_locations = gpr_meta.find_cor(33).unwrap();
+    let mut gpr_locations = gpr_meta.find_cor(33).unwrap();
+    gpr_locations.get_dem_elevations(Path::new("/media/hdd/Erik/Data/NPI/DEM/NP_S0_DTM20/S0_DTM20.tif"));
 
+    gpr_locations.to_csv(Path::new("locs.csv")).unwrap();
     let mut gpr = GPR::from_meta_and_loc(gpr_locations, gpr_meta).unwrap().subset(Some(0), None, Some(0), None);
 
     let start = std::time::SystemTime::now();
@@ -37,6 +38,7 @@ fn main()-> Result<(), Box<dyn std::error::Error>> {
 
     println!("t+{:?} Migrating", std::time::SystemTime::now().duration_since(start).unwrap());
     gpr.kirchoff_migration2d(0.168);
+
 
     println!("t+{:?} Saving ", std::time::SystemTime::now().duration_since(start).unwrap());
     gpr.render(&Path::new("img.jpg"))?;
@@ -208,6 +210,37 @@ impl GPRLocation {
         
         GPRLocation { cor_points: new_points }
     }
+
+    fn xy_coords(&self) -> Array2<f64> {
+
+        let mut data: Vec<f64> = Vec::new();
+
+        for point in &self.cor_points {
+            data.push(point.easting);
+            data.push(point.northing);
+        };
+
+        Array2::<f64>::from_shape_vec((self.cor_points.len(), 2), data).unwrap()
+    }
+
+    fn get_dem_elevations(&mut self, dem_path: &Path)  {
+        let elev = dem::read_elevations(dem_path, self.xy_coords()).unwrap();
+
+        for i in 0..self.cor_points.len() {
+            self.cor_points[i].altitude = elev[i] as f64;
+        };
+    }
+
+    fn to_csv(&self, filepath: &Path) -> Result<(), std::io::Error> {
+
+        let mut output = "trace_n,easting,northing,altitude\n".to_string();
+
+        for point in &self.cor_points {
+            output += &format!("{},{},{},{}\n", point.trace_n, point.easting, point.northing, point.altitude);
+        };
+
+        std::fs::write(filepath, output)
+    }
 }
 
 fn interpolate_values(x0: f64, y0: &[f64], x1: f64, y1: &[f64], x: f64) -> Vec<f64> {
@@ -369,18 +402,10 @@ impl GPR {
 
     fn render(&self, filepath: &Path) -> Result<(), Box<dyn Error>> {
 
-        //let minval: f32 = data.quantile_mut(noisy_float::NoisyFloat::new(0.01_f64), &ndarray_stats::interpolate::Nearest).unwrap();
-        //
         let vals = self.data.iter().map(|f| f.to_owned()).collect::<Vec<f32>>();
 
-        let mut data = Array1::from_vec(vals);
-        //
-        
-        
-        //let minval: f32 = data.quantile_axis_skipnan_mut(Axis(0), noisy_float::NoisyFloat::new(0.01_f64), &ndarray_stats::interpolate::Nearest).unwrap().first().unwrap().to_owned();
-        //let maxval: f32 = data.quantile_axis_skipnan_mut(Axis(0), noisy_float::NoisyFloat::new(0.99_f64), &ndarray_stats::interpolate::Nearest).unwrap().first().unwrap().to_owned();
+        let data = Array1::from_vec(vals);
         let min_max = quantiles(&data, &[0.01, 0.99]);
-        //let data: Array2<u8> = (255.0 * (&self.data - minval) / (maxval - minval)).mapv(|elem| elem as u8);
 
         let mut image = GrayImage::new(self.width() as u32, self.height() as u32);
 
@@ -401,9 +426,6 @@ impl GPR {
             ) as u8
 
         }));
-        
-        //vals.assign(&data.mapv(|elem| elem as u8));
-
 
         image.save(filepath)?;
 
@@ -547,6 +569,8 @@ view *= (i as f32) * linear;
         self.location = GPRLocation{cor_points: new_coords};
     }
 
+
+
     fn kirchoff_migration2d(&mut self, velocity_m_per_ns: f32) {
 
         let x_coords = self.location.distances().mapv(|v| v as f32);
@@ -578,29 +602,28 @@ view *= (i as f32) * linear;
 
         let output: Vec<f32> = (0..(self.width() * new_height)).into_par_iter().map(|sample_idx| {
             let row = sample_idx / width;
-            let trace_n = sample_idx - (row * width);
-
-            let trace_x = x_coords[trace_n];
-            let trace_top_z = z_coords[trace_n];
-
             let sample_z = row as f32 * z_diff;
+            let trace_n = sample_idx - (row * width);
+            let trace_top_z = z_coords[trace_n];
 
             if sample_z < trace_top_z {
                 return 0.
             };
 
+            let trace_x = x_coords[trace_n];
 
             // The expected two-way time of the sample (assuming it is straight down)
             let t_0 = 2. * (sample_z - trace_top_z) / velocity_m_per_ns;
-            //let t_0 = t_diff * row as f32;
-            let t_0_px = (t_0 / t_diff) as usize;
-
 
             // If the expected two-way time is larger than the time window, there's no use in
             // continuing
             if t_0 > self.metadata.time_window {
                 return 0.
             };
+
+            let t_0_px = (t_0 / t_diff) as usize;
+
+
 
             // Derive the Fresnel zone
             // This is the radius in which the sample may be affected horizontally
@@ -615,17 +638,18 @@ view *= (i as f32) * linear;
             // If the fresnel width is zero pixels, no neighbors will change the sample. Therefore, just
             // take the old value and put it in the topographically correct place.
             if fresnel_width == 0 {
-                if row < old_height {
+                //if row < old_height {
                     return old_data[(t_0_px * width) + trace_n].to_owned();
-                };
+                //};
             };
 
             // Derive all of the neighboring columns that may affect the sample
             let min_neighbor = if fresnel_width < trace_n {trace_n - fresnel_width} else {trace_n};
             let max_neighbor = (trace_n + fresnel_width).clamp(0, width);
 
-            let mut ampl = [0_f32; 512];
-            let mut n_ampl = 0;
+            //let mut ampl = [0_f32; 128];
+            let mut ampl: Vec<f32> = Vec::new();
+            //let mut n_ampl = 0;
 
             for neighbor_n in min_neighbor..max_neighbor {
 
@@ -633,8 +657,7 @@ view *= (i as f32) * linear;
                 // made.
                 if neighbor_n == trace_n {
                     if t_0_px < old_height {
-                        ampl[neighbor_n - min_neighbor] = old_data[(t_0_px * width) + trace_n].to_owned();
-                        n_ampl += 1;
+                        ampl.push(old_data[(t_0_px * width) + trace_n].to_owned());
                     };
                     continue;
                 };
@@ -660,20 +683,18 @@ view *= (i as f32) * linear;
                 if t_1 < old_height {
 
                     let weight = match t_1 == t_2 {true => 0_f32, false => ((t_1 as f32 - t_x) / (t_1 as f32 - t_2 as f32)).abs()};
-                    ampl[neighbor_n - min_neighbor] = 
+                    ampl.push(
                         (x_diff / (2. * std::f32::consts::PI * t_x * velocity_m_per_ns)) // Account for the horizontal distance
                         * (t_top / t_x) // Account for the vertical distance
                         * (1. - weight) * old_data[(t_1 * width) + neighbor_n] + weight *
                         * old_data[(t_2 * width) + neighbor_n] // Account for the neigbour's value
-                    ;
-                    n_ampl += 1;
+                    );
                 };
 
             };
 
-
-            if n_ampl > 0 {
-                ampl.iter().sum::<f32>() / n_ampl as f32
+            if ampl.len() > 0 {
+                ampl.iter().sum::<f32>() / ampl.len() as f32
             } else {
                 0.
             }
