@@ -19,7 +19,7 @@ fn main()-> Result<(), Box<dyn std::error::Error>> {
 
     let gpr_locations = gpr_meta.find_cor(33).unwrap();
 
-    let mut gpr = GPR::from_meta_and_loc(gpr_locations, gpr_meta).unwrap();//.subset(Some(0), Some(1000), Some(40), Some(1000));
+    let mut gpr = GPR::from_meta_and_loc(gpr_locations, gpr_meta).unwrap();//.subset(Some(0), None, Some(0), None);
 
     gpr.zero_corr(None);
 
@@ -169,7 +169,7 @@ impl GPRLocation {
     }
 
     fn distances(&self) -> Array1<f64> {
-        let mut offsets = Array2::from_elem((self.cor_points.len(), 4), 0_f64);
+        let mut offsets = Array2::from_elem((self.cor_points.len(), 3), 0_f64);
 
         for i in 1..self.cor_points.len() {
 
@@ -178,7 +178,7 @@ impl GPRLocation {
                      self.cor_points[i].time_seconds - self.cor_points[i - 1].time_seconds, 
                      self.cor_points[i].easting - self.cor_points[i - 1].easting, 
                      self.cor_points[i].northing - self.cor_points[i - 1].northing, 
-                     self.cor_points[i].altitude - self.cor_points[i - 1].altitude,
+                     //self.cor_points[i].altitude - self.cor_points[i - 1].altitude,
             ]));
         };
 
@@ -491,7 +491,7 @@ view *= (i as f32) * linear;
 
         let velocities = self.location.velocities().mapv(|v| v as f32);
 
-        let normal_velocity = quantiles(&velocities, &[0.6])[0];
+        let normal_velocity = quantiles(&velocities, &[0.5])[0];
 
         let mut seconds_moving = 0_f32;
         for i in 1..self.width() {
@@ -504,40 +504,41 @@ view *= (i as f32) * linear;
         let nominal_data_width = (seconds_moving / self.metadata.time_interval).floor() as usize;
 
         let distances = self.location.distances().mapv(|v| v as f32);
+        let old_width = self.width() as usize;
 
         let step = distances.max().unwrap() / (nominal_data_width as f32);
 
-        let mut new_data = Array2::<f32>::zeros((self.height(), nominal_data_width));
-
-        let old_width = self.width() as isize;
-        let mut j = 0_isize;
-        let mut k = 0_isize;
+        let mut j = 0_usize;
+        let mut k = 0_usize;
         let mut new_coords: Vec<CorPoint> = Vec::new();
-        for i in 0..nominal_data_width as isize {
-
-            let mut new_data_slice = new_data.slice_axis_mut(Axis(1), Slice::new(i, Some(i + 1 ), 1));
-
-            for _ in j..old_width {
-                if ((distances[k as usize] / step) as isize > i) | (k == old_width - 1) {
+        for i in 0..nominal_data_width {
+            if i >= j {
+                j = i + 1;
+            };
+            if j >= (old_width - 1) {
+                break
+            };
+            for l in j..old_width {
+                if ((distances[k] / step) as usize > i) | (k >= old_width - 1) {
                     break
                 };
-                k += 1;
+                k = l;
             };
 
             let old_data_slice = if k > j {
-                self.data.slice_axis(Axis(1), Slice::new(j, Some(k + 1) , 1)).mean_axis(Axis(1)).unwrap()
+                self.data.slice_axis(Axis(1), Slice::new(j as isize, Some(k as isize + 1) , 1)).mean_axis(Axis(1)).unwrap()
             } else {
-                self.data.column(0).to_owned()
+                self.data.column(j as usize).to_owned()
             };
+            let mut new_data_slice = self.data.column_mut(i);
 
-            new_data_slice.assign(&old_data_slice.insert_axis(Axis(1)));
-            new_coords.push(self.location.cor_points[j as usize]);
+            new_data_slice.assign(&old_data_slice);
+            new_coords.push(self.location.cor_points[j]);
 
-            j = k;
-            k = j;
+            j = k + 1;
         };
 
-        self.data = new_data;
+        self.data = self.data.slice_axis(Axis(1), Slice::new(0, Some(nominal_data_width as isize), 1)).to_owned();
         self.metadata.last_trace = nominal_data_width as u32;
         self.location = GPRLocation{cor_points: new_coords};
     }
