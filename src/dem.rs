@@ -1,13 +1,13 @@
 
 use std::error::Error;
-use std::path::{Path,PathBuf};
-use gdal::raster::{ResampleAlg, GdalType};
-use ndarray_stats::{QuantileExt, Quantile1dExt};
+use std::path::Path;
+use gdal::raster::ResampleAlg;
+use ndarray_stats::QuantileExt;
 
 use ndarray::{Array2, Array1, Axis};
 pub fn read_elevations(dem_path: &Path, xy_coords: Array2<f64>) -> Result<Array1<f32>, Box<dyn Error>> {
 
-    let mut raster = gdal::Dataset::open(dem_path)?;
+    let raster = gdal::Dataset::open(dem_path)?;
 
     let band = raster.rasterband(1)?;
 

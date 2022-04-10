@@ -3,6 +3,8 @@ name = "rsgpr"
 version = "0.1.0"
 edition = "2021"
 
+authors = ["Erik Schytt Mannerfelt"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -18,3 +20,4 @@ smartcore = "*"  # (Linear) regression packages
 noisy_float = "*"  # For inputs to ndarray-stats 
 rayon = "*"  # For parallelization of functions
 gdal = {version = "*", features = ["ndarray"]}  # For reading DEMs
+netcdf = {version = "*", features = ["ndarray"]}
