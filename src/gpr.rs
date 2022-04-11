@@ -1,9 +1,6 @@
 use std::path::{Path,PathBuf};
-use std::collections::HashMap;
 use std::error::Error;
 
-use nshare::MutNdarray2;
-use image::GrayImage;
 use ndarray_stats::QuantileExt;
 use std::time::SystemTime;
 
@@ -39,6 +36,21 @@ impl GPRMeta {
 
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct CorPoint {
+    pub trace_n: u32,
+    pub time_seconds: f64,
+    pub easting: f64,
+    pub northing: f64,
+    pub altitude: f64,
+}
+
+impl CorPoint {
+
+    fn txyz(&self) -> [f64; 4] {
+        [self.time_seconds, self.easting, self.northing, self.altitude]
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum LocationCorrection {
@@ -195,25 +207,6 @@ impl GPRLocation {
 }
 
 
-#[derive(Debug, Copy, Clone)]
-pub struct CorPoint {
-    pub trace_n: u32,
-    pub time_seconds: f64,
-    pub easting: f64,
-    pub northing: f64,
-    pub altitude: f64,
-}
-
-impl CorPoint {
-
-    fn xyz(&self) -> (f64, f64, f64) {
-        (self.easting, self.northing, self.altitude)
-    }
-
-    fn txyz(&self) -> [f64; 4] {
-        [self.time_seconds, self.easting, self.northing, self.altitude]
-    }
-}
 
 
 pub struct GPR {

@@ -1,11 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::error::Error;
 use std::collections::HashMap;
-use ndarray::{Array2, Axis, Slice, Array1};
+use ndarray::{Array2,  Array1};
 use nshare::MutNdarray2;
 use image::GrayImage;
-
-//use crate::{GPRMeta, GPRLocation, CorPoint, LocationCorrection, GPR};
 
 use crate::{tools,gpr};
 

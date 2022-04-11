@@ -1,5 +1,5 @@
 
-use ndarray::{Array2, Axis, Slice, Array1};
+use ndarray::{Axis, Array1};
 use ndarray_stats::QuantileExt;
 
 pub fn interpolate_values(x0: f64, y0: &[f64], x1: f64, y1: &[f64], x: f64) -> Vec<f64> {
