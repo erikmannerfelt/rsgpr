@@ -9,7 +9,7 @@ use std::str::FromStr;
 pub struct Args {
     /// Filepath of the Malå rd3 file
     #[clap(short, long)]
-    filepath: PathBuf,
+    filepath: Option<PathBuf>,
 
     /// Velocity of the medium in m/ns. Defaults to the typical velocity of ice.
     #[clap(short, long, default_value="0.168")]
@@ -87,114 +87,129 @@ pub fn main(arguments: Args) -> i32 {
         return 0
     };
 
-    let rad_filepath = arguments.filepath.with_extension("rad");
+    if let Some(input_filepath) = arguments.filepath {
 
-    if !rad_filepath.is_file() {
-        if arguments.filepath.is_file() {
-            eprintln!("File found but no '.rad' file found: {:?}", rad_filepath);
-        } else {
-            eprintln!("File not found: {:?}", rad_filepath);
-        }
-        return 1
-    };
-    let gpr_meta = match io::load_rad(match arguments.filepath.extension() {
-        Some(ext) if ext == std::ffi::OsString::from_str("rad").unwrap() => &arguments.filepath,
-        Some(ext) if ext == std::ffi::OsString::from_str("rd3").unwrap() => &rad_filepath,
-        None => &rad_filepath,
-        Some(_) => {eprintln!("Filepath not understood: {:?} \nSupported files: ['.rd3']", arguments.filepath); return 1},
-    }, arguments.velocity) {
-        Ok(x) => x,
-        Err(e) => {eprintln!("Uncaught error fetching GPR metadata: {:?}", e); return 1}
-    };
 
-    let mut gpr_locations = match &arguments.cor {
-        Some(fp) => io::load_cor(&fp, &arguments.crs).unwrap(),
-        None => gpr_meta.find_cor(&arguments.crs).unwrap(),
-    };
+        let rad_filepath = input_filepath.with_extension("rad");
 
-    if let Some(dem_path) = &arguments.dem {
-        gpr_locations.get_dem_elevations(&dem_path);
-    };
+        if !rad_filepath.is_file() {
+            if input_filepath.is_file() {
+                eprintln!("File found but no '.rad' file found: {:?}", rad_filepath);
+            } else {
+                eprintln!("File not found: {:?}", rad_filepath);
+            }
+            return 1
+        };
+        let gpr_meta = match io::load_rad(match input_filepath.extension() {
+            Some(ext) if ext == std::ffi::OsString::from_str("rad").unwrap() => &input_filepath,
+            Some(ext) if ext == std::ffi::OsString::from_str("rd3").unwrap() => &rad_filepath,
+            None => &rad_filepath,
+            Some(_) => {eprintln!("Filepath not understood: {:?} \nSupported files: ['.rd3']", input_filepath); return 1},
+        }, arguments.velocity) {
+            Ok(x) => x,
+            Err(e) => {eprintln!("Uncaught error fetching GPR metadata: {:?}", e); return 1}
+        };
 
-    let output_filepath = match &arguments.output {
-        Some(p) => match p.is_dir() {
-            true => p.join(arguments.filepath.file_stem().unwrap()).with_extension("nc"),
-            false => p.clone()
-        },
-        None => arguments.filepath.with_extension("nc"),
-    };
+        let mut gpr_locations = match &arguments.cor {
+            Some(fp) => io::load_cor(&fp, &arguments.crs).unwrap(),
+            None => gpr_meta.find_cor(&arguments.crs).unwrap(),
+        };
 
-    if arguments.info {
-        println!("{}", gpr_meta);
-        println!("{}", gpr_locations);
+        if let Some(dem_path) = &arguments.dem {
+            gpr_locations.get_dem_elevations(&dem_path);
+        };
+
+        let output_filepath = match &arguments.output {
+            Some(p) => match p.is_dir() {
+                true => p.join(input_filepath.file_stem().unwrap()).with_extension("nc"),
+                false => p.clone()
+            },
+            None => input_filepath.with_extension("nc"),
+        };
+
+        if arguments.info {
+            println!("{}", gpr_meta);
+            println!("{}", gpr_locations);
+            if let Some(potential_track_path) = &arguments.track {
+                return export_locations(gpr_locations, potential_track_path, &output_filepath, !arguments.quiet)
+            };
+
+            return 0
+        };
+
+        let mut gpr = gpr::GPR::from_meta_and_loc(gpr_locations, gpr_meta).unwrap();
+
+        let profile: Vec<String> = match arguments.default {
+            true => gpr::default_processing_profile(),
+            false => match &arguments.steps {
+                Some(steps) => steps.split(",").map(|s| s.trim().to_string()).collect(),
+                None => {eprintln!("No steps specified. Choose a profile or what steps to run"); return 1}
+            },
+        };
+
+        let start_time = SystemTime::now();
+
+        if !arguments.quiet {
+            println!("Processing {:?}", input_filepath.with_extension("rd3"));
+        };
+
+        for (i, step) in profile.iter().enumerate() {
+            if !arguments.quiet {
+                println!("{}/{}, t+{:.2} s, Running step {}. ",i + 1, profile.len(), SystemTime::now().duration_since(start_time).unwrap().as_secs_f32(), step, );
+            };
+
+            match gpr.process(step) {
+                Ok(_) => 0,
+                Err(e) => {eprintln!("Error on step {}: {:?}", step, e); return 1}
+            };
+
+            assert_eq!(gpr.width(), gpr.location.cor_points.len());
+
+
+        };
+
+        if !arguments.quiet {
+            println!("Exporting to {:?}", output_filepath);
+        };
+        gpr.export(&output_filepath).unwrap();
+
+        match arguments.render {
+            Some(potential_fp) => {
+                let render_filepath = match potential_fp {
+                    Some(fp) => match fp.is_dir() {
+                        true => fp.join(output_filepath.file_stem().unwrap()).with_extension("jpg"),
+                        false => fp.clone()
+                    },
+                    None => output_filepath.with_extension("jpg"),
+                };
+                if !arguments.quiet {
+                    println!("Rendering image to {:?}", render_filepath);
+                };
+                gpr.render(&render_filepath).unwrap();
+            },
+            None => (),
+        };
         if let Some(potential_track_path) = &arguments.track {
-            return export_locations(gpr_locations, potential_track_path, &output_filepath, !arguments.quiet)
+
+            match export_locations(gpr.location, potential_track_path, &output_filepath, !arguments.quiet) {
+                0 => (),
+                i => return i
+            }
         };
 
         return 0
-    };
-
-    let mut gpr = gpr::GPR::from_meta_and_loc(gpr_locations, gpr_meta).unwrap();
-
-    let profile: Vec<String> = match arguments.default {
-        true => gpr::default_processing_profile(),
-        false => match &arguments.steps {
-            Some(steps) => steps.split(",").map(|s| s.trim().to_string()).collect(),
-            None => {eprintln!("No steps specified. Choose a profile or what steps to run"); return 1}
-        },
-    };
-
-    let start_time = SystemTime::now();
-
-    if !arguments.quiet {
-        println!("Processing {:?}", arguments.filepath.with_extension("rd3"));
-    };
-
-    for (i, step) in profile.iter().enumerate() {
-        if !arguments.quiet {
-            println!("{}/{}, t+{:.2} s, Running step {}. ",i + 1, profile.len(), SystemTime::now().duration_since(start_time).unwrap().as_secs_f32(), step, );
-        };
-
-        match gpr.process(step) {
-            Ok(_) => 0,
-            Err(e) => {eprintln!("Error on step {}: {:?}", step, e); return 1}
-        };
-
-        assert_eq!(gpr.width(), gpr.location.cor_points.len());
 
 
-    };
 
-    if !arguments.quiet {
-        println!("Exporting to {:?}", output_filepath);
-    };
-    gpr.export(&output_filepath).unwrap();
 
-    match arguments.render {
-        Some(potential_fp) => {
-            let render_filepath = match potential_fp {
-                Some(fp) => match fp.is_dir() {
-                    true => fp.join(output_filepath.file_stem().unwrap()).with_extension("jpg"),
-                    false => fp.clone()
-                },
-                None => output_filepath.with_extension("jpg"),
-            };
-            if !arguments.quiet {
-                println!("Rendering image to {:?}", render_filepath);
-            };
-            gpr.render(&render_filepath).unwrap();
-        },
-        None => (),
-    };
-    if let Some(potential_track_path) = &arguments.track {
 
-        match export_locations(gpr.location, potential_track_path, &output_filepath, !arguments.quiet) {
-            0 => (),
-            i => return i
-        }
-    };
+    } else {
 
-    return 0
+        eprintln!("Filepath needs to be provided (-f or --filepath)");
+        return 1;
+
+    }
+
 }
 
 fn export_locations(gpr_locations: gpr::GPRLocation, potential_track_path: &Option<PathBuf>, output_filepath: &Path, verbose: bool) -> i32 {

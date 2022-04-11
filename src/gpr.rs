@@ -337,7 +337,7 @@ impl GPR {
                 }
             }?;
             self.normalize_horizontal_magnitudes(Some(skip_first));
-        } else if step_name.contains("kirchoff_migration2d") {
+        } else if step_name.contains("kirchhoff_migration2d") {
             self.kirchoff_migration2d();
         } else if step_name.contains("auto_gain") {
             let n_bins = tools::parse_option::<usize>(step_name, 0)?.unwrap_or(DEFAULT_AUTOGAIN_N_BINS);
@@ -719,7 +719,7 @@ view *= (i as f32) * linear;
         }).collect();
 
         self.data = Array2::from_shape_vec((height, width), output).unwrap();
-        self.log_event(&format!("Ran 2D Kirchoff migration with a velocity of {} m/ns", self.metadata.medium_velocity), start_time);
+        self.log_event(&format!("Ran 2D Kirchhoff migration with a velocity of {} m/ns", self.metadata.medium_velocity), start_time);
     }
 
     pub fn height(&self) -> usize {
@@ -744,7 +744,7 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
         ["dewow", "Subtract the horizontal moving average magnitude for each trace. This reduces artefacts that are consistent among every trace. The averaging window can be set, e.g. 'dewow(10)'. Default: 5"],
         ["auto_gain", "Automatically determine the best linear gain and apply it. The data are binned vertically and the standard deviation of the values is used as a proxy for signal attenuation. A linear model is fit to the standard deviations vs. depth, and the subsequent linear coefficient is given to the gain filter. Note that this will show up as having run auto_gain and then gain in the log. The amounts of bins can be given, e.g. 'auto_gain(100). Default: 100"],
         ["gain", "Linearly multiply the magnitude as a function of depth. This is most often used to correct for signal attenuation with time/distance. Gain is applied by: 'gain * sample_index' where gain is the given gain and sample_index is the zero-based index of the sample from the top. Example: gain(0.1). No default value."],
-        ["kirchoff_migration2d", "Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data. The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the mean of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions."]
+        ["kirchhoff_migration2d", "Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data. The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the mean of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions."]
     ]
 
 }
@@ -754,7 +754,7 @@ pub fn default_processing_profile() -> Vec<String> {
         format!("zero_corr({})", DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER),
         "equidistant_traces".to_string(),
         format!("normalize_horizontal_magnitudes({})", DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF),
-        "kirchoff_migration2d".to_string(),
+        "kirchhoff_migration2d".to_string(),
         format!("normalize_horizontal_magnitudes({})", DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF),
         format!("dewow({})", DEFAULT_DEWOW_WINDOW),
         format!("auto_gain({})", DEFAULT_AUTOGAIN_N_BINS),
