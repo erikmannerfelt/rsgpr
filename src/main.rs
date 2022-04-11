@@ -40,7 +40,7 @@ fn main()-> Result<(), Box<dyn std::error::Error>> {
     println!("t+{:?} Normalizing horizontal magnitudes...", std::time::SystemTime::now().duration_since(start).unwrap());
     gpr.normalize_horizontal_magnitudes(Some(gpr.height() as isize / 3));
     println!("t+{:?} Migrating", std::time::SystemTime::now().duration_since(start).unwrap());
-    gpr.kirchoff_migration2d(Some(1.));
+    gpr.kirchoff_migration2d();
     println!("t+{:?} Running dewow", std::time::SystemTime::now().duration_since(start).unwrap());
     gpr.dewow(5);
 
@@ -50,7 +50,7 @@ fn main()-> Result<(), Box<dyn std::error::Error>> {
     println!("t+{:?} Automatically finding gain", std::time::SystemTime::now().duration_since(start).unwrap());
     gpr.auto_gain(50);
 
-    gpr.export(Path::new("gpr_data.nc"))?;
+    //gpr.export(Path::new("gpr_data.nc"))?;
 
     println!("t+{:?} Saving ", std::time::SystemTime::now().duration_since(start).unwrap());
     gpr.render(&Path::new("img.jpg"))?;
@@ -617,7 +617,7 @@ view *= (i as f32) * linear;
         self.log.push(format!("duration: {:?}\t{}", SystemTime::now().duration_since(start_time).unwrap(), event));
     }
 
-    fn kirchoff_migration2d(&mut self, fresnel_multiplier: Option<f32>) {
+    fn kirchoff_migration2d(&mut self) {
 
         let start_time = SystemTime::now();
         let x_coords = self.location.distances().mapv(|v| v as f32);
@@ -663,7 +663,7 @@ view *= (i as f32) * linear;
             // Pérez-Gracia et al. (2008) Horizontal resolution in a non-destructive
             // shallow GPR survey: An experimental evaluation. NDT & E International,
             // 41(8): 611–620. doi:10.1016/j.ndteint.2008.06.002
-            let fresnel_radius = fresnel_multiplier.unwrap_or(1.) * 0.5 * (logical_res * 2. * z_diff * row as f32).sqrt();
+            let fresnel_radius = 0.5 * (logical_res * 2. * z_diff * row as f32).sqrt();
 
             // Derive the radius in pixel space
             let fresnel_width = fresnel_radius / x_diff;
@@ -693,17 +693,6 @@ view *= (i as f32) * linear;
             let out_fresnel_weight = fresnel_width.fract();
 
             for neighbor_n in min_neighbor..max_neighbor {
-
-                // If the "neighbor" is the middle sample, no geometric assumptions need to be
-                // made.
-                if neighbor_n == trace_n {
-                    if t_0_px < height {
-                        ampl += old_data[(t_0_px * width) + trace_n].to_owned();
-                        n_ampl += 1.0;
-                    };
-                    continue;
-                };
-
 
                 // Get the vertical component of the two-way time to the neighboring sample.
                 let t_top = t_0 - 2. * (z_coords[neighbor_n] - trace_top_z) / self.metadata.medium_velocity;
