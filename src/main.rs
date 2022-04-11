@@ -25,7 +25,7 @@ fn main()-> Result<(), Box<dyn std::error::Error>> {
     let gpr_meta = load_rad(Path::new("/media/hdd/Erik/Data/GPR/2022/AG325/glacier_radar/Slakbreen/20220330/DAT_0253_A1.rad"), GPR_ICE_VELOCITY).unwrap();
     //let gpr_meta = load_rad(Path::new("/media/hdd/Erik/Data/GPR/2022/AG325/snow_radar/Slakbreen/20220330/DAT_0053_A1.rad")).unwrap();
 
-    let mut gpr_locations = gpr_meta.find_cor(33).unwrap();
+    let mut gpr_locations = gpr_meta.find_cor("EPSG:32633").unwrap();
     gpr_locations.get_dem_elevations(Path::new("/media/hdd/Erik/Data/NPI/DEM/NP_S0_DTM20/S0_DTM20.tif"));
 
     gpr_locations.to_csv(Path::new("locs.csv")).unwrap();
@@ -76,8 +76,8 @@ struct GPRMeta {
 
 impl GPRMeta {
 
-    pub fn find_cor(&self, utm_zone: u8) -> Result<GPRLocation, Box<dyn Error>> {
-        load_cor(&self.rd3_filepath.with_extension("cor"), utm_zone)
+    pub fn find_cor(&self, projected_crs: &str) -> Result<GPRLocation, Box<dyn Error>> {
+        load_cor(&self.rd3_filepath.with_extension("cor"), projected_crs)
     }
 
 
@@ -123,6 +123,7 @@ enum LocationCorrection {
 struct GPRLocation {
     cor_points: Vec<CorPoint>,
     correction: LocationCorrection,
+    crs: String,
 }
 
 impl GPRLocation {
@@ -229,7 +230,7 @@ impl GPRLocation {
         };
 
         
-        GPRLocation { cor_points: new_points , correction: self.correction.clone()}
+        GPRLocation { cor_points: new_points , correction: self.correction.clone(), crs: self.crs.clone()}
     }
 
     fn xy_coords(&self) -> Array2<f64> {
@@ -277,15 +278,6 @@ fn interpolate_values(x0: f64, y0: &[f64], x1: f64, y1: &[f64], x: f64) -> Vec<f
     output
 }
 
-fn interpolate_coordinate(time0: f64, coord0: (f64, f64, f64), time1: f64, coord1: (f64, f64, f64), time: f64) -> (f64, f64, f64) {
-
-    let easting = interpolate_between_known((time0, coord0.0), (time1, coord1.0), time);
-    let northing = interpolate_between_known((time0, coord0.1), (time1, coord1.1), time);
-    let altitude = interpolate_between_known((time0, coord0.2), (time1, coord1.2), time);
-
-    (easting, northing, altitude)
-}
-
 /// Interpolate linearly between two known points
 /// https://en.wikipedia.org/wiki/Linear_interpolation#Linear_interpolation_between_two_known_points
 fn interpolate_between_known(known_xy0: (f64, f64), known_xy1: (f64, f64), x: f64) -> f64 {
@@ -314,11 +306,13 @@ impl CorPoint {
     }
 }
 
-fn load_cor(filepath: &Path, utm_zone: u8) -> Result<GPRLocation, Box<dyn Error>> {
+fn load_cor(filepath: &Path, projected_crs: &str) -> Result<GPRLocation, Box<dyn Error>> {
 
     let content = std::fs::read_to_string(filepath)?;
 
     let mut points: Vec<CorPoint>  = Vec::new();
+
+    let transformer = proj::Proj::new_known_crs("EPSG:4326", projected_crs, None)?;
 
     for line in content.lines() {
         
@@ -339,7 +333,8 @@ fn load_cor(filepath: &Path, utm_zone: u8) -> Result<GPRLocation, Box<dyn Error>
             longitude *= -1.;
         };
 
-        let (northing, easting, _) = utm::to_utm_wgs84(latitude, longitude, utm_zone);
+        let (easting, northing) = transformer.convert((longitude, latitude))?;
+        //let (northing, easting, _) = utm::to_utm_wgs84(latitude, longitude, utm_zone);
 
         let datetime = chrono::DateTime::parse_from_rfc3339(&format!("{}T{}+00:00", data[1], data[2]))?.timestamp() as f64;
 
@@ -353,7 +348,7 @@ fn load_cor(filepath: &Path, utm_zone: u8) -> Result<GPRLocation, Box<dyn Error>
         });
     };
 
-    Ok(GPRLocation{cor_points: points, correction: LocationCorrection::NONE})
+    Ok(GPRLocation{cor_points: points, correction: LocationCorrection::NONE, crs: projected_crs.to_string()})
 }
 
 struct GPR {
@@ -394,7 +389,7 @@ impl GPR {
         let data_subset = self.data.slice(ndarray::s![min_sample_ as isize..max_sample_ as isize, min_trace_ as isize..max_trace_ as isize]).to_owned();
 
 
-        let location_subset = GPRLocation{cor_points: self.location.cor_points[min_trace_ as usize..max_trace_ as usize].to_owned(), correction: self.location.correction.clone()};
+        let location_subset = GPRLocation{cor_points: self.location.cor_points[min_trace_ as usize..max_trace_ as usize].to_owned(), correction: self.location.correction.clone(), crs: self.location.crs.clone()};
 
         let mut metadata = self.metadata.clone();
 
@@ -606,7 +601,8 @@ view *= (i as f32) * linear;
 
         self.data = self.data.slice_axis(Axis(1), Slice::new(0, Some(nominal_data_width as isize), 1)).to_owned();
         self.metadata.last_trace = nominal_data_width as u32;
-        self.location = GPRLocation{cor_points: new_coords, correction: self.location.correction.clone()};
+        //self.location = GPRLocation{cor_points: new_coords, correction: self.location.correction.clone(), crs: self.location};
+        self.location.cor_points = new_coords;
 
         self.log_event("Ran equidistant traces", start_time);
     }
@@ -677,7 +673,7 @@ view *= (i as f32) * linear;
 
             // Derive all of the neighboring columns that may affect the sample
             let min_neighbor = (trace_n as f32 - fresnel_width).floor().clamp(0_f32, width as f32) as usize;
-            let max_neighbor = (trace_n as f32 + fresnel_width + 1.).ceil().clamp(0_f32, width as f32) as usize;
+            let max_neighbor = (trace_n + fresnel_width.ceil() as usize + 1).clamp(0, width);
 
             let mut ampl = 0_f32;
             let mut n_ampl = 0_f32;
@@ -689,7 +685,8 @@ view *= (i as f32) * linear;
             // The ones bordering the fresnel width are given the fraction how how much is covered
             // , e.g. 24% (0.24). With a fresnel width of e.g. 1.2, there would be three weights:
             // [0.2, 1.0, 0.2]
-            let in_fresnel_weight = (max_neighbor - min_neighbor) as f32 / ((max_neighbor - min_neighbor) as f32 - 2.);
+            let n_neighbors = (max_neighbor - min_neighbor) as f32;
+            let in_fresnel_weight = n_neighbors / (n_neighbors - 2.);
             let out_fresnel_weight = fresnel_width.fract();
 
             for neighbor_n in min_neighbor..max_neighbor {
@@ -736,7 +733,7 @@ view *= (i as f32) * linear;
         }).collect();
 
         self.data = Array2::from_shape_vec((height, width), output).unwrap();
-        self.log_event(&format!("Ran 2D Kirchoff migration with a velocity of {} m/ns and a fresnel multiplier of {:?}", self.metadata.medium_velocity, fresnel_multiplier), start_time);
+        self.log_event(&format!("Ran 2D Kirchoff migration with a velocity of {} m/ns", self.metadata.medium_velocity), start_time);
     }
 
     fn height(&self) -> usize {
@@ -779,10 +776,10 @@ view *= (i as f32) * linear;
             LocationCorrection::DEM(fp) => format!("DEM-corrected: {:?}", fp.as_path().file_name().unwrap().to_str().unwrap())
         })?;
 
-        let utm33n_wkt = r#"PROJCS["WGS 84 / UTM zone 33N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",15],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH],AUTHORITY["EPSG","32633"]]"#;
+        //let utm33n_wkt = r#"PROJCS["WGS 84 / UTM zone 33N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",15],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH],AUTHORITY["EPSG","32633"]]"#;
 
         //file.add_attribute("spatial_ref", utm33n_wkt)?;
-        file.add_attribute("crs_wkt", utm33n_wkt)?;
+        file.add_attribute("crs", self.location.crs.clone())?;
         let distance_vec = self.location.distances().into_raw_vec();
         file.add_attribute("total-distance",distance_vec[distance_vec.len() - 1])?;
         file.add_attribute("total-distance-unit", "m")?;
