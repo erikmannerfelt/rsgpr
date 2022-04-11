@@ -54,7 +54,6 @@ pub fn read_elevations(dem_path: &Path, xy_coords: Array2<f64>) -> Result<Array1
     Ok(Array1::from_vec(elevations))
 }
 
-
 fn project_geo_to_px(easting: f64, northing: f64, transform: &[f64; 6]) -> Array1<f32> {
 
     if (transform[2] != 0.) | (transform[4] != 0.) {
