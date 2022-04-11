@@ -12,6 +12,12 @@ use rayon::prelude::*;
 
 use crate::{io, dem, tools};
 
+
+const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
+const DEFAULT_DEWOW_WINDOW: u32 = 5;
+const DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF: f32 = 0.3;
+const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
+
 #[derive(Debug, Clone)]
 pub struct GPRMeta {
     pub samples: u32,
@@ -297,6 +303,89 @@ pub struct GPR {
 
 impl GPR {
 
+    pub fn process(&mut self, step_name: &str) -> Result<(), Box<dyn Error>> {
+
+        if step_name.contains("dewow") {
+            
+            let window = tools::parse_option::<u32>(step_name, 0)?.unwrap_or(DEFAULT_DEWOW_WINDOW);
+
+            self.dewow(window);
+
+
+        } else if step_name.contains("zero_corr") {
+
+            let threshold_multiplier = tools::parse_option::<f32>(step_name, 0)?;
+
+            self.zero_corr(threshold_multiplier);
+        } else if step_name.contains("equidistant_traces") {
+            let mean_velocity = tools::parse_option::<f32>(step_name, 0)?;
+            self.make_equidistant(mean_velocity);
+
+        } else if step_name.contains("normalize_horizontal_magnitudes") {
+
+            // Try to parse the argument as an integer. If that doesn't work, try to parse it as a
+            // float and assume it's the fraction of the height
+            let skip_first: isize = match tools::parse_option::<isize>(step_name, 0) {
+                Ok(v) => Ok(v.unwrap_or(0)),
+                Err(e) => match e.contains("Could not parse argument 0 as value") {
+                    true => tools::parse_option::<f32>(step_name, 0).and_then(|fraction| match (fraction.unwrap() >= 1.0) & (fraction.unwrap() < 0.) {
+                        true => Err(format!("Invalid fraction: {:?}. Must be between 0.0 and 1.0.", fraction)),
+                        false => Ok((self.height() as f32 * fraction.unwrap_or(0.)) as isize),
+
+                    }),
+                    false => Err(e)
+                }
+            }?;
+            self.normalize_horizontal_magnitudes(Some(skip_first));
+        } else if step_name.contains("kirchoff_migration2d") {
+            self.kirchoff_migration2d();
+        } else if step_name.contains("auto_gain") {
+            let n_bins = tools::parse_option::<usize>(step_name, 0)?.unwrap_or(DEFAULT_AUTOGAIN_N_BINS);
+            self.auto_gain(n_bins);
+        } else if step_name.contains("gain") {
+
+            let linear = match tools::parse_option::<f32>(step_name, 0)? {
+                Some(v) => Ok(v),
+                None => Err("The linear gain factor must be specified when applying gain. E.g. gain(0.1)".to_string()),
+
+            }?;
+            self.gain(linear);
+        } else if step_name.contains("subset") {
+
+            let min_trace: Option<u32> = match tools::parse_option::<u32>(step_name, 0)? {
+                Some(v) => Ok(Some(v)),
+                None => Err("Indices must be given when subsetting, e.g. subset(0, -1, 0, 500)")
+            }?;
+
+            let max_trace: Option<u32> = match tools::parse_option::<isize>(step_name, 1) {
+                Ok(v) => Ok(v.and_then(|v2| if v2 == -1 {None} else {Some(v2 as u32)})),
+                Err(e) => match e.contains("out of bounds") {
+                    true => Ok(None),
+                    false => Err(e),
+                }
+            }?;
+            let min_sample: Option<u32> = match tools::parse_option::<u32>(step_name, 2) {
+                Ok(v) => Ok(v),
+                Err(e) => match e.contains("out of bounds") {
+                    true => Ok(None),
+                    false => Err(e),
+                }
+            }?;
+            let max_sample: Option<u32> = match tools::parse_option::<isize>(step_name, 3) {
+                Ok(v) => Ok(v.and_then(|v2| if v2 == -1 {None} else {Some(v2 as u32)})),
+                Err(e) => match e.contains("out of bounds") {
+                    true => Ok(None),
+                    false => Err(e),
+                }
+            }?;
+            *self = self.subset(min_trace, max_trace, min_sample, max_sample);
+        } else {
+            return Err(format!("Step name not recognized: {}", step_name).into());
+        }
+
+        Ok(())
+    }
+
     pub fn subset(&self, min_trace: Option<u32>, max_trace: Option<u32>, min_sample: Option<u32>, max_sample: Option<u32>) -> GPR {
 
         let start_time = SystemTime::now();
@@ -352,7 +441,7 @@ impl GPR {
 
         let mean_trace = self.data.mean_axis(Axis(1)).unwrap();
 
-        let threshold = 0.5 * mean_trace.std(1.0) * threshold_multiplier.unwrap_or(1.0);
+        let threshold = 0.5 * mean_trace.std(1.0) * threshold_multiplier.unwrap_or(DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER);
 
         let mut first_rise = 0_isize;
 
@@ -438,12 +527,12 @@ view *= (i as f32) * linear;
         self.log_event(&format!("Applied linear gain of *= {} * index", linear), start_time);
     }
 
-    pub fn make_equidistant(&mut self) {
+    pub fn make_equidistant(&mut self, mean_velocity: Option<f32>) {
         let start_time = SystemTime::now();
 
         let velocities = self.location.velocities().mapv(|v| v as f32);
 
-        let normal_velocity = tools::quantiles(&velocities, &[0.5])[0];
+        let normal_velocity = mean_velocity.unwrap_or(tools::quantiles(&velocities, &[0.5])[0]);
 
         let mut seconds_moving = 0_f32;
         for i in 1..self.width() {
@@ -494,6 +583,12 @@ view *= (i as f32) * linear;
         self.metadata.last_trace = nominal_data_width as u32;
         //self.location = GPRLocation{cor_points: new_coords, correction: self.location.correction.clone(), crs: self.location};
         self.location.cor_points = new_coords;
+
+        if self.width() != self.location.cor_points.len() {
+
+            panic!("Data width {} != cor points width {}. Was equidistant traces run twice?", self.width(), self.location.cor_points.len())
+
+        };
 
         self.log_event("Ran equidistant traces", start_time);
     }
@@ -637,4 +732,31 @@ view *= (i as f32) * linear;
     pub fn export(&self, nc_filepath: &Path) -> Result<(), Box<dyn Error>> {
         io::export_netcdf(self, nc_filepath)
     }
+}
+
+
+pub fn all_available_steps() -> Vec<[&'static str; 2]> {
+
+    vec![
+        ["zero_corr", "Shift the location of the zero return time by finding the first row where data appear. The correction can be tweaked to allow more or less data, e.g. 'zero_corr(0.9)'. Default: 1.0"],
+        ["equidistant_traces", "Make all traces equidistant by averaging them in a fixed horizontal grid. The gridsize is determined from the median moving velocity. Other velocities in m/s can be given, e.g. 'equidistant_traces(2.)'. Default: auto"],
+        ["normalize_horizontal_magnitudes", "Normalize the magnitudes of the traces in the horizontal axis. This removes or reduces horizontal banding. The uppermost samples of the trace can be excluded, either by sample number (integer; e.g. 'normalize_horizontal_magnitudes(300)') or by a fraction of the trace (float; e.g. 'normalize_horizontal_magnitudes(0.3)'). Default: 0.3"],
+        ["dewow", "Subtract the horizontal moving average magnitude for each trace. This reduces artefacts that are consistent among every trace. The averaging window can be set, e.g. 'dewow(10)'. Default: 5"],
+        ["auto_gain", "Automatically determine the best linear gain and apply it. The data are binned vertically and the standard deviation of the values is used as a proxy for signal attenuation. A linear model is fit to the standard deviations vs. depth, and the subsequent linear coefficient is given to the gain filter. Note that this will show up as having run auto_gain and then gain in the log. The amounts of bins can be given, e.g. 'auto_gain(100). Default: 100"],
+        ["gain", "Linearly multiply the magnitude as a function of depth. This is most often used to correct for signal attenuation with time/distance. Gain is applied by: 'gain * sample_index' where gain is the given gain and sample_index is the zero-based index of the sample from the top. Example: gain(0.1). No default value."],
+        ["kirchoff_migration2d", "Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data. The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the mean of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions."]
+    ]
+
+}
+
+pub fn default_processing_profile() -> Vec<String> {
+    vec![
+        format!("zero_corr({})", DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER),
+        "equidistant_traces".to_string(),
+        format!("normalize_horizontal_magnitudes({})", DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF),
+        "kirchoff_migration2d".to_string(),
+        format!("normalize_horizontal_magnitudes({})", DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF),
+        format!("dewow({})", DEFAULT_DEWOW_WINDOW),
+        format!("auto_gain({})", DEFAULT_AUTOGAIN_N_BINS),
+    ]
 }

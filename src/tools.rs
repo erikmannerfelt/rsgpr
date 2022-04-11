@@ -1,6 +1,7 @@
 
 use ndarray::{Axis, Array1};
 use ndarray_stats::QuantileExt;
+use std::str::FromStr;
 
 pub fn interpolate_values(x0: f64, y0: &[f64], x1: f64, y1: &[f64], x: f64) -> Vec<f64> {
 
@@ -42,6 +43,34 @@ pub fn seconds_to_rfc3339(seconds: f64) -> String {
     chrono::DateTime::<chrono::Utc>::from_utc(chrono::NaiveDateTime::from_timestamp(seconds as i64, (seconds.fract() * 1e9) as u32), chrono::Utc).to_rfc3339()
 }
 
+
+pub fn parse_option<T: FromStr>(string: &str, argument_index: usize) -> Result<Option<T>, String> {
+    match string.split_once("(") {
+        None => Ok(None),
+        Some((_, first_part)) => {
+            match first_part.split_once(")") {
+                Some((within_parentheses, _)) => {
+
+                    // Replace has to be run twice, as it may be an odd numbe of whitespaces:
+                    // "_-_-_" => "_-_" => "_"
+                    let removed_consecutive_whitespace = within_parentheses.replace("  ", " ").replace("  ", " ");
+                
+                    let arguments = removed_consecutive_whitespace.split(" ").collect::<Vec<&str>>();
+
+                    match arguments.get(argument_index) {
+                        Some(s) => match s.trim().parse::<T>() {
+                            Ok(v) => Ok(Some(v)),
+                            Err(_) => Err(format!("Could not parse argument {} as value in string {}: {}", argument_index, string, s))
+                        },
+                        None => Err(format!("Argument {} out of bounds in string: {}", argument_index, string))
+                    }
+                },
+                None => Err(format!("String: {} has opening parenthesis but not closing", string))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -65,5 +94,25 @@ mod tests {
         let time1 = 1_f64;
 
         assert_eq!(super::interpolate_values(time0, &coord0, time1, &coord1, 0.5), vec![2.5, 5.0, 7.5])
+    }
+
+    #[test]
+    fn test_parse_option() {
+
+        assert_eq!(super::parse_option::<u32>("dewow", 0), Ok(None));
+        assert_eq!(super::parse_option::<u32>("dewow(1)", 0), Ok(Some(1_u32)));
+        assert_eq!(super::parse_option::<f32>("dewow(1 2.0)", 1), Ok(Some(2_f32)));
+        assert_eq!(super::parse_option::<i64>("dewow(1  -2)", 1), Ok(Some(-2_i64)));
+        assert_eq!(super::parse_option::<i64>("kirchoff_migration2d    (1    -2)    ", 1), Ok(Some(-2_i64)));
+
+
+        assert!(super::parse_option::<f32>("dewow(", 0).unwrap_err().contains("opening parenthesis but not closing"));
+        assert!(super::parse_option::<f32>("dewow(1)", 1).unwrap_err().contains("Argument 1 out of bounds"));
+
+        assert!(super::parse_option::<f32>("dewow(1,1.0)", 1).unwrap_err().contains("Argument 1 out of bounds"));
+
+        assert!(super::parse_option::<f32>("dewow(1 1,1)", 1).unwrap_err().contains("Could not parse argument 1"));
+
+
     }
 }

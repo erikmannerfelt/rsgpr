@@ -4,8 +4,6 @@ use crate::{gpr, io};
 use std::str::FromStr;
 
 
-const DEFAULT_PROFILE: [&str; 7] = ["zero_corr", "equidistant_traces", "normalize_horizontal_magnitudes", "kirchoff_migration2d", "normalize_horizontal_magnitudes", "dewow", "auto_gain"];
-
 #[derive(Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
 pub struct Args {
@@ -47,6 +45,10 @@ pub struct Args {
     #[clap(long)]
     show_default: bool,
 
+    /// Show the available steps
+    #[clap(long)]
+    show_all_steps: bool,
+
     /// Processing steps to run.
     #[clap(long)]
     steps: Option<String>,
@@ -68,8 +70,18 @@ pub struct Args {
 
 pub fn main(arguments: Args) -> i32 {
 
+    if arguments.show_all_steps {
+        println!("Name\t\tDescription");
+
+        for line in gpr::all_available_steps() {
+            println!("{}\n{}\n{}\n",  line[0],"-".repeat(line[0].len()), line[1]);
+        };
+        return 0
+
+    };
+
     if arguments.show_default {
-        for line in DEFAULT_PROFILE {
+        for line in gpr::default_processing_profile() {
             println!("{}", line);
         };
         return 0
@@ -124,10 +136,10 @@ pub fn main(arguments: Args) -> i32 {
 
     let mut gpr = gpr::GPR::from_meta_and_loc(gpr_locations, gpr_meta).unwrap();
 
-    let profile: Vec<&str> = match arguments.default {
-        true => DEFAULT_PROFILE.iter().map(|s| *s).collect(),
+    let profile: Vec<String> = match arguments.default {
+        true => gpr::default_processing_profile(),
         false => match &arguments.steps {
-            Some(steps) => steps.split(",").map(|s| s.trim()).collect(),
+            Some(steps) => steps.split(",").map(|s| s.trim().to_string()).collect(),
             None => {eprintln!("No steps specified. Choose a profile or what steps to run"); return 1}
         },
     };
@@ -142,15 +154,15 @@ pub fn main(arguments: Args) -> i32 {
         if !arguments.quiet {
             println!("{}/{}, t+{:.2} s, Running step {}. ",i + 1, profile.len(), SystemTime::now().duration_since(start_time).unwrap().as_secs_f32(), step, );
         };
-        match *step {
-            "dewow" => gpr.dewow(5),
-            "zero_corr" => gpr.zero_corr(None),
-            "equidistant_traces" => gpr.make_equidistant(),
-            "normalize_horizontal_magnitudes" => gpr.normalize_horizontal_magnitudes(Some(gpr.height() as isize / 3)),
-            "kirchoff_migration2d" => gpr.kirchoff_migration2d(),
-            "auto_gain" => gpr.auto_gain(100),
-            _ => {eprintln!("Unrecognized step name: {}", step); return 1},
+
+        match gpr.process(step) {
+            Ok(_) => 0,
+            Err(e) => {eprintln!("Error on step {}: {:?}", step, e); return 1}
         };
+
+        assert_eq!(gpr.width(), gpr.location.cor_points.len());
+
+
     };
 
     if !arguments.quiet {
