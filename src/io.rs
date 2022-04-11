@@ -138,7 +138,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
         file.add_attribute("total-distance",distance_vec[distance_vec.len() - 1])?;
         file.add_attribute("total-distance-unit", "m")?;
 
-        file.add_attribute("version", format!("{} version {}, © {}", crate::PROGRAM_NAME, crate::PROGRAM_VERSION, crate::PROGRAM_AUTHORS))?;
+        file.add_attribute("program-version", format!("{} version {}, © {}", crate::PROGRAM_NAME, crate::PROGRAM_VERSION, crate::PROGRAM_AUTHORS))?;
 
         let mut data = file.add_variable::<f32>("data", &["y","x"])?;
         data.put_values(&gpr.data.clone().reversed_axes().into_raw_vec(), Some(&[0, 0]), None)?;

@@ -38,6 +38,10 @@ pub fn quantiles<'a, I>(values: I, quantiles: &[f32]) -> Vec<f32> where
     output
 }
 
+pub fn seconds_to_rfc3339(seconds: f64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_utc(chrono::NaiveDateTime::from_timestamp(seconds as i64, (seconds.fract() * 1e9) as u32), chrono::Utc).to_rfc3339()
+}
+
 #[cfg(test)]
 mod tests {
 

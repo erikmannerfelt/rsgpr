@@ -33,7 +33,38 @@ impl GPRMeta {
         io::load_cor(&self.rd3_filepath.with_extension("cor"), projected_crs)
     }
 
+}
 
+impl std::fmt::Display for GPRMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result  {
+
+        write!(f, "
+GPR Metadata
+------------
+Filepath:\t\t{:?}
+Samples (height):\t{}
+Traces (width):\t\t{}
+Time window:\t\t{} ns
+Max depth:\t\t{:.1} m
+Medium velocity:\t{} m/ns
+Sampling frequency:\t{} MHz
+Time between traces:\t{} s
+Antenna:\t\t{}
+Antenna separation:\t{} m
+",
+            self.rd3_filepath,
+            self.samples,
+            self.last_trace,
+            self.time_window,
+            0.5 * self.time_window * self.medium_velocity,
+            self.medium_velocity,
+            self.frequency,
+            self.time_interval,
+            self.antenna,
+            self.antenna_separation,
+        )
+
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -204,8 +235,53 @@ impl GPRLocation {
 
         std::fs::write(filepath, output)
     }
+
+    pub fn length(&self) -> f64 {
+        self.distances().max().unwrap().to_owned()
+    }
 }
 
+
+impl std::fmt::Display for GPRLocation {
+
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result  {
+        let altitudes = Array1::from_iter(self.cor_points.iter().map(|point| point.altitude));
+        let eastings = Array1::from_iter(self.cor_points.iter().map(|point| point.easting));
+        let northings = Array1::from_iter(self.cor_points.iter().map(|point| point.northing));
+
+        let length = self.length();
+        let duration = self.cor_points[self.cor_points.len() - 1].time_seconds - self.cor_points[0].time_seconds;
+        write!(f, "
+
+GPR Location data
+-----------------
+Start time:\t\t{}
+Stop time:\t\t{}
+Duration:\t\t{:.1} s
+Number of points:\t{}
+Points per m / per s:\t{:.2},{:.2}
+Track length:\t\t{:.1} m
+Altitude range:\t\t{:.1}-{:.1} m.
+Centroid:\t\tE {:.1} m, N: {:.1} m, Z: {:.1} m.
+CRS:\t\t\t{}
+",
+               tools::seconds_to_rfc3339(self.cor_points[0].time_seconds),
+               tools::seconds_to_rfc3339(self.cor_points[self.cor_points.len() - 1].time_seconds),
+               duration,
+               self.cor_points.len(),
+               self.cor_points.len() as f32 / length as f32,
+               self.cor_points.len() as f64 / duration,
+               length,
+               altitudes.min().unwrap(),
+               altitudes.max().unwrap(),
+               eastings.mean().unwrap(),
+               northings.mean().unwrap(),
+               altitudes.mean().unwrap(),
+               self.crs,
+        )
+
+    }
+}
 
 
 

@@ -1,0 +1,206 @@
+use clap::Parser;
+use std::{path::{Path, PathBuf}, time::SystemTime};
+use crate::{gpr, io};
+use std::str::FromStr;
+
+
+const DEFAULT_PROFILE: [&str; 7] = ["zero_corr", "equidistant_traces", "normalize_horizontal_magnitudes", "kirchoff_migration2d", "normalize_horizontal_magnitudes", "dewow", "auto_gain"];
+
+#[derive(Debug, Parser)]
+#[clap(author, version, about, long_about = None)]
+pub struct Args {
+    /// Filepath of the Malå rd3 file
+    #[clap(short, long)]
+    filepath: PathBuf,
+
+    /// Velocity of the medium in m/ns. Defaults to the typical velocity of ice.
+    #[clap(short, long, default_value="0.168")]
+    velocity: f32,
+
+    /// Only show metadata for the file
+    #[clap(short, long)]
+    info: bool,
+
+    /// Load a separate ".cor" file. If not given, it will be searched for automatically
+    #[clap(short, long)]
+    cor: Option<PathBuf>,
+
+    /// Correct elevation values with a DEM
+    #[clap(short, long)]
+    dem: Option<PathBuf>,
+
+    /// Which coordinate reference system to project coordinates in.
+    #[clap(long, default_value="EPSG:32633")]
+    crs: String,
+
+    /// Export the location track to a comma separated values (CSV) file. Defaults to the output filename location and stem +
+    /// "_track.csv"
+    #[clap(short, long)]
+    track: Option<Option<PathBuf>>,
+
+
+    /// Process with the default profile. See "--show-default" to list the profile.
+    #[clap(long)]
+    default: bool,
+
+    /// Show the default profile and exit
+    #[clap(long)]
+    show_default: bool,
+
+    /// Processing steps to run.
+    #[clap(long)]
+    steps: Option<String>,
+
+    /// Output filename or directory. Defaults to the input filename with a ".nc" extension
+    #[clap(short, long)]
+    output: Option<PathBuf>,
+
+    /// Surpress progress messages
+    #[clap(short, long)]
+    quiet: bool,
+
+    /// Render an image of the profile and save it to the specified path. Defaults to a jpg in the
+    /// directory of the output filepath
+    #[clap(short, long)]
+    render: Option<Option<PathBuf>>
+}
+
+
+pub fn main(arguments: Args) -> i32 {
+
+    if arguments.show_default {
+        for line in DEFAULT_PROFILE {
+            println!("{}", line);
+        };
+        return 0
+    };
+
+    let rad_filepath = arguments.filepath.with_extension("rad");
+
+    if !rad_filepath.is_file() {
+        if arguments.filepath.is_file() {
+            eprintln!("File found but no '.rad' file found: {:?}", rad_filepath);
+        } else {
+            eprintln!("File not found: {:?}", rad_filepath);
+        }
+        return 1
+    };
+    let gpr_meta = match io::load_rad(match arguments.filepath.extension() {
+        Some(ext) if ext == std::ffi::OsString::from_str("rad").unwrap() => &arguments.filepath,
+        Some(ext) if ext == std::ffi::OsString::from_str("rd3").unwrap() => &rad_filepath,
+        None => &rad_filepath,
+        Some(_) => {eprintln!("Filepath not understood: {:?} \nSupported files: ['.rd3']", arguments.filepath); return 1},
+    }, arguments.velocity) {
+        Ok(x) => x,
+        Err(e) => {eprintln!("Uncaught error fetching GPR metadata: {:?}", e); return 1}
+    };
+
+    let mut gpr_locations = match &arguments.cor {
+        Some(fp) => io::load_cor(&fp, &arguments.crs).unwrap(),
+        None => gpr_meta.find_cor(&arguments.crs).unwrap(),
+    };
+
+    if let Some(dem_path) = &arguments.dem {
+        gpr_locations.get_dem_elevations(&dem_path);
+    };
+
+    let output_filepath = match &arguments.output {
+        Some(p) => match p.is_dir() {
+            true => p.join(arguments.filepath.file_stem().unwrap()).with_extension("nc"),
+            false => p.clone()
+        },
+        None => arguments.filepath.with_extension("nc"),
+    };
+
+    if arguments.info {
+        println!("{}", gpr_meta);
+        println!("{}", gpr_locations);
+        if let Some(potential_track_path) = &arguments.track {
+            return export_locations(gpr_locations, potential_track_path, &output_filepath, !arguments.quiet)
+        };
+
+        return 0
+    };
+
+    let mut gpr = gpr::GPR::from_meta_and_loc(gpr_locations, gpr_meta).unwrap();
+
+    let profile: Vec<&str> = match arguments.default {
+        true => DEFAULT_PROFILE.iter().map(|s| *s).collect(),
+        false => match &arguments.steps {
+            Some(steps) => steps.split(",").map(|s| s.trim()).collect(),
+            None => {eprintln!("No steps specified. Choose a profile or what steps to run"); return 1}
+        },
+    };
+
+    let start_time = SystemTime::now();
+
+    if !arguments.quiet {
+        println!("Processing {:?}", arguments.filepath.with_extension("rd3"));
+    };
+
+    for (i, step) in profile.iter().enumerate() {
+        if !arguments.quiet {
+            println!("{}/{}, t+{:.2} s, Running step {}. ",i + 1, profile.len(), SystemTime::now().duration_since(start_time).unwrap().as_secs_f32(), step, );
+        };
+        match *step {
+            "dewow" => gpr.dewow(5),
+            "zero_corr" => gpr.zero_corr(None),
+            "equidistant_traces" => gpr.make_equidistant(),
+            "normalize_horizontal_magnitudes" => gpr.normalize_horizontal_magnitudes(Some(gpr.height() as isize / 3)),
+            "kirchoff_migration2d" => gpr.kirchoff_migration2d(),
+            "auto_gain" => gpr.auto_gain(100),
+            _ => {eprintln!("Unrecognized step name: {}", step); return 1},
+        };
+    };
+
+    if !arguments.quiet {
+        println!("Exporting to {:?}", output_filepath);
+    };
+    gpr.export(&output_filepath).unwrap();
+
+    match arguments.render {
+        Some(potential_fp) => {
+            let render_filepath = match potential_fp {
+                Some(fp) => match fp.is_dir() {
+                    true => fp.join(output_filepath.file_stem().unwrap()).with_extension("jpg"),
+                    false => fp.clone()
+                },
+                None => output_filepath.with_extension("jpg"),
+            };
+            if !arguments.quiet {
+                println!("Rendering image to {:?}", render_filepath);
+            };
+            gpr.render(&render_filepath).unwrap();
+        },
+        None => (),
+    };
+    if let Some(potential_track_path) = &arguments.track {
+
+        match export_locations(gpr.location, potential_track_path, &output_filepath, !arguments.quiet) {
+            0 => (),
+            i => return i
+        }
+    };
+
+    return 0
+}
+
+fn export_locations(gpr_locations: gpr::GPRLocation, potential_track_path: &Option<PathBuf>, output_filepath: &Path, verbose: bool) -> i32 {
+
+    let track_path: PathBuf = match potential_track_path {
+        Some(fp) => match fp.is_dir() {
+            true => fp.join(output_filepath.file_stem().unwrap().to_str().unwrap().to_string() + "_track").with_extension("csv"),
+            false => fp.clone().to_path_buf()
+        },
+        None => output_filepath.with_file_name(output_filepath.file_stem().unwrap().to_str().unwrap().to_string() + "_track").with_extension("csv"),
+    };
+    if verbose {
+        println!("Exporting track to {:?}", track_path);
+    };
+
+    match gpr_locations.to_csv(&track_path) {
+        Ok(_) => 0,
+        Err(e) => {eprintln!("Error saving track {:?}: {:?}", track_path, e); return 1}
+    }
+
+}
