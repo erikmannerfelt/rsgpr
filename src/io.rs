@@ -207,7 +207,7 @@ pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>>
         let log99 = (0.99_f32).log(std::f32::consts::E);
 
         // Scale the values to logit and convert them to u8
-        vals.assign(&match minval < 0. {
+        vals.assign(&match minval > -10000000. {
             true => gpr.data.mapv(|f| {
                 (
                     255.0 * {

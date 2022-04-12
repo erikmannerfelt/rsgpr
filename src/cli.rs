@@ -36,7 +36,6 @@ pub struct Args {
     #[clap(short, long)]
     track: Option<Option<PathBuf>>,
 
-
     /// Process with the default profile. See "--show-default" to list the profile.
     #[clap(long)]
     default: bool,
@@ -64,7 +63,12 @@ pub struct Args {
     /// Render an image of the profile and save it to the specified path. Defaults to a jpg in the
     /// directory of the output filepath
     #[clap(short, long)]
-    render: Option<Option<PathBuf>>
+    render: Option<Option<PathBuf>>,
+
+
+    /// Don't export a nc file
+    #[clap(long)]
+    no_export: bool,
 }
 
 
@@ -168,10 +172,12 @@ pub fn main(arguments: Args) -> i32 {
 
         };
 
-        if !arguments.quiet {
-            println!("Exporting to {:?}", output_filepath);
+        if !arguments.no_export {
+            if !arguments.quiet {
+                println!("Exporting to {:?}", output_filepath);
+            };
+            gpr.export(&output_filepath).unwrap();
         };
-        gpr.export(&output_filepath).unwrap();
 
         match arguments.render {
             Some(potential_fp) => {

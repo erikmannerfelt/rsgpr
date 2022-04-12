@@ -312,6 +312,11 @@ impl GPR {
             self.dewow(window);
 
 
+        } else if step_name.contains("zero_corr_max_peak") {
+
+            self.zero_corr_max_peak();
+
+
         } else if step_name.contains("zero_corr") {
 
             let threshold_multiplier = tools::parse_option::<f32>(step_name, 0)?;
@@ -381,7 +386,7 @@ impl GPR {
             *self = self.subset(min_trace, max_trace, min_sample, max_sample);
         } else if step_name.contains("unphase") {
             self.unphase();
-        }else {
+        } else {
             return Err(format!("Step name not recognized: {}", step_name).into());
         }
 
@@ -438,7 +443,7 @@ impl GPR {
         io::render_jpg(self, filepath)
     }
 
-    pub fn unphase(&mut self) {
+    pub fn zero_corr_max_peak(&mut self) {
 
         let start_time = SystemTime::now();
 
@@ -463,27 +468,85 @@ impl GPR {
 
         self.data -= mean_silent_val;
 
-        let positives = self.data.mapv(|v| if v < 0. {0.} else {v.to_owned()});
-        let negatives = self.data.mapv(|v| if v > 0. {0.} else {v.to_owned() * -1.});
+        let mut positive_peaks = Array1::<isize>::zeros(self.width());
 
-        //self.data.assign(&(positives));
+        let mut i = 0_usize;
+        for col in self.data.columns() {
 
-        let max_negative = mean_trace.argmin().unwrap() as isize;
-        let max_positive = mean_trace.argmax().unwrap() as isize;
+            positive_peaks[i] = col.argmax().unwrap() as isize;
 
-        self.data.fill(0.);
-
-        let mut negative_data_slice = self.data.slice_axis_mut(Axis(0), Slice::new(0, Some(self.height() as isize - max_negative), 1));
-
-        negative_data_slice += &negatives.slice_axis(Axis(0), Slice::new(max_negative, None, 1));
-
-        let mut positive_data_slice = self.data.slice_axis_mut(Axis(0), Slice::new(0, Some(self.height() as isize - max_positive), 1));
-
-        positive_data_slice += &positives.slice_axis(Axis(0), Slice::new(max_positive, None, 1));
-
-        if self.data.iter().any(|v| v < &0.) {
-            panic!("");
+            i += 1;
         };
+
+        let mut new_data = Array2::from_elem((self.height() - positive_peaks.min().unwrap().to_owned() as usize, self.width()), 0_f32);
+
+        i = 0;
+        for col in self.data.columns() {
+
+            let mut new_col = new_data.column_mut(i);
+
+            let mut positive_data_slice = new_col.slice_axis_mut(Axis(0), Slice::new(0, Some(self.height() as isize - positive_peaks[i]), 1));
+
+            positive_data_slice += &col.slice_axis(Axis(0), Slice::new(positive_peaks[i], None, 1));
+            i += 1;
+
+        };
+
+        self.update_data(new_data);
+        self.log_event(&format!("Applied a per-trace zero-corr by removing the first {}-{} rows", positive_peaks.min().unwrap(), positive_peaks.max().unwrap()), start_time);
+    }
+
+    fn update_data(&mut self, data: Array2::<f32>) {
+
+        self.data = data;
+
+        self.metadata.time_window = self.metadata.time_window * (self.height() as f32 / self.metadata.samples as f32);
+        self.metadata.samples = self.height() as u32;
+        self.metadata.last_trace = self.width() as u32;
+
+
+    }
+
+    pub fn unphase(&mut self) {
+
+        let start_time = SystemTime::now();
+
+        let mut positive_peaks = Array1::<isize>::zeros(self.width());
+        let mut negative_peaks = Array1::<isize>::zeros(self.width());
+
+        let mut i = 0_usize;
+        for col in self.data.columns() {
+
+            positive_peaks[i] = col.argmax().unwrap() as isize;
+            negative_peaks[i] = col.argmin().unwrap() as isize;
+
+            i += 1;
+        };
+
+        let mean_peaks = (&positive_peaks + &negative_peaks) / 2;
+
+        let mean_peak_spacing = (negative_peaks - positive_peaks).mean().unwrap();
+        let lower_half = mean_peak_spacing / 2;
+        let upper_half = mean_peak_spacing - lower_half;
+
+        negative_peaks = &mean_peaks + upper_half;
+
+        let mut new_data = self.data.mapv(|v| v.max(0.));
+
+        i = 0;
+        for col in self.data.columns() {
+
+            let mut new_col = new_data.column_mut(i);
+
+            let mut negative_data_slice = new_col.slice_axis_mut(Axis(0), Slice::new(0, Some(self.height() as isize - negative_peaks[i]), 1));
+
+            negative_data_slice += &col.slice_axis(Axis(0), Slice::new(negative_peaks[i], None, 1)).mapv(|v| v.min(0.) * -1.);
+
+            i += 1;
+
+        };
+
+        self.update_data(new_data);
 
     }
 
@@ -795,7 +858,9 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
         ["dewow", "Subtract the horizontal moving average magnitude for each trace. This reduces artefacts that are consistent among every trace. The averaging window can be set, e.g. 'dewow(10)'. Default: 5"],
         ["auto_gain", "Automatically determine the best linear gain and apply it. The data are binned vertically and the standard deviation of the values is used as a proxy for signal attenuation. A linear model is fit to the standard deviations vs. depth, and the subsequent linear coefficient is given to the gain filter. Note that this will show up as having run auto_gain and then gain in the log. The amounts of bins can be given, e.g. 'auto_gain(100). Default: 100"],
         ["gain", "Linearly multiply the magnitude as a function of depth. This is most often used to correct for signal attenuation with time/distance. Gain is applied by: 'gain * sample_index' where gain is the given gain and sample_index is the zero-based index of the sample from the top. Example: gain(0.1). No default value."],
-        ["kirchhoff_migration2d", "Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data. The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the mean of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions."]
+        ["kirchhoff_migration2d", "Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data. The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the mean of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions."],
+        ["unphase", "hello"],
+        ["zero_corr_max_peak", "hello"],
     ]
 
 }
