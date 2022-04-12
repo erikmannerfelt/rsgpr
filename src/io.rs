@@ -1,3 +1,4 @@
+/// Functions to handle input and output (I/O) of files.
 use std::path::Path;
 use std::error::Error;
 use std::collections::HashMap;
@@ -6,18 +7,32 @@ use rayon::prelude::*;
 
 use crate::gpr;
 
+/// Load and parse a Malå metadata file (.rad)
+///
+/// # Arguments
+/// - `filepath`: The filepath of the input metadata file
+/// - `medium_velocity`: The velocity of the portrayed medium to assign the GPR data
+///
+/// # Returns
+/// A gpr::GPRMeta instance.
+///
+/// # Errors
+/// - The file could not be read
+/// - The contents could not be parsed correctly
+/// - The associated ".rd3" file does not exist.
 pub fn load_rad(filepath: &Path, medium_velocity: f32) -> Result<gpr::GPRMeta, Box<dyn Error>> {
 
     let content = std::fs::read_to_string(filepath)?;
 
+    // Collect all rows into a hashmap, assuming a "KEY:VALUE" structure.
     let data: HashMap<&str, &str> = content.lines().filter_map(|s| s.split_once(":")).collect();
 
     let rd3_filepath = filepath.with_extension("rd3");
-
     if !rd3_filepath.is_file() {
         return Err(format!("File not found: {:?}", rd3_filepath).into());
     };
 
+    // Extract and parse all required metadata into a new GPRMeta object.
     let antenna = data.get("ANTENNAS").ok_or("No 'ANTENNAS' key in metadata")?.trim().to_string();
 
     Ok(gpr::GPRMeta{
@@ -35,18 +50,34 @@ pub fn load_rad(filepath: &Path, medium_velocity: f32) -> Result<gpr::GPRMeta, B
     })
 }
 
+/// Load and parse a Malå ".cor" location file
+///
+/// # Arguments
+/// - `filepath`: The path to the file to read.
+/// - `projected_crs`: Any projected CRS understood by PROJ to project the coordinates into
+///
+/// # Returns
+/// The parsed location points in a GPRLocation object.
+///
+/// # Errors
+/// - The file could not be found/read
+/// - `projected_crs` is not understood by PROJ
+/// - The contents of the file could not be parsed.
 pub fn load_cor(filepath: &Path, projected_crs: &str) -> Result<gpr::GPRLocation, Box<dyn Error>> {
 
     let content = std::fs::read_to_string(filepath)?;
 
-    let mut points: Vec<gpr::CorPoint>  = Vec::new();
-
     let transformer = proj::Proj::new_known_crs("EPSG:4326", projected_crs, None)?;
 
+    // Create a new empty points vec
+    let mut points: Vec<gpr::CorPoint>  = Vec::new();
+    // Loop over the lines of the file and parse CorPoints from it
     for line in content.lines() {
         
+        // Split the line into ten separate columns.
         let data: Vec<&str> = line.splitn(10, "\t").collect();
 
+        // If the line could not be split in ten columns, it is probably wrong.
         if data.len() < 10 {
             continue
         };
@@ -54,22 +85,25 @@ pub fn load_cor(filepath: &Path, projected_crs: &str) -> Result<gpr::GPRLocation
         let mut latitude: f64 = data[3].parse()?;
         let mut longitude: f64 = data[5].parse()?;
 
+        // Invert the sign of the latitude if it's on the southern hemisphere
         if data[4].trim() == "S" {
             latitude *= -1.;
         };
 
+        // Invert the sign of the longitude if it's west of the prime meridian
         if data[6].trim() == "W" {
             longitude *= -1.;
         };
 
+        // Project the coordinate to eastings/northings
         let (easting, northing) = transformer.convert((longitude, latitude))?;
-        //let (northing, easting, _) = utm::to_utm_wgs84(latitude, longitude, utm_zone);
 
+        // Parse the date and time columns into datetime, then convert to seconds after UNIX epoch.
         let datetime = chrono::DateTime::parse_from_rfc3339(&format!("{}T{}+00:00", data[1], data[2]))?.timestamp() as f64;
 
 
         points.push(gpr::CorPoint{
-            trace_n: (data[0].parse::<i64>()? - 1) as u32,  // The data is 1-indexed
+            trace_n: (data[0].parse::<i64>()? - 1) as u32,  // The ".cor"-files are 1-indexed whereas this is 0-indexed
             time_seconds: datetime,
             easting,
             northing,
@@ -77,39 +111,76 @@ pub fn load_cor(filepath: &Path, projected_crs: &str) -> Result<gpr::GPRLocation
         });
     };
 
-    Ok(gpr::GPRLocation{cor_points: points, correction: gpr::LocationCorrection::NONE, crs: projected_crs.to_string()})
+    if points.len() > 0 {
+        Ok(gpr::GPRLocation{cor_points: points, correction: gpr::LocationCorrection::NONE, crs: projected_crs.to_string()})
+    } else {
+        Err(format!("Could not parse location data from: {:?}", filepath).into())
+    }
+
 }
 
-pub fn load_rd3(filepath: &Path, height: u32) -> Result<Array2<f32>, Box<dyn std::error::Error>> {
+/// Load a Malå data (.rd3) file
+///
+/// # Arguments
+/// - `filepath`: The path of the file to read.
+/// - `height`: The expected height of the data. The width is parsed automatically.
+///
+/// # Returns
+/// A 2D array of 32 bit floating point values in the shape (height, width).
+///
+/// # Errors
+/// - The file cannot be read
+/// - The length does not work with the expected shape
+pub fn load_rd3(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn std::error::Error>> {
 
     let bytes = std::fs::read(filepath)?;
 
     let mut data: Vec<f32> = Vec::new();
 
+    // It's 50V (50000mV) in RGPR https://github.com/emanuelhuber/RGPR/blob/d78ff7745c83488111f9e63047680a30da8f825d/R/readMala.R#L8
+    let bits_to_millivolt = 50000. /  i16::MAX as f32;
+
+    // The values are read as 16 bit little endian signed integers, and are converted to millivolts
     for byte_pair in bytes.chunks_exact(2) {
-        let short = i16::from_le_bytes([byte_pair[0], byte_pair[1]]);
-        data.push(short as f32);
+        let value = i16::from_le_bytes([byte_pair[0], byte_pair[1]]);
+        data.push(value as f32 * bits_to_millivolt);
     };
 
-    let width: usize = data.len() / (height as usize);
+    let width: usize = data.len() / height;
 
-    Ok(ndarray::Array2::from_shape_vec((width, height as usize), data).unwrap().reversed_axes())
+    Ok(ndarray::Array2::from_shape_vec((width, height), data)?.reversed_axes())
 }
 
 
+/// Export a GPR profile and its metadata to a NetCDF (".nc") file.
+///
+/// It will remove any file that already exists with the same filename.
+///
+/// # Arguments
+/// - `gpr`: The GPR object to export
+/// - `nc_filepath`: The filepath of the output NetCDF file
+///
+/// # Errors
+/// - If the file already exists and cannot be removed.
+/// - If a dimension, attribute or variable could not be created in the NetCDF file
+/// - If data could not be written to the file
 pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
+        // Remove any previously existing file. If this is not added, netcdf will throw a useless
+        // error!
         if nc_filepath.is_file() {
             std::fs::remove_file(nc_filepath)?;
 
         };
+        // Create a new NetCDF file
         let mut file = netcdf::create(nc_filepath)?;
 
+        // Add the x/y dimensions for the data
         file.add_dimension("x", gpr.width())?;
-
         file.add_dimension("y", gpr.height())?;
 
         
+        // Add global attributes to the file
         file.add_attribute("start-datetime", chrono::DateTime::<chrono::Utc>::from_utc(chrono::NaiveDateTime::from_timestamp(gpr.location.cor_points[0].time_seconds as i64, 0), chrono::Utc).to_rfc3339())?;
         file.add_attribute("stop-datetime", chrono::DateTime::<chrono::Utc>::from_utc(chrono::NaiveDateTime::from_timestamp(gpr.location.cor_points[gpr.location.cor_points.len() - 1].time_seconds as i64, 0), chrono::Utc).to_rfc3339())?;
         file.add_attribute("processing-datetime", chrono::Local::now().to_rfc3339())?;
@@ -136,36 +207,46 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
 
         file.add_attribute("program-version", format!("{} version {}, © {}", crate::PROGRAM_NAME, crate::PROGRAM_VERSION, crate::PROGRAM_AUTHORS))?;
 
+        // Add the data to the file
         let mut data = file.add_variable::<f32>("data", &["y","x"])?;
-
         data.put_values(&gpr.data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(), None, Some(&[gpr.height(), gpr.width()]))?;
-        data.add_attribute("coordinates", "distance return-time")?;
 
+        // The default coordinates are distance for x and return time for y
+        data.add_attribute("coordinates", "distance return-time")?;
+        data.add_attribute("unit", "mV")?;
+
+        // Add the distance variable to the x dimension
         let mut ds = file.add_variable::<f32>("distance", &["x"])?;
         ds.put_values(&distance_vec, Some(&[0]), None)?;
         ds.add_attribute("unit", "m")?;
 
+        // Add the time variable to the x dimension
         let mut time = file.add_variable::<f64>("time", &["x"])?;
         time.put_values(&gpr.location.cor_points.iter().map(|point| point.time_seconds).collect::<Vec<f64>>(), Some(&[0]), None)?;
         time.add_attribute("unit", "s")?;
 
+        // Add the easting variable to the x dimension
         let mut easting = file.add_variable::<f64>("easting", &["x"])?;
         easting.put_values(&gpr.location.cor_points.iter().map(|point| point.easting).collect::<Vec<f64>>(), Some(&[0]), None)?;
         easting.add_attribute("unit", "m")?;
 
+        // Add the northing variable to the x dimension
         let mut northing = file.add_variable::<f64>("northing", &["x"])?;
         northing.put_values(&gpr.location.cor_points.iter().map(|point| point.northing).collect::<Vec<f64>>(), Some(&[0]), None)?;
         northing.add_attribute("unit", "m")?;
 
+        // Add the elevation variable to the x dimension
         let mut elevation = file.add_variable::<f64>("elevation", &["x"])?;
         elevation.put_values(&gpr.location.cor_points.iter().map(|point| point.altitude).collect::<Vec<f64>>(), Some(&[0]), None)?;
         elevation.add_attribute("unit", "m a.s.l.")?;
 
+        // Add the two-way return time variable to the y dimension
         let return_time_arr = (Array1::range(0_f32, gpr.metadata.time_window, gpr.vertical_resolution_ns())).into_raw_vec();
         let mut return_time = file.add_variable::<f32>("return-time", &["y"])?;
         return_time.put_values(&return_time_arr, Some(&[0]), None)?;
         return_time.add_attribute("unit", "ns")?;
 
+        // Add the depth variable to the y dimension
         let mut depth = file.add_variable::<f32>("depth", &["y"])?;
         depth.put_values(&(return_time_arr.iter().map(|t| t * 0.168 * 0.5).collect::<Vec<f32>>()), Some(&[0]), None)?;
 
@@ -176,6 +257,15 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
 }
 
 
+/// Render an image of the processed GPR data.
+///
+/// # Arguments
+/// - `gpr`: The GPR data to render
+/// - `filepath`: The output filepath of the image
+///
+/// # Errors
+/// - The file could not be written.
+/// - The extension is not understood.
 pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>> {
         let data = gpr.data.iter().collect::<Vec<&f32>>();
 
@@ -204,7 +294,7 @@ pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>>
             gpr.width() as u32,
             gpr.height() as u32,
             image::ColorType::L8,
-        ).unwrap();
+        )?;
 
         Ok(())
 

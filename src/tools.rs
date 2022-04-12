@@ -1,22 +1,32 @@
-
 use ndarray::{Axis, Array1};
 use ndarray_stats::QuantileExt;
 use std::str::FromStr;
+use core::ops::{Add, Mul, Sub, Div};
 
-pub fn interpolate_values(x0: f64, y0: &[f64], x1: f64, y1: &[f64], x: f64) -> Vec<f64> {
-
-    let mut output: Vec<f64> = Vec::new();
-
-    for i in 0..y0.len() {
-        output.push(interpolate_between_known((x0, y0[i]), (x1, y1[i]), x))
-    };
-
-    output
+/// Interpolate an arbitrary amount of independent values between two known points
+///
+/// # Arguments
+/// - 
+///
+///
+/// # Panics
+/// - The first slice of independent values is longer than the second: `y0.len()` > `y1.len()`
+pub fn interpolate_values<T: Add<Output=T> + Sub<Output=T> + Mul<Output=T> + Div<Output=T> + Copy>(x0: T, y0: &[T], x1: T, y1: &[T], x: T) -> Vec<T> {
+    (0..y0.len()).map(|i| interpolate_between_known((x0, y0[i]), (x1, y1[i]), x)).collect::<Vec<T>>()
 }
 
 /// Interpolate linearly between two known points
+///
 /// https://en.wikipedia.org/wiki/Linear_interpolation#Linear_interpolation_between_two_known_points
-pub fn interpolate_between_known(known_xy0: (f64, f64), known_xy1: (f64, f64), x: f64) -> f64 {
+///
+/// # Arguments
+/// - `known_xy0`: The first known coordinate as (explanatory, independent)
+/// - `known_xy1`: The second known coordinate as (explanatory, independent)
+/// - `x`: The explanatory point at which to interpolate the independent point
+///
+/// # Returns
+/// The interpolated independent (y) coordinate.
+pub fn interpolate_between_known<T: Add<Output=T> + Sub<Output=T> + Mul<Output=T> + Div<Output=T> + Copy>(known_xy0: (T, T), known_xy1: (T, T), x: T) -> T {
 
     (known_xy0.1 * (known_xy1.0 - x) + known_xy1.1 * (x - known_xy0.0)) / (known_xy1.0 - known_xy0.0)
 

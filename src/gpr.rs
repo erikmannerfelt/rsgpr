@@ -427,7 +427,7 @@ impl GPR {
 
     pub fn from_meta_and_loc(location: GPRLocation, metadata: GPRMeta) -> Result<GPR, Box<dyn Error>> {
 
-        let data = io::load_rd3(&metadata.rd3_filepath, metadata.samples)?;
+        let data = io::load_rd3(&metadata.rd3_filepath, metadata.samples as usize)?;
 
         let location_data = match data.shape()[1] == location.cor_points.len() {
             true => location,
