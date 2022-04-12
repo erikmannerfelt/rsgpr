@@ -176,16 +176,15 @@ pub fn main(arguments: Args) -> i32 {
                 Err(e) => {eprintln!("Error on step {}: {:?}", step, e); return 1}
             };
 
-            assert_eq!(gpr.width(), gpr.location.cor_points.len());
-
-
         };
+
 
         if !arguments.no_export {
             if !arguments.quiet {
                 println!("Exporting to {:?}", output_filepath);
             };
             gpr.export(&output_filepath).unwrap();
+
         };
 
         match arguments.render {

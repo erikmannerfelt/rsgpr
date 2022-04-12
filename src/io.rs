@@ -129,9 +129,6 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
             gpr::LocationCorrection::DEM(fp) => format!("DEM-corrected: {:?}", fp.as_path().file_name().unwrap().to_str().unwrap())
         })?;
 
-        //let utm33n_wkt = r#"PROJCS["WGS 84 / UTM zone 33N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",15],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH],AUTHORITY["EPSG","32633"]]"#;
-
-        //file.add_attribute("spatial_ref", utm33n_wkt)?;
         file.add_attribute("crs", gpr.location.crs.clone())?;
         let distance_vec = gpr.location.distances().into_raw_vec();
         file.add_attribute("total-distance",distance_vec[distance_vec.len() - 1])?;
@@ -141,19 +138,13 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
 
         let mut data = file.add_variable::<f32>("data", &["y","x"])?;
 
-        for row in 0..gpr.height() {
-            for col in 0..gpr.width() {
-                data.put_value(gpr.data.get((row, col)).unwrap().to_owned(), Some(&[row, col]))?;
-            };
-        };
-        //data.put_values(&gpr.data.clone().into_raw_vec(), Some(&[0, 0]), None)?;
+        data.put_values(&gpr.data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(), None, Some(&[gpr.height(), gpr.width()]))?;
         data.add_attribute("coordinates", "distance return-time")?;
 
         let mut ds = file.add_variable::<f32>("distance", &["x"])?;
         ds.put_values(&distance_vec, Some(&[0]), None)?;
         ds.add_attribute("unit", "m")?;
 
-        
         let mut time = file.add_variable::<f64>("time", &["x"])?;
         time.put_values(&gpr.location.cor_points.iter().map(|point| point.time_seconds).collect::<Vec<f64>>(), Some(&[0]), None)?;
         time.add_attribute("unit", "s")?;

@@ -556,11 +556,9 @@ impl GPR {
         let mean_silent_val = mean_trace.slice_axis(Axis(0), Slice::new(0, Some(first_rise), 1)).mean().unwrap();
 
 
-        self.data = self.data.slice_axis(Axis(0), Slice::new(first_rise, None, 1)).to_owned();
+        self.update_data(self.data.slice_axis(Axis(0), Slice::new(first_rise, None, 1)).to_owned());
         self.data -= mean_silent_val;
 
-        self.metadata.time_window = self.metadata.time_window * (self.height() as f32 / self.metadata.samples as f32);
-        self.metadata.samples = self.height() as u32;
         self.log_event("zero_corr", &format!("Applied a global zero-corr by removing the first {} rows (threshold multiplier: {:?})", first_rise, threshold_multiplier), start_time);
     }
 
@@ -676,9 +674,7 @@ view *= (i as f32) * linear;
             j = k + 1;
         };
 
-        self.data = self.data.slice_axis(Axis(1), Slice::new(0, Some(nominal_data_width as isize), 1)).to_owned();
-        self.metadata.last_trace = nominal_data_width as u32;
-        //self.location = GPRLocation{cor_points: new_coords, correction: self.location.correction.clone(), crs: self.location};
+        self.update_data(self.data.slice_axis(Axis(1), Slice::new(0, Some(nominal_data_width as isize), 1)).to_owned());
         self.location.cor_points = new_coords;
 
         if self.width() != self.location.cor_points.len() {
@@ -704,7 +700,6 @@ view *= (i as f32) * linear;
             x_diff += x_coords[i] - x_coords[i - 1];
         };
         x_diff /= (x_coords.shape()[0] - 1) as f32;
-
 
         // The z-coords will be negative height in relation to the highest point (all values are
         // positive).
@@ -814,7 +809,7 @@ view *= (i as f32) * linear;
 
         }).collect();
 
-        self.data = Array2::from_shape_vec((height, width), output).unwrap();
+        self.update_data(Array2::from_shape_vec((height, width), output).unwrap());
         self.log_event("kirchhoff_migration2d", &format!("Ran 2D Kirchhoff migration with a velocity of {} m/ns", self.metadata.medium_velocity), start_time);
     }
 
