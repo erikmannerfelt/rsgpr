@@ -151,6 +151,15 @@ pub fn main(arguments: Args) -> i32 {
             },
         };
 
+        let allowed_steps = gpr::all_available_steps().iter().map(|s| s[0]).collect::<Vec<&str>>();
+
+        for step in &profile {
+            if !allowed_steps.iter().any(|allowed| step.contains(allowed)) {
+                eprintln!("Unrecognized step: {}", step);
+                return 1;
+            };
+        };
+
         let start_time = SystemTime::now();
 
         if !arguments.quiet {

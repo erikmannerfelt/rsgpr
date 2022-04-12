@@ -343,7 +343,7 @@ impl GPR {
             }?;
             self.normalize_horizontal_magnitudes(Some(skip_first));
         } else if step_name.contains("kirchhoff_migration2d") {
-            self.kirchoff_migration2d();
+            self.kirchhoff_migration2d();
         } else if step_name.contains("auto_gain") {
             let n_bins = tools::parse_option::<usize>(step_name, 0)?.unwrap_or(DEFAULT_AUTOGAIN_N_BINS);
             self.auto_gain(n_bins);
@@ -415,7 +415,7 @@ impl GPR {
         let log = self.log.clone();
 
         let mut new_gpr = GPR{data: data_subset, location: location_subset, metadata, log};
-        new_gpr.log_event(&format!("Subset data from {:?} to ({}:{}, {}:{})", self.data.shape(), min_sample_, max_sample_, min_trace_, max_trace_), start_time);
+        new_gpr.log_event("subset", &format!("Subset data from {:?} to ({}:{}, {}:{})", self.data.shape(), min_sample_, max_sample_, min_trace_, max_trace_), start_time);
 
         new_gpr
 
@@ -493,7 +493,7 @@ impl GPR {
         };
 
         self.update_data(new_data);
-        self.log_event(&format!("Applied a per-trace zero-corr by removing the first {}-{} rows", positive_peaks.min().unwrap(), positive_peaks.max().unwrap()), start_time);
+        self.log_event("zero_corr_max_peak", &format!("Applied a per-trace zero-corr by removing the first {}-{} rows", positive_peaks.min().unwrap(), positive_peaks.max().unwrap()), start_time);
     }
 
     fn update_data(&mut self, data: Array2::<f32>) {
@@ -530,7 +530,7 @@ impl GPR {
 
         self.update_data(new_data);
 
-        self.log_event(&format!("Summed the positive and negative phases of the signal by shifting the negative signal component by {} rows", mean_peak_spacing), start_time);
+        self.log_event("unphase", &format!("Summed the positive and negative phases of the signal by shifting the negative signal component by {} rows", mean_peak_spacing), start_time);
     }
 
     pub fn zero_corr(&mut self, threshold_multiplier: Option<f32>) {
@@ -561,7 +561,7 @@ impl GPR {
 
         self.metadata.time_window = self.metadata.time_window * (self.height() as f32 / self.metadata.samples as f32);
         self.metadata.samples = self.height() as u32;
-        self.log_event(&format!("Applied a global zero-corr by removing the first {} rows (threshold multiplier: {:?})", first_rise, threshold_multiplier), start_time);
+        self.log_event("zero_corr", &format!("Applied a global zero-corr by removing the first {} rows (threshold multiplier: {:?})", first_rise, threshold_multiplier), start_time);
     }
 
     pub fn dewow(&mut self, window: u32)  {
@@ -575,7 +575,7 @@ impl GPR {
 
             view -= view.mean().unwrap();
         };
-        self.log_event(&format!("Ran dewow with a window size of {}", window), start_time);
+        self.log_event("dewow", &format!("Ran dewow with a window size of {}", window), start_time);
     }
 
     pub fn normalize_horizontal_magnitudes(&mut self, skip_first: Option<isize>) {
@@ -583,7 +583,7 @@ impl GPR {
         if let Some(mean) = self.data.slice_axis(Axis(0), Slice::new(skip_first.unwrap_or(0), None, 1)).mean_axis(Axis(0)) {
             self.data -= &mean;
         };
-        self.log_event(&format!("Normalized horizontal magnitudes, skipping {:?} of the first rows", skip_first), start_time);
+        self.log_event("normalize_horizontal_magnitudes", &format!("Normalized horizontal magnitudes, skipping {:?} of the first rows", skip_first), start_time);
     }
 
     pub fn auto_gain(&mut self, n_bins: usize) {
@@ -610,7 +610,7 @@ impl GPR {
 
 
         self.gain(-lr.coefficients().get(0, 0));
-        self.log_event(&format!("Applied autogain from {} bins", n_bins), start_time);
+        self.log_event("auto_gain", &format!("Applied autogain from {} bins", n_bins), start_time);
     }
 
     pub fn gain(&mut self, linear: f32) {
@@ -621,7 +621,7 @@ impl GPR {
             let mut view = self.data.slice_axis_mut(Axis(0), Slice::new(i, Some(i + 1), 1_isize));
 view *= (i as f32) * linear;
         };
-        self.log_event(&format!("Applied linear gain of *= {} * index", linear), start_time);
+        self.log_event("gain", &format!("Applied linear gain of *= {} * index", linear), start_time);
     }
 
     pub fn make_equidistant(&mut self, mean_velocity: Option<f32>) {
@@ -687,16 +687,15 @@ view *= (i as f32) * linear;
 
         };
 
-        self.log_event("Ran equidistant traces", start_time);
+        self.log_event("equidistant_traces", "Ran equidistant traces", start_time);
     }
 
 
-    fn log_event(&mut self, event: &str, start_time: SystemTime) {
-
-        self.log.push(format!("duration: {:?}\t{}", SystemTime::now().duration_since(start_time).unwrap(), event));
+    fn log_event(&mut self, step_name: &str, event: &str, start_time: SystemTime) {
+        self.log.push(format!("{} (duration: {:.2}s):\t{}", step_name, SystemTime::now().duration_since(start_time).unwrap().as_secs_f32(), event));
     }
 
-    pub fn kirchoff_migration2d(&mut self) {
+    pub fn kirchhoff_migration2d(&mut self) {
 
         let start_time = SystemTime::now();
         let x_coords = self.location.distances().mapv(|v| v as f32);
@@ -816,7 +815,7 @@ view *= (i as f32) * linear;
         }).collect();
 
         self.data = Array2::from_shape_vec((height, width), output).unwrap();
-        self.log_event(&format!("Ran 2D Kirchhoff migration with a velocity of {} m/ns", self.metadata.medium_velocity), start_time);
+        self.log_event("kirchhoff_migration2d", &format!("Ran 2D Kirchhoff migration with a velocity of {} m/ns", self.metadata.medium_velocity), start_time);
     }
 
     pub fn height(&self) -> usize {
@@ -835,6 +834,7 @@ view *= (i as f32) * linear;
 pub fn all_available_steps() -> Vec<[&'static str; 2]> {
 
     vec![
+        ["zero_corr_max_peak", "Shift the location of the zero return time by finding the maximum row value. The peak is found for each trace individually."],
         ["zero_corr", "Shift the location of the zero return time by finding the first row where data appear. The correction can be tweaked to allow more or less data, e.g. 'zero_corr(0.9)'. Default: 1.0"],
         ["equidistant_traces", "Make all traces equidistant by averaging them in a fixed horizontal grid. The gridsize is determined from the median moving velocity. Other velocities in m/s can be given, e.g. 'equidistant_traces(2.)'. Default: auto"],
         ["normalize_horizontal_magnitudes", "Normalize the magnitudes of the traces in the horizontal axis. This removes or reduces horizontal banding. The uppermost samples of the trace can be excluded, either by sample number (integer; e.g. 'normalize_horizontal_magnitudes(300)') or by a fraction of the trace (float; e.g. 'normalize_horizontal_magnitudes(0.3)'). Default: 0.3"],
@@ -842,17 +842,17 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
         ["auto_gain", "Automatically determine the best linear gain and apply it. The data are binned vertically and the standard deviation of the values is used as a proxy for signal attenuation. A linear model is fit to the standard deviations vs. depth, and the subsequent linear coefficient is given to the gain filter. Note that this will show up as having run auto_gain and then gain in the log. The amounts of bins can be given, e.g. 'auto_gain(100). Default: 100"],
         ["gain", "Linearly multiply the magnitude as a function of depth. This is most often used to correct for signal attenuation with time/distance. Gain is applied by: 'gain * sample_index' where gain is the given gain and sample_index is the zero-based index of the sample from the top. Example: gain(0.1). No default value."],
         ["kirchhoff_migration2d", "Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data. The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the mean of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions."],
-        ["unphase", "hello"],
-        ["zero_corr_max_peak", "hello"],
+        ["unphase", "Combine the positive and negative phases of the signal into one positive magntiude. The assumption is made that the positive magnitude of the signal comes first, followed by an offset negative component. The distance between the positive and negative peaks are found, and then the negative part is shifted accordingly."],
     ]
 
 }
 
 pub fn default_processing_profile() -> Vec<String> {
     vec![
-        format!("zero_corr({})", DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER),
+        format!("zero_corr_max_peak"),
         "equidistant_traces".to_string(),
         format!("normalize_horizontal_magnitudes({})", DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF),
+        "unphase".to_string(),
         "kirchhoff_migration2d".to_string(),
         format!("normalize_horizontal_magnitudes({})", DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF),
         format!("dewow({})", DEFAULT_DEWOW_WINDOW),
