@@ -141,7 +141,13 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
         file.add_attribute("program-version", format!("{} version {}, © {}", crate::PROGRAM_NAME, crate::PROGRAM_VERSION, crate::PROGRAM_AUTHORS))?;
 
         let mut data = file.add_variable::<f32>("data", &["y","x"])?;
-        data.put_values(&gpr.data.clone().reversed_axes().into_raw_vec(), Some(&[0, 0]), None)?;
+
+        for row in 0..gpr.height() {
+            for col in 0..gpr.width() {
+                data.put_value(gpr.data.get((row, col)).unwrap().to_owned(), Some(&[row, col]))?;
+            };
+        };
+        //data.put_values(&gpr.data.clone().into_raw_vec(), Some(&[0, 0]), None)?;
         data.add_attribute("coordinates", "distance return-time")?;
 
         let mut ds = file.add_variable::<f32>("distance", &["x"])?;
@@ -182,30 +188,48 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
 
 pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>> {
 
-        let vals = gpr.data.iter().map(|f| f.to_owned()).collect::<Vec<f32>>();
+        let mut vals = gpr.data.iter().map(|f| f.to_owned()).collect::<Vec<f32>>();
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let minval = vals[(vals.len() as f32 * 0.01) as usize];
+        let maxval = vals[(vals.len() as f32 * 0.99) as usize];
 
-        let data = Array1::from_vec(vals);
-        let min_max = tools::quantiles(&data, &[0.01, 0.99]);
+        
+
+        //let data = Array1::from_vec(vals);
+        //println!("Running quantiles");
+        //let min_max = tools::quantiles(&data, &[0.01, 0.99]);
 
         let mut image = GrayImage::new(gpr.width() as u32, gpr.height() as u32);
 
         let mut vals = image.mut_ndarray2();
 
         let logit99 = (0.99_f32 / (1.0_f32 - 0.99_f32)).log(std::f32::consts::E);
+        let log99 = (0.99_f32).log(std::f32::consts::E);
 
         // Scale the values to logit and convert them to u8
-        vals.assign(&gpr.data.mapv(|f| {
-            (
-                255.0 * {
-            
-                let val_norm = ((f - min_max[0]) / (min_max[1] - min_max[0])).clamp(0.0, 1.0);
+        vals.assign(&match minval < 0. {
+            true => gpr.data.mapv(|f| {
+                (
+                    255.0 * {
+                        let val_norm = ((f - minval) / (maxval - minval)).clamp(0.0, 1.0);
 
-                0.5 + (val_norm / (1.0_f32 - val_norm)).log(std::f32::consts::E) / logit99
-                }
+                        0.5 + (val_norm / (1.0_f32 - val_norm)).log(std::f32::consts::E) / logit99
+                    }
 
-            ) as u8
+                ) as u8
 
-        }));
+            }),
+            false => gpr.data.mapv(|f| {
+                (
+                    255. * {
+
+                       let val_norm = 0.5 + 0.5 * ((f - minval) / (maxval - minval)).clamp(0.0, 1.0); 
+
+                       val_norm.log(std::f32::consts::E) / log99
+                    }
+                ) as u8
+            }),
+        });
 
         image.save(filepath)?;
 

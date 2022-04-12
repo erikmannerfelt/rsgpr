@@ -379,7 +379,9 @@ impl GPR {
                 }
             }?;
             *self = self.subset(min_trace, max_trace, min_sample, max_sample);
-        } else {
+        } else if step_name.contains("unphase") {
+            self.unphase();
+        }else {
             return Err(format!("Step name not recognized: {}", step_name).into());
         }
 
@@ -434,6 +436,55 @@ impl GPR {
 
     pub fn render(&self, filepath: &Path) -> Result<(), Box<dyn Error>> {
         io::render_jpg(self, filepath)
+    }
+
+    pub fn unphase(&mut self) {
+
+        let start_time = SystemTime::now();
+
+        let mean_trace = self.data.mean_axis(Axis(1)).unwrap();
+
+        let threshold = 0.5 * mean_trace.std(1.0);
+
+        let mut first_rise = 0_isize;
+
+        for i in 1..mean_trace.shape()[0] {
+            if (mean_trace[i] - mean_trace[i - 1]).abs() > threshold {
+                first_rise = i as isize;
+                break
+            };
+        };
+
+        if first_rise == 0 {
+            return
+        };
+
+        let mean_silent_val = mean_trace.slice_axis(Axis(0), Slice::new(0, Some(first_rise), 1)).mean().unwrap();
+
+        self.data -= mean_silent_val;
+
+        let positives = self.data.mapv(|v| if v < 0. {0.} else {v.to_owned()});
+        let negatives = self.data.mapv(|v| if v > 0. {0.} else {v.to_owned() * -1.});
+
+        //self.data.assign(&(positives));
+
+        let max_negative = mean_trace.argmin().unwrap() as isize;
+        let max_positive = mean_trace.argmax().unwrap() as isize;
+
+        self.data.fill(0.);
+
+        let mut negative_data_slice = self.data.slice_axis_mut(Axis(0), Slice::new(0, Some(self.height() as isize - max_negative), 1));
+
+        negative_data_slice += &negatives.slice_axis(Axis(0), Slice::new(max_negative, None, 1));
+
+        let mut positive_data_slice = self.data.slice_axis_mut(Axis(0), Slice::new(0, Some(self.height() as isize - max_positive), 1));
+
+        positive_data_slice += &positives.slice_axis(Axis(0), Slice::new(max_positive, None, 1));
+
+        if self.data.iter().any(|v| v < &0.) {
+            panic!("");
+        };
+
     }
 
     pub fn zero_corr(&mut self, threshold_multiplier: Option<f32>) {
