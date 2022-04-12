@@ -2,10 +2,9 @@ use std::path::Path;
 use std::error::Error;
 use std::collections::HashMap;
 use ndarray::{Array2,  Array1};
-use nshare::MutNdarray2;
-use image::GrayImage;
+use rayon::prelude::*;
 
-use crate::{tools,gpr};
+use crate::gpr;
 
 pub fn load_rad(filepath: &Path, medium_velocity: f32) -> Result<gpr::GPRMeta, Box<dyn Error>> {
 
@@ -187,28 +186,17 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
 
 
 pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>> {
+        let data = gpr.data.iter().collect::<Vec<&f32>>();
 
-        let mut vals = gpr.data.iter().map(|f| f.to_owned()).collect::<Vec<f32>>();
+        // Get quick and dirty quantiles by only looking at 10th of the data
+        let mut vals = data.iter().step_by(10).collect::<Vec<&&f32>>();
         vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let minval = vals[(vals.len() as f32 * 0.01) as usize];
-        let maxval = vals[(vals.len() as f32 * 0.99) as usize];
-
-        
-
-        //let data = Array1::from_vec(vals);
-        //println!("Running quantiles");
-        //let min_max = tools::quantiles(&data, &[0.01, 0.99]);
-
-        let mut image = GrayImage::new(gpr.width() as u32, gpr.height() as u32);
-
-        let mut vals = image.mut_ndarray2();
+        let minval = *vals[(vals.len() as f32 * 0.01) as usize];
+        let maxval = *vals[(vals.len() as f32 * 0.99) as usize];
 
         let logit99 = (0.99_f32 / (1.0_f32 - 0.99_f32)).log(std::f32::consts::E);
-        let log99 = (0.99_f32).log(std::f32::consts::E);
 
-        // Scale the values to logit and convert them to u8
-        vals.assign(&match minval > -10000000. {
-            true => gpr.data.mapv(|f| {
+        let pixels: Vec<u8> = data.into_par_iter().map(|f| {
                 (
                     255.0 * {
                         let val_norm = ((f - minval) / (maxval - minval)).clamp(0.0, 1.0);
@@ -217,21 +205,15 @@ pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>>
                     }
 
                 ) as u8
+        }).collect();
 
-            }),
-            false => gpr.data.mapv(|f| {
-                (
-                    255. * {
-
-                       let val_norm = 0.5 + 0.5 * ((f - minval) / (maxval - minval)).clamp(0.0, 1.0); 
-
-                       val_norm.log(std::f32::consts::E) / log99
-                    }
-                ) as u8
-            }),
-        });
-
-        image.save(filepath)?;
+        image::save_buffer(
+            filepath,
+            &pixels,
+            gpr.width() as u32,
+            gpr.height() as u32,
+            image::ColorType::L8,
+        ).unwrap();
 
         Ok(())
 
