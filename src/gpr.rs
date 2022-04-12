@@ -523,31 +523,14 @@ impl GPR {
             i += 1;
         };
 
-        let mean_peaks = (&positive_peaks + &negative_peaks) / 2;
-
-        let mean_peak_spacing = (negative_peaks - positive_peaks).mean().unwrap();
-        let lower_half = mean_peak_spacing / 2;
-        let upper_half = mean_peak_spacing - lower_half;
-
-        negative_peaks = &mean_peaks + upper_half;
-
+        let mean_peak_spacing = (negative_peaks - positive_peaks).mean().unwrap().abs();
         let mut new_data = self.data.mapv(|v| v.max(0.));
 
-        i = 0;
-        for col in self.data.columns() {
-
-            let mut new_col = new_data.column_mut(i);
-
-            let mut negative_data_slice = new_col.slice_axis_mut(Axis(0), Slice::new(0, Some(self.height() as isize - negative_peaks[i]), 1));
-
-            negative_data_slice += &col.slice_axis(Axis(0), Slice::new(negative_peaks[i], None, 1)).mapv(|v| v.min(0.) * -1.);
-
-            i += 1;
-
-        };
+        self.data.slice_axis(Axis(0), Slice::new(mean_peak_spacing, None, 1)).mapv(|v| v.min(0.) * -1.).assign_to(new_data.slice_axis_mut(Axis(0), Slice::new(0, Some(self.height() as isize - mean_peak_spacing), 1)));
 
         self.update_data(new_data);
 
+        self.log_event(&format!("Summed the positive and negative phases of the signal by shifting the negative signal component by {} rows", mean_peak_spacing), start_time);
     }
 
     pub fn zero_corr(&mut self, threshold_multiplier: Option<f32>) {
