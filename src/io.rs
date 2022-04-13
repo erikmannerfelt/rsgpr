@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use ndarray::{Array2,  Array1};
 use rayon::prelude::*;
 
-use crate::gpr;
+use crate::{gpr, tools};
 
 /// Load and parse a Malå metadata file (.rad)
 ///
@@ -46,7 +46,8 @@ pub fn load_rad(filepath: &Path, medium_velocity: f32) -> Result<gpr::GPRMeta, B
         time_window: data.get("TIMEWINDOW").ok_or("No 'TIMEWINDOW' key in metadata")?.trim().parse()?,
         last_trace: data.get("LAST TRACE").ok_or("No 'LAST TRACE' key in metadata")?.trim().parse()?,
         rd3_filepath,
-        medium_velocity
+        medium_velocity,
+        zero_point_ns: 0.,
     })
 }
 
@@ -208,12 +209,26 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
         file.add_attribute("program-version", format!("{} version {}, © {}", crate::PROGRAM_NAME, crate::PROGRAM_VERSION, crate::PROGRAM_AUTHORS))?;
 
         // Add the data to the file
-        let mut data = file.add_variable::<f32>("data", &["y","x"])?;
-        data.put_values(&gpr.data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(), None, Some(&[gpr.height(), gpr.width()]))?;
+        {
+            let mut data = file.add_variable::<f32>("data", &["y","x"])?;
+            data.put_values(&gpr.data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(), None, Some(&[gpr.height(), gpr.width()]))?;
 
-        // The default coordinates are distance for x and return time for y
-        data.add_attribute("coordinates", "distance return-time")?;
-        data.add_attribute("unit", "mV")?;
+            // The default coordinates are distance for x and return time for y
+            data.add_attribute("coordinates", "distance return-time")?;
+            data.add_attribute("unit", "mV")?;
+        }
+
+        if let Some(topo_data) = &gpr.topo_data {
+            // Add the data to the file
+            let height = topo_data.shape()[0];
+            file.add_dimension("y2", height)?;
+            let mut data2 = file.add_variable::<f32>("data_topographically_corrected", &["y2","x"])?;
+            data2.put_values(&topo_data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(), Some(&[0, 0]), Some(&[height, gpr.width()]))?;
+
+            // The default coordinates are distance for x and return time for y
+            data2.add_attribute("coordinates", "distance elevation")?;
+            data2.add_attribute("unit", "mV")?;
+        };
 
         // Add the distance variable to the x dimension
         let mut ds = file.add_variable::<f32>("distance", &["x"])?;
@@ -241,14 +256,14 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
         elevation.add_attribute("unit", "m a.s.l.")?;
 
         // Add the two-way return time variable to the y dimension
-        let return_time_arr = (Array1::range(0_f32, gpr.metadata.time_window, gpr.vertical_resolution_ns())).into_raw_vec();
+        let return_time_arr = (Array1::range(0_f32, gpr.metadata.time_window, gpr.vertical_resolution_ns()).slice_axis(ndarray::Axis(0), ndarray::Slice::new(0, Some(gpr.height() as isize), 1))).to_owned().into_raw_vec();
         let mut return_time = file.add_variable::<f32>("return-time", &["y"])?;
         return_time.put_values(&return_time_arr, Some(&[0]), None)?;
         return_time.add_attribute("unit", "ns")?;
 
         // Add the depth variable to the y dimension
         let mut depth = file.add_variable::<f32>("depth", &["y"])?;
-        depth.put_values(&(return_time_arr.iter().map(|t| t * 0.168 * 0.5).collect::<Vec<f32>>()), Some(&[0]), None)?;
+        depth.put_values(&gpr.depths().into_raw_vec(), Some(&[0]), None)?;
 
         depth.add_attribute("unit", "m")?;
 
@@ -267,22 +282,37 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
 /// - The file could not be written.
 /// - The extension is not understood.
 pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>> {
-        let data = gpr.data.iter().collect::<Vec<&f32>>();
+
+        let data_to_render = match &gpr.topo_data {
+            Some(d) => d,
+            None => &gpr.data
+        };
+
+        let data = data_to_render.iter().collect::<Vec<&f32>>();
 
         // Get quick and dirty quantiles by only looking at 10th of the data
-        let mut vals = data.iter().step_by(10).collect::<Vec<&&f32>>();
-        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let minval = *vals[(vals.len() as f32 * 0.01) as usize];
-        let maxval = *vals[(vals.len() as f32 * 0.99) as usize];
+        let q = tools::quantiles(&data, &[0.01, 0.99], Some(10));
+        let mut minval = q[0];
+        let maxval = q[1];
 
-        let logit99 = (0.99_f32 / (1.0_f32 - 0.99_f32)).log(std::f32::consts::E);
+        let unphase_run = gpr.log.iter().any(|s| s.contains("unphase"));
+        if unphase_run {
+            minval = &0.;
+        };
+
+        //let logit99 = (0.99_f32 / (1.0_f32 - 0.99_f32)).log(std::f32::consts::E);
 
         let pixels: Vec<u8> = data.into_par_iter().map(|f| {
                 (
                     255.0 * {
-                        let val_norm = ((f - minval) / (maxval - minval)).clamp(0.0, 1.0);
+                        let mut val_norm = ((f - minval) / (maxval - minval)).clamp(0.0, 1.0);
+                        if unphase_run {
+                            val_norm = 0.5 * val_norm + 0.5;
 
-                        0.5 + (val_norm / (1.0_f32 - val_norm)).log(std::f32::consts::E) / logit99
+                        };
+
+                        //0.5 + (val_norm / (1.0_f32 - val_norm)).log(std::f32::consts::E) / logit99
+                        val_norm
                     }
 
                 ) as u8
@@ -291,8 +321,8 @@ pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>>
         image::save_buffer(
             filepath,
             &pixels,
-            gpr.width() as u32,
-            gpr.height() as u32,
+            data_to_render.shape()[1] as u32,
+            data_to_render.shape()[0] as u32,
             image::ColorType::L8,
         )?;
 

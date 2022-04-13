@@ -213,7 +213,12 @@ pub fn main(arguments: Args) -> i32 {
             if !arguments.quiet {
                 println!("Exporting to {:?}", output_filepath);
             };
-            gpr.export(&output_filepath).unwrap();
+            match gpr.export(&output_filepath) {
+                Ok(_) => (),
+                Err(e) => return error(&format!("Error exporting data: {:?}", e), 1)
+
+
+            }
         };
 
         // If "--render" was given, render an image of the output

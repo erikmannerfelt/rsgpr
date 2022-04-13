@@ -28,6 +28,7 @@ pub struct GPRMeta {
     pub frequency: f32,
     pub frequency_steps: u32,
     pub time_interval: f32,
+    pub zero_point_ns: f32,
     pub antenna: String,
     pub antenna_mhz: f32,
     pub antenna_separation: f32,
@@ -395,6 +396,8 @@ impl GPR {
             *self = self.subset(min_trace, max_trace, min_sample, max_sample);
         } else if step_name.contains("unphase") {
             self.unphase();
+        } else if step_name.contains("correct_topography") {
+            self.correct_topography();
         } else {
             return Err(format!("Step name not recognized: {}", step_name).into());
         }
@@ -423,7 +426,7 @@ impl GPR {
 
         let log = self.log.clone();
 
-        let mut new_gpr = GPR{data: data_subset, location: location_subset, metadata, log, topo_data: None};
+        let mut new_gpr = GPR{data: data_subset, location: location_subset, metadata, log, topo_data: self.topo_data.clone()};
         new_gpr.log_event("subset", &format!("Subset data from {:?} to ({}:{}, {}:{})", self.data.shape(), min_sample_, max_sample_, min_trace_, max_trace_), start_time);
 
         new_gpr
@@ -501,6 +504,7 @@ impl GPR {
 
         };
 
+        self.metadata.zero_point_ns = self.metadata.time_window * (positive_peaks.mean().unwrap() as f32) / self.height() as f32;
         self.update_data(new_data);
         self.log_event("zero_corr_max_peak", &format!("Applied a per-trace zero-corr by removing the first {}-{} rows", positive_peaks.min().unwrap(), positive_peaks.max().unwrap()), start_time);
     }
@@ -512,6 +516,34 @@ impl GPR {
         self.metadata.time_window = self.metadata.time_window * (self.height() as f32 / self.metadata.samples as f32);
         self.metadata.samples = self.height() as u32;
         self.metadata.last_trace = self.width() as u32;
+
+
+    }
+
+    pub fn correct_topography(&mut self) {
+
+        let mut altitudes = Array1::<f32>::from_iter(self.location.cor_points.iter().map(|point| point.altitude as f32));
+        altitudes -= *altitudes.max().unwrap();
+        altitudes *= -1.;
+
+        let max_depth = return_time_to_depth(self.metadata.time_window, self.metadata.medium_velocity, self.metadata.antenna_separation);
+
+        let sample_per_meter = self.height() as f32 / max_depth;
+
+        let start_indices = altitudes.mapv(|altitude| (altitude * sample_per_meter) as isize);
+
+
+        let mut topo_data = Array2::<f32>::zeros((((max_depth + altitudes.max().unwrap()) * sample_per_meter) as usize, self.width()));
+
+        let mut i = 0_usize;
+        for col in self.data.columns() {
+            topo_data.column_mut(i).slice_axis_mut(Axis(0), Slice::new(start_indices[i], Some(self.height() as isize + start_indices[i]), 1)).assign(&col);
+
+            i += 1;
+        };
+
+        self.topo_data = Some(topo_data);
+
 
 
     }
@@ -565,6 +597,7 @@ impl GPR {
         let mean_silent_val = mean_trace.slice_axis(Axis(0), Slice::new(0, Some(first_rise), 1)).mean().unwrap();
 
 
+        self.metadata.zero_point_ns = self.metadata.time_window * (first_rise as f32) / self.height() as f32;
         self.update_data(self.data.slice_axis(Axis(0), Slice::new(first_rise, None, 1)).to_owned());
         self.data -= mean_silent_val;
 
@@ -828,10 +861,25 @@ view *= (i as f32) * linear;
     pub fn width(&self) -> usize {
         self.data.shape()[1]
     }
-
     pub fn export(&self, nc_filepath: &Path) -> Result<(), Box<dyn Error>> {
         io::export_netcdf(self, nc_filepath)
     }
+
+    pub fn depths(&self) -> Array1<f32> {
+
+        let time_windows = (Array1::<f32>::range(0., self.height() as f32, 1.) / self.height() as f32) * self.metadata.time_window;
+        let corr_antenna_separation = (self.metadata.antenna_separation.powi(2) - (self.metadata.zero_point_ns * self.metadata.medium_velocity).powi(2)).max(0.).sqrt();
+        time_windows.mapv(|time| return_time_to_depth(time, self.metadata.medium_velocity, corr_antenna_separation))
+    }
+}
+
+///
+/// two_way_travel_distance = two_way_return_time * velocity
+/// two_way_travel_distance² = (2 * one_way_depth)² + antenna_separation²
+/// one_way_depth = √(two_way_travel_distance² - antenna_separation²) / 2
+///
+fn return_time_to_depth(return_time: f32, velocity: f32, antenna_separation: f32) -> f32 {
+    ((return_time * velocity).powi(2) - antenna_separation.powi(2)).sqrt() / 2.
 }
 
 
@@ -847,6 +895,7 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
         ["gain", "Linearly multiply the magnitude as a function of depth. This is most often used to correct for signal attenuation with time/distance. Gain is applied by: 'gain * sample_index' where gain is the given gain and sample_index is the zero-based index of the sample from the top. Example: gain(0.1). No default value."],
         ["kirchhoff_migration2d", "Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data. The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the mean of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions."],
         ["unphase", "Combine the positive and negative phases of the signal into one positive magntiude. The assumption is made that the positive magnitude of the signal comes first, followed by an offset negative component. The distance between the positive and negative peaks are found, and then the negative part is shifted accordingly."],
+        ["correct_topography", "Hello"],
     ]
 
 }
@@ -862,4 +911,19 @@ pub fn default_processing_profile() -> Vec<String> {
         format!("dewow({})", DEFAULT_DEWOW_WINDOW),
         format!("auto_gain({})", DEFAULT_AUTOGAIN_N_BINS),
     ]
+}
+
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_return_time_to_depth() {
+
+        assert_eq!(super::return_time_to_depth(1000., 0.1, 0.), 50.);
+        assert_eq!(super::return_time_to_depth(200., 0.1, 1.), 50.);
+
+    }
+
+
 }
