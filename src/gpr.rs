@@ -1,3 +1,4 @@
+/// Functions to process GPR data
 use std::path::{Path,PathBuf};
 use std::error::Error;
 
@@ -18,6 +19,9 @@ const DEFAULT_DEWOW_WINDOW: u32 = 5;
 const DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF: f32 = 0.3;
 const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
 
+/// Metadata associated with a GPR dataset
+/// 
+/// This contains all required informaton except the location data and the actual data
 #[derive(Debug, Clone)]
 pub struct GPRMeta {
     pub samples: u32,
@@ -35,6 +39,10 @@ pub struct GPRMeta {
 
 impl GPRMeta {
 
+    /// Find a ".cor" file based on the location of the ".rd3" file
+    ///
+    /// # Arguments
+    /// - `projected_crs`: The CRS to project coordinates into
     pub fn find_cor(&self, projected_crs: &str) -> Result<GPRLocation, Box<dyn Error>> {
         io::load_cor(&self.rd3_filepath.with_extension("cor"), projected_crs)
     }
@@ -292,7 +300,8 @@ CRS:\t\t\t{}
 
 
 pub struct GPR {
-    pub data: ndarray::Array2<f32>,
+    pub data: Array2<f32>,
+    pub topo_data: Option<Array2<f32>>,
     pub location: GPRLocation,
     pub metadata: GPRMeta,
     pub log: Vec<String>,
@@ -414,7 +423,7 @@ impl GPR {
 
         let log = self.log.clone();
 
-        let mut new_gpr = GPR{data: data_subset, location: location_subset, metadata, log};
+        let mut new_gpr = GPR{data: data_subset, location: location_subset, metadata, log, topo_data: None};
         new_gpr.log_event("subset", &format!("Subset data from {:?} to ({}:{}, {}:{})", self.data.shape(), min_sample_, max_sample_, min_trace_, max_trace_), start_time);
 
         new_gpr
@@ -435,7 +444,7 @@ impl GPR {
 
         };
 
-        Ok(GPR {data, location: location_data, metadata, log: Vec::new()})
+        Ok(GPR {data, location: location_data, metadata, log: Vec::new(), topo_data: None})
     }
 
 
@@ -627,7 +636,7 @@ view *= (i as f32) * linear;
 
         let velocities = self.location.velocities().mapv(|v| v as f32);
 
-        let normal_velocity = mean_velocity.unwrap_or(tools::quantiles(&velocities, &[0.5])[0]);
+        let normal_velocity = mean_velocity.unwrap_or(tools::quantiles(&velocities, &[0.5], None)[0]);
 
         let mut seconds_moving = 0_f32;
         for i in 1..self.width() {
