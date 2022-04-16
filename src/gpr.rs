@@ -28,7 +28,6 @@ pub struct GPRMeta {
     pub frequency: f32,
     pub frequency_steps: u32,
     pub time_interval: f32,
-    pub zero_point_ns: f32,
     pub antenna: String,
     pub antenna_mhz: f32,
     pub antenna_separation: f32,
@@ -306,6 +305,8 @@ pub struct GPR {
     pub location: GPRLocation,
     pub metadata: GPRMeta,
     pub log: Vec<String>,
+    horizontal_signal_distance: f32,
+    zero_point_ns: f32,
 }
 
 
@@ -398,6 +399,10 @@ impl GPR {
             self.unphase();
         } else if step_name.contains("correct_topography") {
             self.correct_topography();
+        } else if step_name.contains("correct_antenna_separation") {
+
+            self.correct_antenna_separation();
+
         } else {
             return Err(format!("Step name not recognized: {}", step_name).into());
         }
@@ -426,7 +431,7 @@ impl GPR {
 
         let log = self.log.clone();
 
-        let mut new_gpr = GPR{data: data_subset, location: location_subset, metadata, log, topo_data: self.topo_data.clone()};
+        let mut new_gpr = GPR{data: data_subset, location: location_subset, metadata, log, topo_data: self.topo_data.clone(), horizontal_signal_distance: self.horizontal_signal_distance, zero_point_ns: self.zero_point_ns};
         new_gpr.log_event("subset", &format!("Subset data from {:?} to ({}:{}, {}:{})", self.data.shape(), min_sample_, max_sample_, min_trace_, max_trace_), start_time);
 
         new_gpr
@@ -446,8 +451,9 @@ impl GPR {
             false => location.range_fill(0, data.shape()[1] as u32)
 
         };
+        let horizontal_signal_distance = metadata.antenna_separation.clone();
 
-        Ok(GPR {data, location: location_data, metadata, log: Vec::new(), topo_data: None})
+        Ok(GPR {data, location: location_data, metadata, log: Vec::new(), topo_data: None, horizontal_signal_distance, zero_point_ns: 0.})
     }
 
 
@@ -504,7 +510,7 @@ impl GPR {
 
         };
 
-        self.metadata.zero_point_ns = self.metadata.time_window * (positive_peaks.mean().unwrap() as f32) / self.height() as f32;
+        self.zero_point_ns = self.metadata.time_window * (positive_peaks.mean().unwrap() as f32) / self.height() as f32;
         self.update_data(new_data);
         self.log_event("zero_corr_max_peak", &format!("Applied a per-trace zero-corr by removing the first {}-{} rows", positive_peaks.min().unwrap(), positive_peaks.max().unwrap()), start_time);
     }
@@ -516,11 +522,34 @@ impl GPR {
         self.metadata.time_window = self.metadata.time_window * (self.height() as f32 / self.metadata.samples as f32);
         self.metadata.samples = self.height() as u32;
         self.metadata.last_trace = self.width() as u32;
+    }
 
+    pub fn correct_antenna_separation(&mut self) {
+        let start_time = SystemTime::now();
 
+        if self.horizontal_signal_distance == 0. {
+            self.log_event("correct_antenna_separation", &format!("Skipping antenna separation correction since the antenna separation is 0 m."), start_time);
+            return
+        };
+
+        let depths = self.depths();
+
+        let mut diffs = Array1::<f32>::zeros((depths.shape()[0] - 1,));
+        for i in 1..depths.shape()[0] {
+            diffs[i - 1] = depths[i] - depths[i - 1];
+        };
+
+        let max_diff = diffs.max().unwrap();
+
+        average_by(&mut self.data, Axis2D::Row, &depths, *max_diff);
+        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m.", max_diff, max_diff / (self.metadata.time_window / self.height() as f32), self.horizontal_signal_distance), start_time);
+
+        self.horizontal_signal_distance = 0.;
+        self.metadata.samples = self.height() as u32;
     }
 
     pub fn correct_topography(&mut self) {
+        let start_time = SystemTime::now();
 
         let mut altitudes = Array1::<f32>::from_iter(self.location.cor_points.iter().map(|point| point.altitude as f32));
         altitudes -= *altitudes.max().unwrap();
@@ -545,6 +574,7 @@ impl GPR {
         self.topo_data = Some(topo_data);
 
 
+        self.log_event("correct_topography", &format!("Generated a profile that is corrected for topography (topo_data)."), start_time);
 
     }
 
@@ -597,7 +627,7 @@ impl GPR {
         let mean_silent_val = mean_trace.slice_axis(Axis(0), Slice::new(0, Some(first_rise), 1)).mean().unwrap();
 
 
-        self.metadata.zero_point_ns = self.metadata.time_window * (first_rise as f32) / self.height() as f32;
+        self.zero_point_ns = self.metadata.time_window * (first_rise as f32) / self.height() as f32;
         self.update_data(self.data.slice_axis(Axis(0), Slice::new(first_rise, None, 1)).to_owned());
         self.data -= mean_silent_val;
 
@@ -866,9 +896,8 @@ view *= (i as f32) * linear;
     }
 
     pub fn depths(&self) -> Array1<f32> {
-
         let time_windows = (Array1::<f32>::range(0., self.height() as f32, 1.) / self.height() as f32) * self.metadata.time_window;
-        let corr_antenna_separation = (self.metadata.antenna_separation.powi(2) - (self.metadata.zero_point_ns * self.metadata.medium_velocity).powi(2)).max(0.).sqrt();
+        let corr_antenna_separation = (self.horizontal_signal_distance.powi(2) - (self.zero_point_ns * self.metadata.medium_velocity).powi(2)).max(0.).sqrt();
         time_windows.mapv(|time| return_time_to_depth(time, self.metadata.medium_velocity, corr_antenna_separation))
     }
 }
@@ -879,7 +908,83 @@ view *= (i as f32) * linear;
 /// one_way_depth = √(two_way_travel_distance² - antenna_separation²) / 2
 ///
 fn return_time_to_depth(return_time: f32, velocity: f32, antenna_separation: f32) -> f32 {
-    ((return_time * velocity).powi(2) - antenna_separation.powi(2)).sqrt() / 2.
+    
+    let hypothenuse_length = return_time * velocity;
+    match hypothenuse_length > antenna_separation {
+        true => ((hypothenuse_length).powi(2) - antenna_separation.powi(2)).sqrt() / 2.,
+        false => 0.
+    }
+}
+
+enum Axis2D {
+    Row,
+    Col,
+}
+
+/// Average the data by binning them along one axis in a specified dimension
+///
+/// The python-equivalent would be:
+///
+/// DATA.groupby((X_VALUES / BIN_SIZE).astype(int)).mean(axis=AXIS)
+///
+/// # Arguments
+/// - `data`: The data to modify inplace
+/// - `axis`: The axis (row-wise or column-wise0 to average the values
+/// - `x_values`: The values to bin, whose bins are later used to average the data in the specified
+/// axis
+/// - `bin_size`: The step size to bin the `x_values` in
+///
+/// # Returns
+/// The upper breaks + 1 of the slices of the old data, e.g. [1, 3] for the bins [0, 1, 1]
+fn average_by(data: &mut Array2<f32>, axis: Axis2D, x_values: &Array1<f32>, bin_size: f32) -> Array1<usize> {
+
+    let bins = x_values.mapv(|value| (value / bin_size) as usize);
+
+    let nd_axis = match axis {
+        Axis2D::Row => Axis(0),
+        Axis2D::Col => Axis(1),
+    };
+
+    let new_size = *bins.max().unwrap() + 1;
+
+    let mut breaks = Array1::<usize>::from_elem((new_size,), new_size + 1);
+    let mut last_highest = 0_usize;
+    let mut i = 0_usize;
+    for j in 0..bins.shape()[0] {
+        if bins[j] > last_highest {
+            breaks[i] = j;
+            last_highest = bins[j];
+            i += 1;
+        };
+    };
+
+    for i in 0..breaks.shape()[0] {
+
+        let lower = match i == 0 {
+            true => 0,
+            false => breaks[i - 1],
+        };
+
+        let upper = breaks[i];
+
+        let old_data_slice = match (upper - lower) > 1 {
+            true => data.slice_axis(nd_axis, Slice::new(lower as isize, Some(upper as isize) , 1)).mean_axis(nd_axis).unwrap(),
+            false => match axis {
+                Axis2D::Row => data.row(lower as usize).to_owned(),
+                Axis2D::Col => data.column(lower as usize).to_owned(),
+            }
+        };
+        let mut new_data_slice = match axis {
+            Axis2D::Col => data.column_mut(i),
+            Axis2D::Row => data.row_mut(i),
+        };
+        new_data_slice.assign(&old_data_slice);
+
+
+    };
+    data.slice_axis_inplace(nd_axis, Slice::new(0, Some(new_size as isize ), 1));
+
+    breaks
 }
 
 
@@ -896,6 +1001,7 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
         ["kirchhoff_migration2d", "Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data. The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the mean of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions."],
         ["unphase", "Combine the positive and negative phases of the signal into one positive magntiude. The assumption is made that the positive magnitude of the signal comes first, followed by an offset negative component. The distance between the positive and negative peaks are found, and then the negative part is shifted accordingly."],
         ["correct_topography", "Hello"],
+        ["correct_antenna_separation", "Hello"],
     ]
 
 }
@@ -916,12 +1022,38 @@ pub fn default_processing_profile() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use ndarray::{Array2, Array1};
 
-    #[test]
+
     fn test_return_time_to_depth() {
 
         assert_eq!(super::return_time_to_depth(1000., 0.1, 0.), 50.);
         assert_eq!(super::return_time_to_depth(200., 0.1, 1.), 50.);
+
+    }
+
+    #[test]
+    fn test_average_by() {
+
+        let test_data = Array1::<f32>::range(0., 25., 1.).into_shape((5, 5)).unwrap();
+
+        let xs = Array1::<f32>::from_vec(vec![0., 1., 1., 2., 3.]);
+
+        let mut test_data0 = test_data.clone();
+        super::average_by(&mut test_data0, super::Axis2D::Row, &xs, 1.);
+
+        assert_eq!(test_data0.shape(), &[4_usize, 5_usize]);
+        let expected = (test_data.get((1, 0)).unwrap() + test_data.get((2, 0)).unwrap()) / 2.;
+        assert_eq!(test_data0.get((1, 0)), Some(&expected));
+
+        let mut test_data1 = test_data.clone();
+        super::average_by(&mut test_data1, super::Axis2D::Col, &(xs * 2.), 2.);
+        assert_eq!(test_data1.shape(), &[5_usize, 4_usize]);
+        let expected = (test_data.get((0, 1)).unwrap() + test_data.get((0, 2)).unwrap()) / 2.;
+        assert_eq!(test_data1.get((0, 1)), Some(&expected));
+
+
+
 
     }
 

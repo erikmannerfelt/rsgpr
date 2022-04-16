@@ -47,7 +47,6 @@ pub fn load_rad(filepath: &Path, medium_velocity: f32) -> Result<gpr::GPRMeta, B
         last_trace: data.get("LAST TRACE").ok_or("No 'LAST TRACE' key in metadata")?.trim().parse()?,
         rd3_filepath,
         medium_velocity,
-        zero_point_ns: 0.,
     })
 }
 
