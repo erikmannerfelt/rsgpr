@@ -334,8 +334,8 @@ impl GPR {
 
             self.zero_corr(threshold_multiplier);
         } else if step_name.contains("equidistant_traces") {
-            let mean_velocity = tools::parse_option::<f32>(step_name, 0)?;
-            self.make_equidistant(mean_velocity);
+            let step = tools::parse_option::<f32>(step_name, 0)?;
+            self.make_equidistant(step);
 
         } else if step_name.contains("normalize_horizontal_magnitudes") {
 
@@ -541,7 +541,7 @@ impl GPR {
 
         let max_diff = diffs.max().unwrap();
 
-        average_by(&mut self.data, Axis2D::Row, &depths, *max_diff);
+        groupby_average(&mut self.data, Axis2D::Row, &depths, *max_diff);
         self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m.", max_diff, max_diff / (self.metadata.time_window / self.height() as f32), self.horizontal_signal_distance), start_time);
 
         self.horizontal_signal_distance = 0.;
@@ -694,65 +694,43 @@ view *= (i as f32) * linear;
         self.log_event("gain", &format!("Applied linear gain of *= {} * index", linear), start_time);
     }
 
-    pub fn make_equidistant(&mut self, mean_velocity: Option<f32>) {
+    pub fn make_equidistant(&mut self, step: Option<f32>) {
         let start_time = SystemTime::now();
-
-        let velocities = self.location.velocities().mapv(|v| v as f32);
-
-        let normal_velocity = mean_velocity.unwrap_or(tools::quantiles(&velocities, &[0.5], None)[0]);
-
-        let mut seconds_moving = 0_f32;
-        for i in 1..self.width() {
-            if velocities[i] < (0.3 * normal_velocity) {
-                continue
-            };
-            seconds_moving += self.metadata.time_interval;
-        };
-
-        let nominal_data_width = (seconds_moving / self.metadata.time_interval).floor() as usize;
-
         let distances = self.location.distances().mapv(|v| v as f32);
-        let old_width = self.width() as usize;
+        let max_distance = distances.max().unwrap();
 
-        let step = distances.max().unwrap() / (nominal_data_width as f32);
+        let step = step.unwrap_or({
+            let velocities = self.location.velocities().mapv(|v| v as f32);
 
-        let mut j = 0_usize;
-        let mut k = 0_usize;
-        let mut new_coords: Vec<CorPoint> = Vec::new();
-        for i in 0..nominal_data_width {
-            if i >= j {
-                j = i + 1;
-            };
-            new_coords.push(self.location.cor_points[j]);
-            if j >= (old_width - 1) {
-                break
-            };
-            for l in j..old_width {
-                if ((distances[k] / step) as usize > i) | (k >= old_width - 1) {
-                    break
+            let normal_velocity = tools::quantiles(&velocities, &[0.5], None)[0];
+
+            let mut seconds_moving = 0_f32;
+            for i in 1..self.width() {
+                if velocities[i] < (0.3 * normal_velocity) {
+                    continue
                 };
-                k = l;
+                seconds_moving += self.metadata.time_interval;
             };
 
-            let old_data_slice = if k > j {
-                self.data.slice_axis(Axis(1), Slice::new(j as isize, Some(k as isize + 1) , 1)).mean_axis(Axis(1)).unwrap()
-            } else {
-                self.data.column(j as usize).to_owned()
-            };
-            let mut new_data_slice = self.data.column_mut(i);
+            let nominal_data_width = (seconds_moving / self.metadata.time_interval).floor() as usize;
 
-            new_data_slice.assign(&old_data_slice);
+            max_distance / (nominal_data_width as f32)
+        });
 
-            j = k + 1;
+        if (max_distance / step).round() as usize == self.width() {
+            self.log_event("equidistant_traces", "Traces were already equidistant.", start_time);
+            return
         };
 
-        self.update_data(self.data.slice_axis(Axis(1), Slice::new(0, Some(nominal_data_width as isize), 1)).to_owned());
-        self.location.cor_points = new_coords;
+        let breaks = groupby_average(&mut self.data, Axis2D::Col, &distances, step);
+        self.metadata.last_trace = self.data.shape()[1] as u32;
+
+        self.location.cor_points= breaks.iter().map(|i| self.location.cor_points[*i].clone()).collect::<Vec<CorPoint>>();
+        self.location.cor_points.insert(0, self.location.cor_points[0].clone());
+
 
         if self.width() != self.location.cor_points.len() {
-
             panic!("Data width {} != cor points width {}. Was equidistant traces run twice?", self.width(), self.location.cor_points.len())
-
         };
 
         self.log_event("equidistant_traces", "Ran equidistant traces", start_time);
@@ -904,14 +882,15 @@ view *= (i as f32) * linear;
 
 ///
 /// two_way_travel_distance = two_way_return_time * velocity
-/// two_way_travel_distance² = (2 * one_way_depth)² + antenna_separation²
-/// one_way_depth = √(two_way_travel_distance² - antenna_separation²) / 2
+/// two_way_travel_distance² = 2² * (one_way_depth² + antenna_separation²)
+/// two_way_travel_distance² = 2² * one_way_depth² + 2² * antenna_separation²
+/// one_way_depth = √(two_way_travel_distance² - 2² * antenna_separation²) / 2
 ///
 fn return_time_to_depth(return_time: f32, velocity: f32, antenna_separation: f32) -> f32 {
     
-    let hypothenuse_length = return_time * velocity;
-    match hypothenuse_length > antenna_separation {
-        true => ((hypothenuse_length).powi(2) - antenna_separation.powi(2)).sqrt() / 2.,
+    let two_way_distance = return_time * velocity;
+    match two_way_distance > antenna_separation {
+        true => ((two_way_distance).powi(2) - 4. * antenna_separation.powi(2)).sqrt() / 2.,
         false => 0.
     }
 }
@@ -936,7 +915,7 @@ enum Axis2D {
 ///
 /// # Returns
 /// The upper breaks + 1 of the slices of the old data, e.g. [1, 3] for the bins [0, 1, 1]
-fn average_by(data: &mut Array2<f32>, axis: Axis2D, x_values: &Array1<f32>, bin_size: f32) -> Array1<usize> {
+fn groupby_average(data: &mut Array2<f32>, axis: Axis2D, x_values: &Array1<f32>, bin_size: f32) -> Array1<usize> {
 
     let bins = x_values.mapv(|value| (value / bin_size) as usize);
 
@@ -947,7 +926,7 @@ fn average_by(data: &mut Array2<f32>, axis: Axis2D, x_values: &Array1<f32>, bin_
 
     let new_size = *bins.max().unwrap() + 1;
 
-    let mut breaks = Array1::<usize>::from_elem((new_size,), new_size + 1);
+    let mut breaks = Array1::<usize>::from_elem((new_size,), bins.shape()[0] - 1);
     let mut last_highest = 0_usize;
     let mut i = 0_usize;
     for j in 0..bins.shape()[0] {
@@ -957,9 +936,11 @@ fn average_by(data: &mut Array2<f32>, axis: Axis2D, x_values: &Array1<f32>, bin_
             i += 1;
         };
     };
+    let mut unique_breaks = breaks.into_raw_vec();
+    unique_breaks.dedup();
+    let breaks = Array1::from_vec(unique_breaks);
 
     for i in 0..breaks.shape()[0] {
-
         let lower = match i == 0 {
             true => 0,
             false => breaks[i - 1],
@@ -982,7 +963,7 @@ fn average_by(data: &mut Array2<f32>, axis: Axis2D, x_values: &Array1<f32>, bin_
 
 
     };
-    data.slice_axis_inplace(nd_axis, Slice::new(0, Some(new_size as isize ), 1));
+    data.slice_axis_inplace(nd_axis, Slice::new(0, Some(breaks.shape()[0] as isize  + 1), 1));
 
     breaks
 }
@@ -993,7 +974,7 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
     vec![
         ["zero_corr_max_peak", "Shift the location of the zero return time by finding the maximum row value. The peak is found for each trace individually."],
         ["zero_corr", "Shift the location of the zero return time by finding the first row where data appear. The correction can be tweaked to allow more or less data, e.g. 'zero_corr(0.9)'. Default: 1.0"],
-        ["equidistant_traces", "Make all traces equidistant by averaging them in a fixed horizontal grid. The gridsize is determined from the median moving velocity. Other velocities in m/s can be given, e.g. 'equidistant_traces(2.)'. Default: auto"],
+        ["equidistant_traces", "Make all traces equidistant by averaging them in a fixed horizontal grid. The step size is determined from the median moving velocity. Other step sizes in m can be given, e.g. 'equidistant_traces(2.)' for 2 m. Default: auto"],
         ["normalize_horizontal_magnitudes", "Normalize the magnitudes of the traces in the horizontal axis. This removes or reduces horizontal banding. The uppermost samples of the trace can be excluded, either by sample number (integer; e.g. 'normalize_horizontal_magnitudes(300)') or by a fraction of the trace (float; e.g. 'normalize_horizontal_magnitudes(0.3)'). Default: 0.3"],
         ["dewow", "Subtract the horizontal moving average magnitude for each trace. This reduces artefacts that are consistent among every trace. The averaging window can be set, e.g. 'dewow(10)'. Default: 5"],
         ["auto_gain", "Automatically determine the best linear gain and apply it. The data are binned vertically and the standard deviation of the values is used as a proxy for signal attenuation. A linear model is fit to the standard deviations vs. depth, and the subsequent linear coefficient is given to the gain filter. Note that this will show up as having run auto_gain and then gain in the log. The amounts of bins can be given, e.g. 'auto_gain(100). Default: 100"],
@@ -1010,6 +991,7 @@ pub fn default_processing_profile() -> Vec<String> {
     vec![
         format!("zero_corr_max_peak"),
         "equidistant_traces".to_string(),
+        "correct_antenna_separation".to_string(),
         format!("normalize_horizontal_magnitudes({})", DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF),
         "unphase".to_string(),
         "kirchhoff_migration2d".to_string(),
@@ -1022,32 +1004,44 @@ pub fn default_processing_profile() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use ndarray::{Array2, Array1};
+    use ndarray::Array1;
 
 
+    #[test]
     fn test_return_time_to_depth() {
 
-        assert_eq!(super::return_time_to_depth(1000., 0.1, 0.), 50.);
-        assert_eq!(super::return_time_to_depth(200., 0.1, 1.), 50.);
+        // The depth without antenna distance should be the time * velocity / 2
+        let depth = super::return_time_to_depth(200., 0.1, 0.);
+        assert_eq!(depth, 10.);
+
+        let depth_2m_antenna = super::return_time_to_depth(200., 0.1, 2.); 
+        // The depth with antenna distance should be smaller than the one without
+        assert!(depth_2m_antenna < depth);
+        // It should equal to the equation in the function docstring
+        assert_eq!(depth_2m_antenna, ((200_f32 * 0.1).powi(2) - 2.0_f32.powi(2) * 2.0_f32.powi(2)).sqrt() / 2.);
+
+        // If the return time is tiny and the antenna separation is too large, 0. should be
+        // returned.
+        assert_eq!(super::return_time_to_depth(2., 0.1, 2.), 0.);
 
     }
 
     #[test]
-    fn test_average_by() {
+    fn test_groupby_average() {
 
         let test_data = Array1::<f32>::range(0., 25., 1.).into_shape((5, 5)).unwrap();
 
         let xs = Array1::<f32>::from_vec(vec![0., 1., 1., 2., 3.]);
 
         let mut test_data0 = test_data.clone();
-        super::average_by(&mut test_data0, super::Axis2D::Row, &xs, 1.);
+        super::groupby_average(&mut test_data0, super::Axis2D::Row, &xs, 1.);
 
         assert_eq!(test_data0.shape(), &[4_usize, 5_usize]);
         let expected = (test_data.get((1, 0)).unwrap() + test_data.get((2, 0)).unwrap()) / 2.;
         assert_eq!(test_data0.get((1, 0)), Some(&expected));
 
         let mut test_data1 = test_data.clone();
-        super::average_by(&mut test_data1, super::Axis2D::Col, &(xs * 2.), 2.);
+        super::groupby_average(&mut test_data1, super::Axis2D::Col, &(xs * 2.), 2.);
         assert_eq!(test_data1.shape(), &[5_usize, 4_usize]);
         let expected = (test_data.get((0, 1)).unwrap() + test_data.get((0, 2)).unwrap()) / 2.;
         assert_eq!(test_data1.get((0, 1)), Some(&expected));
