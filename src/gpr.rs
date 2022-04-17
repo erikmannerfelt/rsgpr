@@ -1,18 +1,19 @@
-/// Functions to process GPR data
-use std::path::{Path,PathBuf};
 use std::error::Error;
+/// Functions to process GPR data
+use std::path::{Path, PathBuf};
 
 use ndarray_stats::QuantileExt;
 use std::time::SystemTime;
 
-use ndarray::{Array2, Axis, Slice, Array1};
-use smartcore::linalg::BaseMatrix;
-use smartcore::linear::linear_regression::{LinearRegression, LinearRegressionParameters, LinearRegressionSolverName};
-use smartcore::linalg::naive::dense_matrix::DenseMatrix;
+use ndarray::{Array1, Array2, Axis, Slice};
 use rayon::prelude::*;
+use smartcore::linalg::naive::dense_matrix::DenseMatrix;
+use smartcore::linalg::BaseMatrix;
+use smartcore::linear::linear_regression::{
+    LinearRegression, LinearRegressionParameters, LinearRegressionSolverName,
+};
 
-use crate::{io, dem, tools};
-
+use crate::{dem, io, tools};
 
 const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
 const DEFAULT_DEWOW_WINDOW: u32 = 5;
@@ -20,7 +21,7 @@ const DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF: f32 = 0.3;
 const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
 
 /// Metadata associated with a GPR dataset
-/// 
+///
 /// This contains all required informaton except the location data and the actual data
 #[derive(Debug, Clone)]
 pub struct GPRMeta {
@@ -38,7 +39,6 @@ pub struct GPRMeta {
 }
 
 impl GPRMeta {
-
     /// Find a ".cor" file based on the location of the ".rd3" file
     ///
     /// # Arguments
@@ -46,13 +46,13 @@ impl GPRMeta {
     pub fn find_cor(&self, projected_crs: &str) -> Result<GPRLocation, Box<dyn Error>> {
         io::load_cor(&self.rd3_filepath.with_extension("cor"), projected_crs)
     }
-
 }
 
 impl std::fmt::Display for GPRMeta {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result  {
-
-        write!(f, "
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "
 GPR Metadata
 ------------
 Filepath:\t\t{:?}
@@ -77,7 +77,6 @@ Antenna separation:\t{} m
             self.antenna,
             self.antenna_separation,
         )
-
     }
 }
 
@@ -91,9 +90,13 @@ pub struct CorPoint {
 }
 
 impl CorPoint {
-
     fn txyz(&self) -> [f64; 4] {
-        [self.time_seconds, self.easting, self.northing, self.altitude]
+        [
+            self.time_seconds,
+            self.easting,
+            self.northing,
+            self.altitude,
+        ]
     }
 }
 
@@ -111,7 +114,6 @@ pub struct GPRLocation {
 }
 
 impl GPRLocation {
-
     /// Get a coordinate of a trace by interp- or extrapolation
     ///
     /// If the trace_n is lower than or equal to the first trace, the first coordinate is given
@@ -125,57 +127,74 @@ impl GPRLocation {
     /// If the trace_n is between two existing coordinates, the linearly interpolated coordinate is
     /// given.
     fn time_and_coord_at_trace(&self, trace_n: u32) -> (f64, f64, f64, f64) {
-
-
         let mut first_point: &CorPoint = &self.cor_points[0];
         let last_point = &self.cor_points[self.cor_points.len() - 1];
 
         // Return the first point if the requested trace_n is equal or lower to the first.
         if trace_n <= first_point.trace_n {
-            return (first_point.time_seconds, first_point.easting, first_point.northing, first_point.altitude);
+            return (
+                first_point.time_seconds,
+                first_point.easting,
+                first_point.northing,
+                first_point.altitude,
+            );
         };
 
         if trace_n < last_point.trace_n {
             // At this time, the trace
             for point in &self.cor_points {
                 if point.trace_n == trace_n {
-                    return (point.time_seconds, point.easting, point.northing, point.altitude);
+                    return (
+                        point.time_seconds,
+                        point.easting,
+                        point.northing,
+                        point.altitude,
+                    );
                 };
 
                 if trace_n < point.trace_n {
-                    let v = tools::interpolate_values(first_point.trace_n as f64, &first_point.txyz(), point.trace_n as f64, &point.txyz(), trace_n as f64);
+                    let v = tools::interpolate_values(
+                        first_point.trace_n as f64,
+                        &first_point.txyz(),
+                        point.trace_n as f64,
+                        &point.txyz(),
+                        trace_n as f64,
+                    );
                     return (v[0], v[1], v[2], v[3]);
-                    
                 };
                 first_point = &point;
-            };
+            }
         };
-        (last_point.time_seconds, last_point.easting, last_point.northing, last_point.altitude)
+        (
+            last_point.time_seconds,
+            last_point.easting,
+            last_point.northing,
+            last_point.altitude,
+        )
     }
 
     fn velocities(&self) -> Array1<f64> {
-
-        
         //let mut offsets: Vec<[f64; 4]> = Vec::new();
 
         let mut offsets = Array2::from_elem((self.cor_points.len(), 4), 0_f64);
 
         for i in 1..self.cor_points.len() {
-
-            let mut slice = offsets.slice_axis_mut(Axis(0), Slice::new(i as isize, Some(i as isize + 1), 1));
+            let mut slice =
+                offsets.slice_axis_mut(Axis(0), Slice::new(i as isize, Some(i as isize + 1), 1));
             slice.assign(&Array1::from_vec(vec![
-                     self.cor_points[i].time_seconds - self.cor_points[i - 1].time_seconds, 
-                     self.cor_points[i].easting - self.cor_points[i - 1].easting, 
-                     self.cor_points[i].northing - self.cor_points[i - 1].northing, 
-                     self.cor_points[i].altitude - self.cor_points[i - 1].altitude,
+                self.cor_points[i].time_seconds - self.cor_points[i - 1].time_seconds,
+                self.cor_points[i].easting - self.cor_points[i - 1].easting,
+                self.cor_points[i].northing - self.cor_points[i - 1].northing,
+                self.cor_points[i].altitude - self.cor_points[i - 1].altitude,
             ]));
-        };
+        }
 
+        let d = offsets
+            .slice_axis(Axis(1), Slice::new(1, None, 1))
+            .mapv(|f| f.powi(2))
+            .sum_axis(Axis(1));
 
-        let d = offsets.slice_axis(Axis(1), Slice::new(1, None, 1)).mapv(|f| f.powi(2)).sum_axis(Axis(1));
-
-
-        let vel = (d / offsets.column(0)).mapv(|f| if f.is_finite() {f} else {0.0});
+        let vel = (d / offsets.column(0)).mapv(|f| if f.is_finite() { f } else { 0.0 });
 
         vel
     }
@@ -184,68 +203,77 @@ impl GPRLocation {
         let mut offsets = Array2::from_elem((self.cor_points.len(), 3), 0_f64);
 
         for i in 1..self.cor_points.len() {
-
-            let mut slice = offsets.slice_axis_mut(Axis(0), Slice::new(i as isize, Some(i as isize + 1), 1));
+            let mut slice =
+                offsets.slice_axis_mut(Axis(0), Slice::new(i as isize, Some(i as isize + 1), 1));
             slice.assign(&Array1::from_vec(vec![
-                     self.cor_points[i].time_seconds - self.cor_points[i - 1].time_seconds, 
-                     self.cor_points[i].easting - self.cor_points[i - 1].easting, 
-                     self.cor_points[i].northing - self.cor_points[i - 1].northing, 
-                     //self.cor_points[i].altitude - self.cor_points[i - 1].altitude,
+                self.cor_points[i].time_seconds - self.cor_points[i - 1].time_seconds,
+                self.cor_points[i].easting - self.cor_points[i - 1].easting,
+                self.cor_points[i].northing - self.cor_points[i - 1].northing,
+                //self.cor_points[i].altitude - self.cor_points[i - 1].altitude,
             ]));
-        };
+        }
 
-
-        let mut dist = offsets.slice_axis(Axis(1), Slice::new(1, None, 1)).mapv(|f| f.powi(2)).sum_axis(Axis(1));
-        dist.accumulate_axis_inplace(Axis(0), | prev, cur | *cur += prev);
+        let mut dist = offsets
+            .slice_axis(Axis(1), Slice::new(1, None, 1))
+            .mapv(|f| f.powi(2))
+            .sum_axis(Axis(1));
+        dist.accumulate_axis_inplace(Axis(0), |prev, cur| *cur += prev);
 
         dist
     }
 
-
     fn range_fill(&self, start_trace: u32, end_trace: u32) -> GPRLocation {
-
         let mut new_points: Vec<CorPoint> = Vec::new();
 
-
         for i in start_trace..end_trace {
-                let txyz = self.time_and_coord_at_trace(i);
+            let txyz = self.time_and_coord_at_trace(i);
 
-                new_points.push(CorPoint{trace_n: i, time_seconds: txyz.0, easting: txyz.1, northing: txyz.2, altitude: txyz.3})
-        };
+            new_points.push(CorPoint {
+                trace_n: i,
+                time_seconds: txyz.0,
+                easting: txyz.1,
+                northing: txyz.2,
+                altitude: txyz.3,
+            })
+        }
 
-        
-        GPRLocation { cor_points: new_points , correction: self.correction.clone(), crs: self.crs.clone()}
+        GPRLocation {
+            cor_points: new_points,
+            correction: self.correction.clone(),
+            crs: self.crs.clone(),
+        }
     }
 
     fn xy_coords(&self) -> Array2<f64> {
-
         let mut data: Vec<f64> = Vec::new();
 
         for point in &self.cor_points {
             data.push(point.easting);
             data.push(point.northing);
-        };
+        }
 
         Array2::<f64>::from_shape_vec((self.cor_points.len(), 2), data).unwrap()
     }
 
-    pub fn get_dem_elevations(&mut self, dem_path: &Path)  {
+    pub fn get_dem_elevations(&mut self, dem_path: &Path) {
         let elev = dem::read_elevations(dem_path, self.xy_coords()).unwrap();
 
         for i in 0..self.cor_points.len() {
             self.cor_points[i].altitude = elev[i] as f64;
-        };
+        }
 
         self.correction = LocationCorrection::DEM(dem_path.to_path_buf());
     }
 
     pub fn to_csv(&self, filepath: &Path) -> Result<(), std::io::Error> {
-
         let mut output = "trace_n,easting,northing,altitude\n".to_string();
 
         for point in &self.cor_points {
-            output += &format!("{},{},{},{}\n", point.trace_n, point.easting, point.northing, point.altitude);
-        };
+            output += &format!(
+                "{},{},{},{}\n",
+                point.trace_n, point.easting, point.northing, point.altitude
+            );
+        }
 
         std::fs::write(filepath, output)
     }
@@ -255,17 +283,18 @@ impl GPRLocation {
     }
 }
 
-
 impl std::fmt::Display for GPRLocation {
-
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result  {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let altitudes = Array1::from_iter(self.cor_points.iter().map(|point| point.altitude));
         let eastings = Array1::from_iter(self.cor_points.iter().map(|point| point.easting));
         let northings = Array1::from_iter(self.cor_points.iter().map(|point| point.northing));
 
         let length = self.length();
-        let duration = self.cor_points[self.cor_points.len() - 1].time_seconds - self.cor_points[0].time_seconds;
-        write!(f, "
+        let duration = self.cor_points[self.cor_points.len() - 1].time_seconds
+            - self.cor_points[0].time_seconds;
+        write!(
+            f,
+            "
 
 GPR Location data
 -----------------
@@ -279,25 +308,22 @@ Altitude range:\t\t{:.1}-{:.1} m.
 Centroid:\t\tE {:.1} m, N: {:.1} m, Z: {:.1} m.
 CRS:\t\t\t{}
 ",
-               tools::seconds_to_rfc3339(self.cor_points[0].time_seconds),
-               tools::seconds_to_rfc3339(self.cor_points[self.cor_points.len() - 1].time_seconds),
-               duration,
-               self.cor_points.len(),
-               self.cor_points.len() as f32 / length as f32,
-               self.cor_points.len() as f64 / duration,
-               length,
-               altitudes.min().unwrap(),
-               altitudes.max().unwrap(),
-               eastings.mean().unwrap(),
-               northings.mean().unwrap(),
-               altitudes.mean().unwrap(),
-               self.crs,
+            tools::seconds_to_rfc3339(self.cor_points[0].time_seconds),
+            tools::seconds_to_rfc3339(self.cor_points[self.cor_points.len() - 1].time_seconds),
+            duration,
+            self.cor_points.len(),
+            self.cor_points.len() as f32 / length as f32,
+            self.cor_points.len() as f64 / duration,
+            length,
+            altitudes.min().unwrap(),
+            altitudes.max().unwrap(),
+            eastings.mean().unwrap(),
+            northings.mean().unwrap(),
+            altitudes.mean().unwrap(),
+            self.crs,
         )
-
     }
 }
-
-
 
 pub struct GPR {
     pub data: Array2<f32>,
@@ -309,90 +335,84 @@ pub struct GPR {
     zero_point_ns: f32,
 }
 
-
-
-
 impl GPR {
-
     pub fn process(&mut self, step_name: &str) -> Result<(), Box<dyn Error>> {
-
         if step_name.contains("dewow") {
-            
             let window = tools::parse_option::<u32>(step_name, 0)?.unwrap_or(DEFAULT_DEWOW_WINDOW);
 
             self.dewow(window);
-
-
         } else if step_name.contains("zero_corr_max_peak") {
-
             self.zero_corr_max_peak();
-
-
         } else if step_name.contains("zero_corr") {
-
             let threshold_multiplier = tools::parse_option::<f32>(step_name, 0)?;
 
             self.zero_corr(threshold_multiplier);
         } else if step_name.contains("equidistant_traces") {
             let step = tools::parse_option::<f32>(step_name, 0)?;
             self.make_equidistant(step);
-
         } else if step_name.contains("normalize_horizontal_magnitudes") {
-
             // Try to parse the argument as an integer. If that doesn't work, try to parse it as a
             // float and assume it's the fraction of the height
-            let skip_first: isize = match tools::parse_option::<isize>(step_name, 0) {
-                Ok(v) => Ok(v.unwrap_or(0)),
-                Err(e) => match e.contains("Could not parse argument 0 as value") {
-                    true => tools::parse_option::<f32>(step_name, 0).and_then(|fraction| match (fraction.unwrap() >= 1.0) & (fraction.unwrap() < 0.) {
-                        true => Err(format!("Invalid fraction: {:?}. Must be between 0.0 and 1.0.", fraction)),
-                        false => Ok((self.height() as f32 * fraction.unwrap_or(0.)) as isize),
-
-                    }),
-                    false => Err(e)
-                }
-            }?;
+            let skip_first: isize =
+                match tools::parse_option::<isize>(step_name, 0) {
+                    Ok(v) => Ok(v.unwrap_or(0)),
+                    Err(e) => match e.contains("Could not parse argument 0 as value") {
+                        true => tools::parse_option::<f32>(step_name, 0).and_then(|fraction| {
+                            match (fraction.unwrap() >= 1.0) & (fraction.unwrap() < 0.) {
+                                true => Err(format!(
+                                    "Invalid fraction: {:?}. Must be between 0.0 and 1.0.",
+                                    fraction
+                                )),
+                                false => {
+                                    Ok((self.height() as f32 * fraction.unwrap_or(0.)) as isize)
+                                }
+                            }
+                        }),
+                        false => Err(e),
+                    },
+                }?;
             self.normalize_horizontal_magnitudes(Some(skip_first));
         } else if step_name.contains("kirchhoff_migration2d") {
             self.kirchhoff_migration2d();
         } else if step_name.contains("auto_gain") {
-            let n_bins = tools::parse_option::<usize>(step_name, 0)?.unwrap_or(DEFAULT_AUTOGAIN_N_BINS);
+            let n_bins =
+                tools::parse_option::<usize>(step_name, 0)?.unwrap_or(DEFAULT_AUTOGAIN_N_BINS);
             self.auto_gain(n_bins);
         } else if step_name.contains("gain") {
-
             let linear = match tools::parse_option::<f32>(step_name, 0)? {
                 Some(v) => Ok(v),
-                None => Err("The linear gain factor must be specified when applying gain. E.g. gain(0.1)".to_string()),
-
+                None => Err(
+                    "The linear gain factor must be specified when applying gain. E.g. gain(0.1)"
+                        .to_string(),
+                ),
             }?;
             self.gain(linear);
         } else if step_name.contains("subset") {
-
             let min_trace: Option<u32> = match tools::parse_option::<u32>(step_name, 0)? {
                 Some(v) => Ok(Some(v)),
-                None => Err("Indices must be given when subsetting, e.g. subset(0, -1, 0, 500)")
+                None => Err("Indices must be given when subsetting, e.g. subset(0, -1, 0, 500)"),
             }?;
 
             let max_trace: Option<u32> = match tools::parse_option::<isize>(step_name, 1) {
-                Ok(v) => Ok(v.and_then(|v2| if v2 == -1 {None} else {Some(v2 as u32)})),
+                Ok(v) => Ok(v.and_then(|v2| if v2 == -1 { None } else { Some(v2 as u32) })),
                 Err(e) => match e.contains("out of bounds") {
                     true => Ok(None),
                     false => Err(e),
-                }
+                },
             }?;
             let min_sample: Option<u32> = match tools::parse_option::<u32>(step_name, 2) {
                 Ok(v) => Ok(v),
                 Err(e) => match e.contains("out of bounds") {
                     true => Ok(None),
                     false => Err(e),
-                }
+                },
             }?;
             let max_sample: Option<u32> = match tools::parse_option::<isize>(step_name, 3) {
-                Ok(v) => Ok(v.and_then(|v2| if v2 == -1 {None} else {Some(v2 as u32)})),
+                Ok(v) => Ok(v.and_then(|v2| if v2 == -1 { None } else { Some(v2 as u32) })),
                 Err(e) => match e.contains("out of bounds") {
                     true => Ok(None),
                     false => Err(e),
-                }
+                },
             }?;
             *self = self.subset(min_trace, max_trace, min_sample, max_sample);
         } else if step_name.contains("unphase") {
@@ -400,9 +420,7 @@ impl GPR {
         } else if step_name.contains("correct_topography") {
             self.correct_topography();
         } else if step_name.contains("correct_antenna_separation") {
-
             self.correct_antenna_separation();
-
         } else {
             return Err(format!("Step name not recognized: {}", step_name).into());
         }
@@ -410,59 +428,112 @@ impl GPR {
         Ok(())
     }
 
-    pub fn subset(&self, min_trace: Option<u32>, max_trace: Option<u32>, min_sample: Option<u32>, max_sample: Option<u32>) -> GPR {
-
+    pub fn subset(
+        &self,
+        min_trace: Option<u32>,
+        max_trace: Option<u32>,
+        min_sample: Option<u32>,
+        max_sample: Option<u32>,
+    ) -> GPR {
         let start_time = SystemTime::now();
-        let min_trace_ = match min_trace {Some(x) => x, None => 0};
-        let max_trace_ = match max_trace {Some(x) => x, None => self.width() as u32};
-        let min_sample_ = match min_sample {Some(x) => x, None => 0};
-        let max_sample_ = match max_sample {Some(x) => x, None => self.height() as u32};
+        let min_trace_ = match min_trace {
+            Some(x) => x,
+            None => 0,
+        };
+        let max_trace_ = match max_trace {
+            Some(x) => x,
+            None => self.width() as u32,
+        };
+        let min_sample_ = match min_sample {
+            Some(x) => x,
+            None => 0,
+        };
+        let max_sample_ = match max_sample {
+            Some(x) => x,
+            None => self.height() as u32,
+        };
 
-        let data_subset = self.data.slice(ndarray::s![min_sample_ as isize..max_sample_ as isize, min_trace_ as isize..max_trace_ as isize]).to_owned();
+        let data_subset = self
+            .data
+            .slice(ndarray::s![
+                min_sample_ as isize..max_sample_ as isize,
+                min_trace_ as isize..max_trace_ as isize
+            ])
+            .to_owned();
 
-
-        let location_subset = GPRLocation{cor_points: self.location.cor_points[min_trace_ as usize..max_trace_ as usize].to_owned(), correction: self.location.correction.clone(), crs: self.location.crs.clone()};
+        let location_subset = GPRLocation {
+            cor_points: self.location.cor_points[min_trace_ as usize..max_trace_ as usize]
+                .to_owned(),
+            correction: self.location.correction.clone(),
+            crs: self.location.crs.clone(),
+        };
 
         let mut metadata = self.metadata.clone();
 
         metadata.last_trace = max_trace_;
-        metadata.time_window = metadata.time_window * ((max_sample_ - min_sample_) as f32 / metadata.samples as f32);
+        metadata.time_window =
+            metadata.time_window * ((max_sample_ - min_sample_) as f32 / metadata.samples as f32);
         metadata.samples = max_sample_ - min_sample_;
 
         let log = self.log.clone();
 
-        let mut new_gpr = GPR{data: data_subset, location: location_subset, metadata, log, topo_data: self.topo_data.clone(), horizontal_signal_distance: self.horizontal_signal_distance, zero_point_ns: self.zero_point_ns};
-        new_gpr.log_event("subset", &format!("Subset data from {:?} to ({}:{}, {}:{})", self.data.shape(), min_sample_, max_sample_, min_trace_, max_trace_), start_time);
+        let mut new_gpr = GPR {
+            data: data_subset,
+            location: location_subset,
+            metadata,
+            log,
+            topo_data: self.topo_data.clone(),
+            horizontal_signal_distance: self.horizontal_signal_distance,
+            zero_point_ns: self.zero_point_ns,
+        };
+        new_gpr.log_event(
+            "subset",
+            &format!(
+                "Subset data from {:?} to ({}:{}, {}:{})",
+                self.data.shape(),
+                min_sample_,
+                max_sample_,
+                min_trace_,
+                max_trace_
+            ),
+            start_time,
+        );
 
         new_gpr
-
     }
 
     pub fn vertical_resolution_ns(&self) -> f32 {
         self.metadata.time_window / self.metadata.samples as f32
     }
 
-    pub fn from_meta_and_loc(location: GPRLocation, metadata: GPRMeta) -> Result<GPR, Box<dyn Error>> {
-
+    pub fn from_meta_and_loc(
+        location: GPRLocation,
+        metadata: GPRMeta,
+    ) -> Result<GPR, Box<dyn Error>> {
         let data = io::load_rd3(&metadata.rd3_filepath, metadata.samples as usize)?;
 
         let location_data = match data.shape()[1] == location.cor_points.len() {
             true => location,
-            false => location.range_fill(0, data.shape()[1] as u32)
-
+            false => location.range_fill(0, data.shape()[1] as u32),
         };
         let horizontal_signal_distance = metadata.antenna_separation.clone();
 
-        Ok(GPR {data, location: location_data, metadata, log: Vec::new(), topo_data: None, horizontal_signal_distance, zero_point_ns: 0.})
+        Ok(GPR {
+            data,
+            location: location_data,
+            metadata,
+            log: Vec::new(),
+            topo_data: None,
+            horizontal_signal_distance,
+            zero_point_ns: 0.,
+        })
     }
-
 
     pub fn render(&self, filepath: &Path) -> Result<(), Box<dyn Error>> {
         io::render_jpg(self, filepath)
     }
 
     pub fn zero_corr_max_peak(&mut self) {
-
         let start_time = SystemTime::now();
 
         let mean_trace = self.data.mean_axis(Axis(1)).unwrap();
@@ -474,15 +545,18 @@ impl GPR {
         for i in 1..mean_trace.shape()[0] {
             if (mean_trace[i] - mean_trace[i - 1]).abs() > threshold {
                 first_rise = i as isize;
-                break
+                break;
             };
-        };
+        }
 
         if first_rise == 0 {
-            return
+            return;
         };
 
-        let mean_silent_val = mean_trace.slice_axis(Axis(0), Slice::new(0, Some(first_rise), 1)).mean().unwrap();
+        let mean_silent_val = mean_trace
+            .slice_axis(Axis(0), Slice::new(0, Some(first_rise), 1))
+            .mean()
+            .unwrap();
 
         self.data -= mean_silent_val;
 
@@ -490,36 +564,51 @@ impl GPR {
 
         let mut i = 0_usize;
         for col in self.data.columns() {
-
             positive_peaks[i] = col.argmax().unwrap() as isize;
 
             i += 1;
-        };
+        }
 
-        let mut new_data = Array2::from_elem((self.height() - positive_peaks.min().unwrap().to_owned() as usize, self.width()), 0_f32);
+        let mut new_data = Array2::from_elem(
+            (
+                self.height() - positive_peaks.min().unwrap().to_owned() as usize,
+                self.width(),
+            ),
+            0_f32,
+        );
 
         i = 0;
         for col in self.data.columns() {
-
             let mut new_col = new_data.column_mut(i);
 
-            let mut positive_data_slice = new_col.slice_axis_mut(Axis(0), Slice::new(0, Some(self.height() as isize - positive_peaks[i]), 1));
+            let mut positive_data_slice = new_col.slice_axis_mut(
+                Axis(0),
+                Slice::new(0, Some(self.height() as isize - positive_peaks[i]), 1),
+            );
 
             positive_data_slice += &col.slice_axis(Axis(0), Slice::new(positive_peaks[i], None, 1));
             i += 1;
+        }
 
-        };
-
-        self.zero_point_ns = self.metadata.time_window * (positive_peaks.mean().unwrap() as f32) / self.height() as f32;
+        self.zero_point_ns = self.metadata.time_window * (positive_peaks.mean().unwrap() as f32)
+            / self.height() as f32;
         self.update_data(new_data);
-        self.log_event("zero_corr_max_peak", &format!("Applied a per-trace zero-corr by removing the first {}-{} rows", positive_peaks.min().unwrap(), positive_peaks.max().unwrap()), start_time);
+        self.log_event(
+            "zero_corr_max_peak",
+            &format!(
+                "Applied a per-trace zero-corr by removing the first {}-{} rows",
+                positive_peaks.min().unwrap(),
+                positive_peaks.max().unwrap()
+            ),
+            start_time,
+        );
     }
 
-    fn update_data(&mut self, data: Array2::<f32>) {
-
+    fn update_data(&mut self, data: Array2<f32>) {
         self.data = data;
 
-        self.metadata.time_window = self.metadata.time_window * (self.height() as f32 / self.metadata.samples as f32);
+        self.metadata.time_window =
+            self.metadata.time_window * (self.height() as f32 / self.metadata.samples as f32);
         self.metadata.samples = self.height() as u32;
         self.metadata.last_trace = self.width() as u32;
     }
@@ -528,8 +617,14 @@ impl GPR {
         let start_time = SystemTime::now();
 
         if self.horizontal_signal_distance == 0. {
-            self.log_event("correct_antenna_separation", &format!("Skipping antenna separation correction since the antenna separation is 0 m."), start_time);
-            return
+            self.log_event(
+                "correct_antenna_separation",
+                &format!(
+                    "Skipping antenna separation correction since the antenna separation is 0 m."
+                ),
+                start_time,
+            );
+            return;
         };
 
         let depths = self.depths();
@@ -537,7 +632,7 @@ impl GPR {
         let mut diffs = Array1::<f32>::zeros((depths.shape()[0] - 1,));
         for i in 1..depths.shape()[0] {
             diffs[i - 1] = depths[i] - depths[i - 1];
-        };
+        }
 
         let max_diff = diffs.max().unwrap();
 
@@ -551,35 +646,57 @@ impl GPR {
     pub fn correct_topography(&mut self) {
         let start_time = SystemTime::now();
 
-        let mut altitudes = Array1::<f32>::from_iter(self.location.cor_points.iter().map(|point| point.altitude as f32));
+        let mut altitudes = Array1::<f32>::from_iter(
+            self.location
+                .cor_points
+                .iter()
+                .map(|point| point.altitude as f32),
+        );
         altitudes -= *altitudes.max().unwrap();
         altitudes *= -1.;
 
-        let max_depth = tools::return_time_to_depth(self.metadata.time_window, self.metadata.medium_velocity, self.metadata.antenna_separation);
+        let max_depth = tools::return_time_to_depth(
+            self.metadata.time_window,
+            self.metadata.medium_velocity,
+            self.metadata.antenna_separation,
+        );
 
         let sample_per_meter = self.height() as f32 / max_depth;
 
         let start_indices = altitudes.mapv(|altitude| (altitude * sample_per_meter) as isize);
 
-
-        let mut topo_data = Array2::<f32>::zeros((((max_depth + altitudes.max().unwrap()) * sample_per_meter) as usize, self.width()));
+        let mut topo_data = Array2::<f32>::zeros((
+            ((max_depth + altitudes.max().unwrap()) * sample_per_meter) as usize,
+            self.width(),
+        ));
 
         let mut i = 0_usize;
         for col in self.data.columns() {
-            topo_data.column_mut(i).slice_axis_mut(Axis(0), Slice::new(start_indices[i], Some(self.height() as isize + start_indices[i]), 1)).assign(&col);
+            topo_data
+                .column_mut(i)
+                .slice_axis_mut(
+                    Axis(0),
+                    Slice::new(
+                        start_indices[i],
+                        Some(self.height() as isize + start_indices[i]),
+                        1,
+                    ),
+                )
+                .assign(&col);
 
             i += 1;
-        };
+        }
 
         self.topo_data = Some(topo_data);
 
-
-        self.log_event("correct_topography", &format!("Generated a profile that is corrected for topography (topo_data)."), start_time);
-
+        self.log_event(
+            "correct_topography",
+            &format!("Generated a profile that is corrected for topography (topo_data)."),
+            start_time,
+        );
     }
 
     pub fn unphase(&mut self) {
-
         let start_time = SystemTime::now();
 
         let mut positive_peaks = Array1::<isize>::zeros(self.width());
@@ -587,17 +704,22 @@ impl GPR {
 
         let mut i = 0_usize;
         for col in self.data.columns() {
-
             positive_peaks[i] = col.argmax().unwrap() as isize;
             negative_peaks[i] = col.argmin().unwrap() as isize;
 
             i += 1;
-        };
+        }
 
         let mean_peak_spacing = (negative_peaks - positive_peaks).mean().unwrap().abs();
         let mut new_data = self.data.mapv(|v| v.max(0.));
 
-        self.data.slice_axis(Axis(0), Slice::new(mean_peak_spacing, None, 1)).mapv(|v| v.min(0.) * -1.).assign_to(new_data.slice_axis_mut(Axis(0), Slice::new(0, Some(self.height() as isize - mean_peak_spacing), 1)));
+        self.data
+            .slice_axis(Axis(0), Slice::new(mean_peak_spacing, None, 1))
+            .mapv(|v| v.min(0.) * -1.)
+            .assign_to(new_data.slice_axis_mut(
+                Axis(0),
+                Slice::new(0, Some(self.height() as isize - mean_peak_spacing), 1),
+            ));
 
         self.update_data(new_data);
 
@@ -609,56 +731,80 @@ impl GPR {
 
         let mean_trace = self.data.mean_axis(Axis(1)).unwrap();
 
-        let threshold = 0.5 * mean_trace.std(1.0) * threshold_multiplier.unwrap_or(DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER);
+        let threshold = 0.5
+            * mean_trace.std(1.0)
+            * threshold_multiplier.unwrap_or(DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER);
 
         let mut first_rise = 0_isize;
 
         for i in 1..mean_trace.shape()[0] {
             if (mean_trace[i] - mean_trace[i - 1]).abs() > threshold {
                 first_rise = i as isize;
-                break
+                break;
             };
-        };
+        }
 
         if first_rise == 0 {
-            return
+            return;
         };
 
-        let mean_silent_val = mean_trace.slice_axis(Axis(0), Slice::new(0, Some(first_rise), 1)).mean().unwrap();
-
+        let mean_silent_val = mean_trace
+            .slice_axis(Axis(0), Slice::new(0, Some(first_rise), 1))
+            .mean()
+            .unwrap();
 
         self.zero_point_ns = self.metadata.time_window * (first_rise as f32) / self.height() as f32;
-        self.update_data(self.data.slice_axis(Axis(0), Slice::new(first_rise, None, 1)).to_owned());
+        self.update_data(
+            self.data
+                .slice_axis(Axis(0), Slice::new(first_rise, None, 1))
+                .to_owned(),
+        );
         self.data -= mean_silent_val;
 
         self.log_event("zero_corr", &format!("Applied a global zero-corr by removing the first {} rows (threshold multiplier: {:?})", first_rise, threshold_multiplier), start_time);
     }
 
-    pub fn dewow(&mut self, window: u32)  {
+    pub fn dewow(&mut self, window: u32) {
         let start_time = SystemTime::now();
 
         let height = self.height() as u32;
 
         for i in (0..(height - window)).step_by(window as usize) {
-
-            let mut view = self.data.slice_axis_mut(Axis(0), ndarray::Slice::new(i as isize, Some((i + window) as isize), 1_isize));
+            let mut view = self.data.slice_axis_mut(
+                Axis(0),
+                ndarray::Slice::new(i as isize, Some((i + window) as isize), 1_isize),
+            );
 
             view -= view.mean().unwrap();
-        };
-        self.log_event("dewow", &format!("Ran dewow with a window size of {}", window), start_time);
+        }
+        self.log_event(
+            "dewow",
+            &format!("Ran dewow with a window size of {}", window),
+            start_time,
+        );
     }
 
     pub fn normalize_horizontal_magnitudes(&mut self, skip_first: Option<isize>) {
         let start_time = SystemTime::now();
-        if let Some(mean) = self.data.slice_axis(Axis(0), Slice::new(skip_first.unwrap_or(0), None, 1)).mean_axis(Axis(0)) {
+        if let Some(mean) = self
+            .data
+            .slice_axis(Axis(0), Slice::new(skip_first.unwrap_or(0), None, 1))
+            .mean_axis(Axis(0))
+        {
             self.data -= &mean;
         };
-        self.log_event("normalize_horizontal_magnitudes", &format!("Normalized horizontal magnitudes, skipping {:?} of the first rows", skip_first), start_time);
+        self.log_event(
+            "normalize_horizontal_magnitudes",
+            &format!(
+                "Normalized horizontal magnitudes, skipping {:?} of the first rows",
+                skip_first
+            ),
+            start_time,
+        );
     }
 
     pub fn auto_gain(&mut self, n_bins: usize) {
         let start_time = SystemTime::now();
-        
 
         let step = (self.height() / n_bins) as isize;
 
@@ -666,32 +812,46 @@ impl GPR {
         let mut stds: Vec<f32> = Vec::new();
 
         for i in (0..(self.height() as isize - step)).step_by(step as usize) {
-
-            let slice = self.data.slice_axis(Axis(0), Slice::new(i, Some(i + step), step));
+            let slice = self
+                .data
+                .slice_axis(Axis(0), Slice::new(i, Some(i + step), step));
 
             step_mids.push((i as f32 + (i + step) as f32) / 2.0);
 
             stds.push(slice.mapv(|a| a.abs()).mean().unwrap());
-        };
+        }
 
         let xs = DenseMatrix::from_2d_array(&[&step_mids]).transpose();
 
-        let lr = LinearRegression::fit(&xs, &stds, LinearRegressionParameters::default().with_solver(LinearRegressionSolverName::QR)).unwrap();
-
+        let lr = LinearRegression::fit(
+            &xs,
+            &stds,
+            LinearRegressionParameters::default().with_solver(LinearRegressionSolverName::QR),
+        )
+        .unwrap();
 
         self.gain(-lr.coefficients().get(0, 0));
-        self.log_event("auto_gain", &format!("Applied autogain from {} bins", n_bins), start_time);
+        self.log_event(
+            "auto_gain",
+            &format!("Applied autogain from {} bins", n_bins),
+            start_time,
+        );
     }
 
     pub fn gain(&mut self, linear: f32) {
         let start_time = SystemTime::now();
 
         for i in 0..self.height() as isize {
-
-            let mut view = self.data.slice_axis_mut(Axis(0), Slice::new(i, Some(i + 1), 1_isize));
-view *= (i as f32) * linear;
-        };
-        self.log_event("gain", &format!("Applied linear gain of *= {} * index", linear), start_time);
+            let mut view = self
+                .data
+                .slice_axis_mut(Axis(0), Slice::new(i, Some(i + 1), 1_isize));
+            view *= (i as f32) * linear;
+        }
+        self.log_event(
+            "gain",
+            &format!("Applied linear gain of *= {} * index", linear),
+            start_time,
+        );
     }
 
     pub fn make_equidistant(&mut self, step: Option<f32>) {
@@ -707,53 +867,77 @@ view *= (i as f32) * linear;
             let mut seconds_moving = 0_f32;
             for i in 1..self.width() {
                 if velocities[i] < (0.3 * normal_velocity) {
-                    continue
+                    continue;
                 };
                 seconds_moving += self.metadata.time_interval;
-            };
+            }
 
-            let nominal_data_width = (seconds_moving / self.metadata.time_interval).floor() as usize;
+            let nominal_data_width =
+                (seconds_moving / self.metadata.time_interval).floor() as usize;
 
             max_distance / (nominal_data_width as f32)
         });
 
         if (max_distance / step).round() as usize == self.width() {
-            self.log_event("equidistant_traces", "Traces were already equidistant.", start_time);
-            return
+            self.log_event(
+                "equidistant_traces",
+                "Traces were already equidistant.",
+                start_time,
+            );
+            return;
         };
 
         let breaks = tools::groupby_average(&mut self.data, tools::Axis2D::Col, &distances, step);
         self.metadata.last_trace = self.data.shape()[1] as u32;
 
-        self.location.cor_points= breaks.iter().map(|i| self.location.cor_points[*i].clone()).collect::<Vec<CorPoint>>();
-        self.location.cor_points.insert(0, self.location.cor_points[0].clone());
-
+        self.location.cor_points = breaks
+            .iter()
+            .map(|i| self.location.cor_points[*i].clone())
+            .collect::<Vec<CorPoint>>();
+        self.location
+            .cor_points
+            .insert(0, self.location.cor_points[0].clone());
 
         if self.width() != self.location.cor_points.len() {
-            panic!("Data width {} != cor points width {}. Was equidistant traces run twice?", self.width(), self.location.cor_points.len())
+            panic!(
+                "Data width {} != cor points width {}. Was equidistant traces run twice?",
+                self.width(),
+                self.location.cor_points.len()
+            )
         };
 
         self.log_event("equidistant_traces", "Ran equidistant traces", start_time);
     }
 
-
     fn log_event(&mut self, step_name: &str, event: &str, start_time: SystemTime) {
-        self.log.push(format!("{} (duration: {:.2}s):\t{}", step_name, SystemTime::now().duration_since(start_time).unwrap().as_secs_f32(), event));
+        self.log.push(format!(
+            "{} (duration: {:.2}s):\t{}",
+            step_name,
+            SystemTime::now()
+                .duration_since(start_time)
+                .unwrap()
+                .as_secs_f32(),
+            event
+        ));
     }
 
     pub fn kirchhoff_migration2d(&mut self) {
-
         let start_time = SystemTime::now();
         let x_coords = self.location.distances().mapv(|v| v as f32);
         let mut x_diff = 0_f32;
         for i in 1..x_coords.shape()[0] {
             x_diff += x_coords[i] - x_coords[i - 1];
-        };
+        }
         x_diff /= (x_coords.shape()[0] - 1) as f32;
 
         // The z-coords will be negative height in relation to the highest point (all values are
         // positive).
-        let mut z_coords = Array1::from_iter(self.location.cor_points.iter().map(|point| point.altitude as f32));
+        let mut z_coords = Array1::from_iter(
+            self.location
+                .cor_points
+                .iter()
+                .map(|point| point.altitude as f32),
+        );
         z_coords -= *z_coords.max().unwrap();
         z_coords *= -1.0;
 
@@ -764,102 +948,118 @@ view *= (i as f32) * linear;
         let z_diff = t_diff * self.metadata.medium_velocity;
 
         // The minimum logical resolution, assuming just one wavelength
-        let logical_res = (self.metadata.antenna_mhz / self.metadata.medium_velocity) * (1e-9 * 1e6);
+        let logical_res =
+            (self.metadata.antenna_mhz / self.metadata.medium_velocity) * (1e-9 * 1e6);
 
         let old_data = self.data.iter().collect::<Vec<&f32>>();
 
         let height = self.height();
         let width = self.width();
 
-        let output: Vec<f32> = (0..(width * height)).into_par_iter().map(|sample_idx| {
-            let row = sample_idx / width;
-            let trace_n = sample_idx - (row * width);
-            let trace_top_z = z_coords[trace_n];
-            let trace_x = x_coords[trace_n];
+        let output: Vec<f32> = (0..(width * height))
+            .into_par_iter()
+            .map(|sample_idx| {
+                let row = sample_idx / width;
+                let trace_n = sample_idx - (row * width);
+                let trace_top_z = z_coords[trace_n];
+                let trace_x = x_coords[trace_n];
 
-            // The expected two-way time of the sample (assuming it is straight down)
-            let t_0 = 2. * row as f32 * t_diff;
-            let t_0_px = row;
+                // The expected two-way time of the sample (assuming it is straight down)
+                let t_0 = 2. * row as f32 * t_diff;
+                let t_0_px = row;
 
-            // Derive the Fresnel zone
-            // This is the radius in which the sample may be affected horizontally
-            // Pérez-Gracia et al. (2008) Horizontal resolution in a non-destructive
-            // shallow GPR survey: An experimental evaluation. NDT & E International,
-            // 41(8): 611–620. doi:10.1016/j.ndteint.2008.06.002
-            let fresnel_radius = 0.5 * (logical_res * 2. * z_diff * row as f32).sqrt();
+                // Derive the Fresnel zone
+                // This is the radius in which the sample may be affected horizontally
+                // Pérez-Gracia et al. (2008) Horizontal resolution in a non-destructive
+                // shallow GPR survey: An experimental evaluation. NDT & E International,
+                // 41(8): 611–620. doi:10.1016/j.ndteint.2008.06.002
+                let fresnel_radius = 0.5 * (logical_res * 2. * z_diff * row as f32).sqrt();
 
-            // Derive the radius in pixel space
-            let fresnel_width = fresnel_radius / x_diff;
-            
+                // Derive the radius in pixel space
+                let fresnel_width = fresnel_radius / x_diff;
 
-            // If the fresnel width is zero pixels, no neighbors will change the sample. Therefore, just
-            // take the old value and put it in the topographically correct place.
-            if fresnel_width < 0.1 {
+                // If the fresnel width is zero pixels, no neighbors will change the sample. Therefore, just
+                // take the old value and put it in the topographically correct place.
+                if fresnel_width < 0.1 {
                     return old_data[(t_0_px * width) + trace_n].to_owned();
-            };
-
-            // Derive all of the neighboring columns that may affect the sample
-            let min_neighbor = (trace_n as f32 - fresnel_width).floor().clamp(0_f32, width as f32) as usize;
-            let max_neighbor = (trace_n + fresnel_width.ceil() as usize + 1).clamp(0, width);
-
-            let mut ampl = 0_f32;
-            let mut n_ampl = 0_f32;
-
-            // Pixels that are entirely within the fresnel width should be included fully. Pixels
-            // outside should be excluded. Pixels that border the fresnel width should be included
-            // in a weighted average. Here, these weights are created. If the neighbour-trace
-            // distance is larger than the fresnel width, the weight is first assigned 1.0.
-            // The ones bordering the fresnel width are given the fraction how how much is covered
-            // , e.g. 24% (0.24). With a fresnel width of e.g. 1.2, there would be three weights:
-            // [0.2, 1.0, 0.2]
-            let n_neighbors = (max_neighbor - min_neighbor) as f32;
-            let in_fresnel_weight = n_neighbors / (n_neighbors - 2.);
-            let out_fresnel_weight = fresnel_width.fract();
-
-            for neighbor_n in min_neighbor..max_neighbor {
-
-                // Get the vertical component of the two-way time to the neighboring sample.
-                let t_top = t_0 - 2. * (z_coords[neighbor_n] - trace_top_z) / self.metadata.medium_velocity;
-
-                // Get the travel time to the sample accounting for the x distance
-                let t_x = (t_top.powi(2) + (2. * (x_coords[neighbor_n] - trace_x) / self.metadata.medium_velocity).powi(2)).sqrt();
-                // The sample will be in either the pixel when rounding down or when rounding up
-                // ... so these will both be evaluated
-                // These values have pixel units, as they are normalized to pixel resolution
-                let t_1_px = (0.5 * t_x / t_diff).floor() as usize;
-                let mut t_2_px = (0.5 * t_x / t_diff).ceil() as usize;
-
-                if t_2_px >= height {
-                    t_2_px = t_1_px;
                 };
 
-                // If the travel times are within the bounds of the data and the pixel displacement is not zero,
-                // ... append a weighted amplitude accounting for the displacement distance
-                if t_1_px < height {
+                // Derive all of the neighboring columns that may affect the sample
+                let min_neighbor = (trace_n as f32 - fresnel_width)
+                    .floor()
+                    .clamp(0_f32, width as f32) as usize;
+                let max_neighbor = (trace_n + fresnel_width.ceil() as usize + 1).clamp(0, width);
 
-                    let weight = match t_1_px == t_2_px {true => 0_f32, false => ((t_1_px as f32 - (0.5 * t_x / t_diff)) / (t_1_px as f32 - t_2_px as f32)).abs()};
+                let mut ampl = 0_f32;
+                let mut n_ampl = 0_f32;
 
-                    ampl += 
-                        (x_diff / (2. * std::f32::consts::PI * t_x * self.metadata.medium_velocity).sqrt()) // Account for the horizontal distance
+                // Pixels that are entirely within the fresnel width should be included fully. Pixels
+                // outside should be excluded. Pixels that border the fresnel width should be included
+                // in a weighted average. Here, these weights are created. If the neighbour-trace
+                // distance is larger than the fresnel width, the weight is first assigned 1.0.
+                // The ones bordering the fresnel width are given the fraction how how much is covered
+                // , e.g. 24% (0.24). With a fresnel width of e.g. 1.2, there would be three weights:
+                // [0.2, 1.0, 0.2]
+                let n_neighbors = (max_neighbor - min_neighbor) as f32;
+                let in_fresnel_weight = n_neighbors / (n_neighbors - 2.);
+                let out_fresnel_weight = fresnel_width.fract();
+
+                for neighbor_n in min_neighbor..max_neighbor {
+                    // Get the vertical component of the two-way time to the neighboring sample.
+                    let t_top = t_0
+                        - 2. * (z_coords[neighbor_n] - trace_top_z) / self.metadata.medium_velocity;
+
+                    // Get the travel time to the sample accounting for the x distance
+                    let t_x = (t_top.powi(2)
+                        + (2. * (x_coords[neighbor_n] - trace_x) / self.metadata.medium_velocity)
+                            .powi(2))
+                    .sqrt();
+                    // The sample will be in either the pixel when rounding down or when rounding up
+                    // ... so these will both be evaluated
+                    // These values have pixel units, as they are normalized to pixel resolution
+                    let t_1_px = (0.5 * t_x / t_diff).floor() as usize;
+                    let mut t_2_px = (0.5 * t_x / t_diff).ceil() as usize;
+
+                    if t_2_px >= height {
+                        t_2_px = t_1_px;
+                    };
+
+                    // If the travel times are within the bounds of the data and the pixel displacement is not zero,
+                    // ... append a weighted amplitude accounting for the displacement distance
+                    if t_1_px < height {
+                        let weight = match t_1_px == t_2_px {
+                            true => 0_f32,
+                            false => ((t_1_px as f32 - (0.5 * t_x / t_diff))
+                                / (t_1_px as f32 - t_2_px as f32))
+                                .abs(),
+                        };
+
+                        ampl += (x_diff / (2. * std::f32::consts::PI * t_x * self.metadata.medium_velocity).sqrt()) // Account for the horizontal distance
                         * (t_top / t_x) // Account for the vertical distance
                         * ((1. - weight) * old_data[(t_1_px * width) + neighbor_n] + weight * old_data[(t_2_px * width) + neighbor_n]) // Account for the neigbour's value
                         * if (neighbor_n == min_neighbor) | (neighbor_n == max_neighbor - 1)
-                         {out_fresnel_weight} else {in_fresnel_weight}
-                    ;
-                    n_ampl += 1.0;
-                };
-            };
+                         {out_fresnel_weight} else {in_fresnel_weight};
+                        n_ampl += 1.0;
+                    };
+                }
 
-            if n_ampl > 0. {
-                ampl / n_ampl
-            } else {
-                0.
-            }
-
-        }).collect();
+                if n_ampl > 0. {
+                    ampl / n_ampl
+                } else {
+                    0.
+                }
+            })
+            .collect();
 
         self.update_data(Array2::from_shape_vec((height, width), output).unwrap());
-        self.log_event("kirchhoff_migration2d", &format!("Ran 2D Kirchhoff migration with a velocity of {} m/ns", self.metadata.medium_velocity), start_time);
+        self.log_event(
+            "kirchhoff_migration2d",
+            &format!(
+                "Ran 2D Kirchhoff migration with a velocity of {} m/ns",
+                self.metadata.medium_velocity
+            ),
+            start_time,
+        );
     }
 
     pub fn height(&self) -> usize {
@@ -873,14 +1073,24 @@ view *= (i as f32) * linear;
     }
 
     pub fn depths(&self) -> Array1<f32> {
-        let time_windows = (Array1::<f32>::range(0., self.height() as f32, 1.) / self.height() as f32) * self.metadata.time_window;
-        let corr_antenna_separation = (self.horizontal_signal_distance.powi(2) - (self.zero_point_ns * self.metadata.medium_velocity).powi(2)).max(0.).sqrt();
-        time_windows.mapv(|time| tools::return_time_to_depth(time, self.metadata.medium_velocity, corr_antenna_separation))
+        let time_windows = (Array1::<f32>::range(0., self.height() as f32, 1.)
+            / self.height() as f32)
+            * self.metadata.time_window;
+        let corr_antenna_separation = (self.horizontal_signal_distance.powi(2)
+            - (self.zero_point_ns * self.metadata.medium_velocity).powi(2))
+        .max(0.)
+        .sqrt();
+        time_windows.mapv(|time| {
+            tools::return_time_to_depth(
+                time,
+                self.metadata.medium_velocity,
+                corr_antenna_separation,
+            )
+        })
     }
 }
 
 pub fn all_available_steps() -> Vec<[&'static str; 2]> {
-
     vec![
         ["zero_corr_max_peak", "Shift the location of the zero return time by finding the maximum row value. The peak is found for each trace individually."],
         ["zero_corr", "Shift the location of the zero return time by finding the first row where data appear. The correction can be tweaked to allow more or less data, e.g. 'zero_corr(0.9)'. Default: 1.0"],
@@ -894,7 +1104,6 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
         ["correct_topography", "Make a copy of the data and topographically correct it. In the output, the data will be called \"topo_data\"."],
         ["correct_antenna_separation", "Correct for the separation between the antenna transmitter and receiver. The consequence is that depths are slightly over-exaggerated at low return-times before correction. This step averages samples so that each sample represents a consistent depth interval."],
     ]
-
 }
 
 pub fn default_processing_profile() -> Vec<String> {
@@ -902,24 +1111,28 @@ pub fn default_processing_profile() -> Vec<String> {
         format!("zero_corr_max_peak"),
         "equidistant_traces".to_string(),
         "correct_antenna_separation".to_string(),
-        format!("normalize_horizontal_magnitudes({})", DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF),
+        format!(
+            "normalize_horizontal_magnitudes({})",
+            DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF
+        ),
         "unphase".to_string(),
         "kirchhoff_migration2d".to_string(),
-        format!("normalize_horizontal_magnitudes({})", DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF),
+        format!(
+            "normalize_horizontal_magnitudes({})",
+            DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF
+        ),
         format!("dewow({})", DEFAULT_DEWOW_WINDOW),
         format!("auto_gain({})", DEFAULT_AUTOGAIN_N_BINS),
     ]
 }
 
-
 #[cfg(test)]
 mod tests {
-    use ndarray::{Array1, Slice, Axis};
+    use ndarray::{Array1, Axis, Slice};
 
-    use super::{CorPoint, LocationCorrection, GPRLocation};
+    use super::{CorPoint, GPRLocation, LocationCorrection};
 
     fn make_cor_points(n_points: usize, spacing: f64) -> Vec<CorPoint> {
-
         let eastings = Array1::range(0_f64, n_points as f64 * spacing, spacing);
 
         let northings = Array1::<f64>::zeros(n_points);
@@ -929,17 +1142,32 @@ mod tests {
 
         let trace_n = eastings.mapv(|v| v as u32);
 
-        (0..n_points).map(|i| CorPoint{trace_n: trace_n[i], time_seconds: seconds[i], easting: eastings[i], northing: northings[i], altitude: altitudes[i]}).collect::<Vec<CorPoint>>()
+        (0..n_points)
+            .map(|i| CorPoint {
+                trace_n: trace_n[i],
+                time_seconds: seconds[i],
+                easting: eastings[i],
+                northing: northings[i],
+                altitude: altitudes[i],
+            })
+            .collect::<Vec<CorPoint>>()
     }
 
-    fn make_gpr_location(n_points: usize, spacing: Option<f64>, crs: Option<String>, correction: Option<LocationCorrection>) -> GPRLocation {
-
-        GPRLocation { cor_points: make_cor_points(n_points, spacing.unwrap_or(1.)), correction: correction.unwrap_or(LocationCorrection::NONE), crs: crs.unwrap_or("EPSG:32633".to_string()) }
-
+    fn make_gpr_location(
+        n_points: usize,
+        spacing: Option<f64>,
+        crs: Option<String>,
+        correction: Option<LocationCorrection>,
+    ) -> GPRLocation {
+        GPRLocation {
+            cor_points: make_cor_points(n_points, spacing.unwrap_or(1.)),
+            correction: correction.unwrap_or(LocationCorrection::NONE),
+            crs: crs.unwrap_or("EPSG:32633".to_string()),
+        }
     }
 
     #[test]
-    fn test_gpr_location () {
+    fn test_gpr_location() {
         let mut gpr_location = make_gpr_location(10, None, None, None);
         // The first time+coordinate should be all zero
         assert_eq!(gpr_location.time_and_coord_at_trace(0), (0., 0., 0., 0.));
@@ -951,18 +1179,25 @@ mod tests {
         // Check that interpolation works expectedly
         assert_eq!(gpr_location.time_and_coord_at_trace(1), (1., 1., 0., 1.));
 
-        assert_eq!(gpr_location.time_and_coord_at_trace(100), gpr_location.time_and_coord_at_trace(gpr_location.cor_points.last().unwrap().trace_n));
+        assert_eq!(
+            gpr_location.time_and_coord_at_trace(100),
+            gpr_location.time_and_coord_at_trace(gpr_location.cor_points.last().unwrap().trace_n)
+        );
 
         gpr_location = gpr_location.range_fill(0, 10);
 
         // Check that the velocities are consistent along the track
         // The first and second velocities will still be a bit weird
         let velocities = gpr_location.velocities();
-        assert_eq!(Some(velocities[2]), velocities.slice_axis(Axis(0) ,Slice::new(1, None, 1)).mean());
+        assert_eq!(
+            Some(velocities[2]),
+            velocities
+                .slice_axis(Axis(0), Slice::new(1, None, 1))
+                .mean()
+        );
 
         let distances = gpr_location.distances();
         assert_eq!(distances[0], 0.);
         assert_eq!(distances[9], 9.);
     }
-
 }
