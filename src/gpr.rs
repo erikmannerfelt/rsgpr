@@ -19,6 +19,7 @@ const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
 const DEFAULT_DEWOW_WINDOW: u32 = 5;
 const DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF: f32 = 0.3;
 const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
+const DEFAULT_AUTOGAIN_EXPONENT: f32 = 2.;
 
 /// Metadata associated with a GPR dataset
 ///
@@ -377,16 +378,34 @@ impl GPR {
         } else if step_name.contains("auto_gain") {
             let n_bins =
                 tools::parse_option::<usize>(step_name, 0)?.unwrap_or(DEFAULT_AUTOGAIN_N_BINS);
-            self.auto_gain(n_bins);
+            let exponent: Option<f32> = match tools::parse_option::<f32>(step_name, 1) {
+                Ok(v) => match v {
+                    Some(v2) => Ok(Some(v2)),
+                    None => Ok(Some(DEFAULT_AUTOGAIN_EXPONENT)),
+                },
+                Err(e) => match e.contains("out of bounds") {
+                    true => Ok(Some(DEFAULT_AUTOGAIN_EXPONENT)),
+                    false => Err(e),
+                },
+            }?;
+            self.auto_gain(n_bins, exponent);
         } else if step_name.contains("gain") {
-            let linear = match tools::parse_option::<f32>(step_name, 0)? {
+            let factor = match tools::parse_option::<f32>(step_name, 0)? {
                 Some(v) => Ok(v),
                 None => Err(
-                    "The linear gain factor must be specified when applying gain. E.g. gain(0.1)"
+                    "The gain factor must be specified when applying gain. E.g. gain(0.1)"
                         .to_string(),
                 ),
             }?;
-            self.gain(linear);
+            let exponent: Option<f32> = match tools::parse_option::<f32>(step_name, 1) {
+                Ok(v) => Ok(v),
+                Err(e) => match e.contains("out of bounds") {
+                    true => Ok(None),
+                    false => Err(e),
+                },
+            }?;
+
+            self.gain(factor, exponent);
         } else if step_name.contains("subset") {
             let min_trace: Option<u32> = match tools::parse_option::<u32>(step_name, 0)? {
                 Some(v) => Ok(Some(v)),
@@ -803,7 +822,7 @@ impl GPR {
         );
     }
 
-    pub fn auto_gain(&mut self, n_bins: usize) {
+    pub fn auto_gain(&mut self, n_bins: usize, exponent: Option<f32>) {
         let start_time = SystemTime::now();
 
         let step = (self.height() / n_bins) as isize;
@@ -820,6 +839,9 @@ impl GPR {
 
             stds.push(slice.mapv(|a| a.abs()).mean().unwrap());
         }
+        if let Some(exp) = exponent {
+            step_mids = step_mids.iter().map(|v| v.powf(exp)).collect::<Vec<f32>>();
+        };
 
         let xs = DenseMatrix::from_2d_array(&[&step_mids]).transpose();
 
@@ -830,7 +852,7 @@ impl GPR {
         )
         .unwrap();
 
-        self.gain(-lr.coefficients().get(0, 0));
+        self.gain(-lr.coefficients().get(0, 0), exponent);
         self.log_event(
             "auto_gain",
             &format!("Applied autogain from {} bins", n_bins),
@@ -838,18 +860,22 @@ impl GPR {
         );
     }
 
-    pub fn gain(&mut self, linear: f32) {
+    pub fn gain(&mut self, factor: f32, exponent: Option<f32>) {
         let start_time = SystemTime::now();
 
         for i in 0..self.height() as isize {
             let mut view = self
                 .data
                 .slice_axis_mut(Axis(0), Slice::new(i, Some(i + 1), 1_isize));
-            view *= (i as f32) * linear;
+            view *= (i as f32).powf(exponent.unwrap_or(1.)) * factor;
         }
         self.log_event(
             "gain",
-            &format!("Applied linear gain of *= {} * index", linear),
+            &format!(
+                "Applied gain of *= {} * index^{}",
+                factor,
+                exponent.unwrap_or(1.)
+            ),
             start_time,
         );
     }
