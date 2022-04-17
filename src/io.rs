@@ -3,7 +3,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::error::Error;
 /// Functions to handle input and output (I/O) of files.
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::{gpr, tools};
 
@@ -447,6 +447,63 @@ pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>>
     )?;
 
     Ok(())
+}
+
+/// Export a "track" file.
+///
+/// It has its own associated function because the logic may happen in two different places in the
+/// main() function.
+///
+/// # Arguments
+/// - `gpr_locations`: The GPRLocation object to export
+/// - `potential_track_path`: The output path of the track file (if any)
+/// - `output_filepath`: The output filepath to derive a track filepath from in case
+/// `potential_track_path` was not provided
+/// - `verbose`: Print progress?
+///
+/// # Returns
+/// The exit code of the function
+pub fn export_locations(
+    gpr_locations: &gpr::GPRLocation,
+    potential_track_path: &Option<PathBuf>,
+    output_filepath: &Path,
+    verbose: bool,
+) -> Result<(), Box<dyn Error>> {
+    // Determine the output filepath. If one was given, use that. If none was given, use the
+    // parent and file stem + "_track.csv" of the output filepath. If a directory was given,
+    // use the directory + the file stem of the output filepath + "_track.csv".
+    let track_path: PathBuf = match potential_track_path {
+        Some(fp) => match fp.is_dir() {
+            true => fp
+                .join(
+                    output_filepath
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_string()
+                        + "_track",
+                )
+                .with_extension("csv"),
+            false => fp.clone().to_path_buf(),
+        },
+        None => output_filepath
+            .with_file_name(
+                output_filepath
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+                    + "_track",
+            )
+            .with_extension("csv"),
+    };
+    if verbose {
+        println!("Exporting track to {:?}", track_path);
+    };
+
+    Ok(gpr_locations.to_csv(&track_path)?)
 }
 
 #[cfg(test)]

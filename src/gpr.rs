@@ -3,7 +3,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use ndarray_stats::QuantileExt;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use ndarray::{Array1, Array2, Axis, Slice};
 use rayon::prelude::*;
@@ -107,7 +107,7 @@ pub enum LocationCorrection {
     DEM(PathBuf),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GPRLocation {
     pub cor_points: Vec<CorPoint>,
     pub correction: LocationCorrection,
@@ -281,6 +281,23 @@ impl GPRLocation {
 
     pub fn length(&self) -> f64 {
         self.distances().max().unwrap().to_owned()
+    }
+
+    pub fn duration_since(&self, other: &GPRLocation) -> f64 {
+        let self_times = Array1::from_iter(self.cor_points.iter().map(|p| p.time_seconds));
+        let other_times = Array1::from_iter(other.cor_points.iter().map(|p| p.time_seconds));
+
+        let self_min = self_times.min().unwrap();
+        let self_max = self_times.max().unwrap();
+
+        let other_min = other_times.min().unwrap();
+        let other_max = other_times.max().unwrap();
+
+        if self_min > other_min {
+            other_max - self_min
+        } else {
+            other_min - self_max
+        }
     }
 }
 
@@ -1114,7 +1131,281 @@ impl GPR {
             )
         })
     }
+
+    pub fn merge(&mut self, other: &GPR) -> Result<(), String> {
+        let start_time = SystemTime::now();
+        if self.location.crs != other.location.crs {
+            Err(format!(
+                "CRS are different: {} vs {}",
+                self.location.crs, other.location.crs
+            ))
+        } else if self.metadata.antenna_mhz != other.metadata.antenna_mhz {
+            Err(format!(
+                "Antenna frequencies are different: {} vs {}",
+                self.metadata.antenna_mhz, other.metadata.antenna_mhz
+            ))
+        } else if self.metadata.time_window != other.metadata.time_window {
+            Err(format!(
+                "Time windows are different: {} vs {}",
+                self.metadata.time_window, other.metadata.time_window
+            ))
+        } else {
+            self.location
+                .cor_points
+                .append(other.location.cor_points.clone().as_mut());
+
+            self.data.append(Axis(1), other.data.view()).unwrap();
+
+            self.metadata.time_window =
+                self.metadata.time_window * (self.height() as f32 / self.metadata.samples as f32);
+            self.metadata.samples = self.height() as u32;
+            self.metadata.last_trace = self.width() as u32;
+
+            self.log_event("merge", &format!("Merged {:?}", other.metadata.rd3_filepath), start_time);
+
+            Ok(())
+        }
+    }
 }
+
+pub fn run(
+    paths: Vec<PathBuf>,
+    output_path: Option<PathBuf>,
+    only_info: bool,
+    dem_path: Option<PathBuf>,
+    cor_path: Option<PathBuf>,
+    medium_velocity: f32,
+    crs: String,
+    quiet: bool,
+    track_path: Option<Option<PathBuf>>,
+    steps: Vec<String>,
+    no_export: bool,
+    render_path: Option<Option<PathBuf>>,
+    merge: Option<Duration>,
+) -> Result<Vec<GPR>, Box<dyn Error>> {
+    let empty: Vec<GPR> = Vec::new();
+    let mut gprs: Vec<(PathBuf, GPR)> = Vec::new();
+    for filepath in &paths {
+        // The given filepath may be ".rd3" or may not have an extension at all
+        // Counterintuitively to the user point of view, it's the ".rad" file that should be given
+        let rad_filepath = filepath.with_extension("rad");
+
+        // Make sure that it exists
+        if !rad_filepath.is_file() {
+            if filepath.is_file() {
+                return Err(
+                    format!("File found but no '.rad' file found: {:?}", rad_filepath).into(),
+                );
+            }
+            return Err(format!("File not found: {:?}", rad_filepath).into());
+        };
+        // Load the GPR metadata from the rad file
+        let gpr_meta = io::load_rad(&rad_filepath, medium_velocity)?;
+
+        // Load the GPR location data
+        // If the "--cor" argument was used, load from there. Otherwise, try to find a ".cor" file
+        let mut gpr_locations = match &cor_path {
+            Some(fp) => io::load_cor(&fp, &crs)?,
+            None => match gpr_meta.find_cor(&crs) {
+                Ok(v) => Ok(v),
+                Err(e) => match &paths.len() > &1 {
+                    true => {
+                        eprintln!("Error in batch mode, continuing anyway: {:?}", e);
+                        continue;
+                    },
+                    false => Err(e),
+                },
+            }?,
+        };
+
+        // If a "--dem" was given, substitute elevations using said DEM
+        if let Some(dem_path) = &dem_path {
+            gpr_locations.get_dem_elevations(&dem_path);
+        };
+
+        // Construct the output filepath. If one was given, use that.
+        // If a path was given and it's a directory, use the file stem + ".nc" of the input
+        // filename. If no output path was given, default to the directory of the input.
+        let output_filepath = match &output_path {
+            Some(p) => match p.is_dir() {
+                true => p.join(filepath.file_stem().unwrap()).with_extension("nc"),
+                false => {
+                    if let Some(parent) = p.parent() {
+                        if !parent.is_dir() {
+                            return Err(format!(
+                                "Output directory of path is not a directory: {:?}",
+                                p
+                            )
+                            .into());
+                        };
+                    };
+                    p.clone()
+                }
+            },
+            None => filepath.with_extension("nc"),
+        };
+
+        // If the "--info" argument was given, stop here and just show info.
+        if only_info {
+            println!("{}", gpr_meta);
+            println!("{}", gpr_locations);
+            // If the track should be exported, do so.
+            if let Some(potential_track_path) = &track_path {
+                io::export_locations(
+                    &gpr_locations,
+                    potential_track_path,
+                    &output_filepath,
+                    !quiet,
+                )?;
+            };
+        } else {
+            // At this point, the data should be processed.
+            let gpr = match GPR::from_meta_and_loc(gpr_locations, gpr_meta) {
+                Ok(g) => g,
+                Err(e) => {
+                    return Err(format!(
+                        "Error loading GPR data from {:?}: {:?}",
+                        rad_filepath.with_extension("rd3"),
+                        e
+                    )
+                    .into())
+                }
+            };
+
+            gprs.push((output_filepath, gpr));
+        };
+    }
+
+    // Merge GPR profiles if the merge flag was used
+    if let Some(merge) = merge.and_then(|m| Some(m.as_secs_f64())) {
+
+        let mut incompatible: Vec<(usize, usize)> = Vec::new();
+        for _ in 0..gprs.len() {
+
+            let mut distances: Vec<(usize, usize, f64)> = Vec::new();
+            for i in 0..gprs.len() {
+                for j in (0..gprs.len()).rev() {
+                    if let Some(incomp) = incompatible.get(i) {
+                        if (i == incomp.0) & (j == incomp.1) {
+                            continue;
+                        };
+                    };
+                    if (j >= gprs.len()) | (i >= gprs.len()) | (i == j) {
+                        continue;
+                    };
+                    let diff = gprs[i].1.location.duration_since(&gprs[j].1.location);
+
+                    distances.push((i, j, diff));
+                };
+            };
+            distances.sort_by(|(i0, j0, _), (i1, j1, _) | {
+                match i0.partial_cmp(i1).unwrap() {
+                    std::cmp::Ordering::Equal => j0.partial_cmp(j1).unwrap(),
+                    o => o,
+                }
+
+            });
+
+            if let Some(min_i) = distances.iter().map(|d| d.0).min() {
+                let mut merged = 0_usize;
+                for (_, j, distance) in distances.iter().filter_map(|d| match d.0 == min_i {true => Some(d), false => None}) {
+                    if distance > &merge {
+                        continue;
+                    };
+                    let (output_fp, gpr) = gprs.remove(j - merged);
+                    match gprs[min_i].1.merge(&gpr) {
+                        Ok(_) => (),
+                        Err(e) => {
+                            eprintln!("Could not merge {:?} -> {:?}: {}", output_fp, &gprs[min_i].0, e); 
+                            gprs.insert(j - merged, (output_fp, gpr));
+                            incompatible.push((min_i, j - merged));
+                            continue;
+                        }
+                    };
+                    println!("Merged {:?} -> {:?}", output_fp, &gprs[min_i].0);
+                    merged += 1;
+                };
+            } else {
+                continue;
+            };
+        };
+    };
+
+    for (output_filepath, mut gpr) in gprs {
+        // Record the starting time to show "t+XX" times
+        let start_time = SystemTime::now();
+        if !quiet {
+            println!("Processing {:?}", gpr.metadata.rd3_filepath);
+        };
+
+        // Run each step sequentially
+        for (i, step) in steps.iter().enumerate() {
+            if !quiet {
+                println!(
+                    "{}/{}, t+{:.2} s, Running step {}. ",
+                    i + 1,
+                    steps.len(),
+                    SystemTime::now()
+                        .duration_since(start_time)
+                        .unwrap()
+                        .as_secs_f32(),
+                    step,
+                );
+            };
+
+            // Stop if any error occurs
+            match gpr.process(step) {
+                Ok(_) => 0,
+                Err(e) => return Err(format!("Error on step {}: {:?}", step, e).into()),
+            };
+        }
+
+        // Unless the "--no-export" flag was given, export the ".nc" result
+        if !no_export {
+            if !quiet {
+                println!("Exporting to {:?}", output_filepath);
+            };
+            match gpr.export(&output_filepath) {
+                Ok(_) => (),
+                Err(e) => return Err(format!("Error exporting data: {:?}", e).into()),
+            }
+        };
+
+        // If "--render" was given, render an image of the output
+        // The flag may or may not have a filepath (it can either be "-r" or "-r img.jpg")
+        if let Some(potential_fp) = &render_path {
+            // Find out the output filepath. If one was given, use that. If none was given, use
+            // the output filepath with a ".jpg" extension. If a directory was given, use the
+            // file stem of the output filename and a ".jpg" extension
+            let render_filepath = match potential_fp {
+                Some(fp) => match fp.is_dir() {
+                    true => fp
+                        .join(output_filepath.file_stem().unwrap())
+                        .with_extension("jpg"),
+                    false => fp.clone(),
+                },
+                None => output_filepath.with_extension("jpg"),
+            };
+            if !quiet {
+                println!("Rendering image to {:?}", render_filepath);
+            };
+            gpr.render(&render_filepath).unwrap();
+        };
+
+        // If "--track" was given, export the track file.
+        if let Some(potential_track_path) = &track_path {
+            io::export_locations(
+                &gpr.location,
+                potential_track_path,
+                &output_filepath,
+                !quiet,
+            )?;
+        };
+    }
+
+    Ok(empty)
+}
+
 
 pub fn all_available_steps() -> Vec<[&'static str; 2]> {
     vec![
@@ -1225,5 +1516,29 @@ mod tests {
         let distances = gpr_location.distances();
         assert_eq!(distances[0], 0.);
         assert_eq!(distances[9], 9.);
+    }
+
+    #[test]
+    fn test_gpr_location_duration_since() {
+        let gpr_location0 = make_gpr_location(10, Some(1.), None, None);
+
+        let mut gpr_location1 = gpr_location0.clone();
+
+        for point in gpr_location1.cor_points.iter_mut() {
+            point.time_seconds += 10.;
+        }
+
+        // gpr_location0 stops at 9s. gpr_location1 starts at 10s
+        // So the difference should be +1s for gpr_location0-gpr_location1
+        // And -1s for gpr_location1-gpr_location0
+
+        assert_eq!(gpr_location0.duration_since(&gpr_location1), 1.);
+        assert_eq!(gpr_location1.duration_since(&gpr_location0), -1.);
+
+        for point in gpr_location1.cor_points.iter_mut() {
+            point.time_seconds -= 30.;
+        }
+        assert_eq!(gpr_location0.duration_since(&gpr_location1), -11.);
+        assert_eq!(gpr_location1.duration_since(&gpr_location0), 11.);
     }
 }
