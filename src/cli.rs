@@ -8,6 +8,18 @@ use std::{
 
 #[derive(Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
+#[clap(group(
+        clap::ArgGroup::new("step_choice")
+        .required(false)
+        .args(&["steps", "default", "default-with-topo"]),
+    ))
+]
+#[clap(group(
+        clap::ArgGroup::new("exit_choice")
+        .required(false)
+        .args(&["show-default", "info", "show-all-steps", "output"]),
+    ))
+]
 pub struct Args {
     /// Filepath of the Malå rd3 file
     #[clap(short, long)]
@@ -41,6 +53,10 @@ pub struct Args {
     /// Process with the default profile. See "--show-default" to list the profile.
     #[clap(long)]
     default: bool,
+
+    /// Process with the default profile plus topographic correction. See "--show-default" to list the profile.
+    #[clap(long)]
+    default_with_topo: bool,
 
     /// Show the default profile and exit
     #[clap(long)]
@@ -190,16 +206,23 @@ pub fn main(arguments: Args) -> i32 {
 
         // The profile (the list of steps) is the default profile if "--default" was given, or a
         // list of "--steps a,b,c". If none were given, raise an error
-        let profile: Vec<String> = match arguments.default {
-            true => gpr::default_processing_profile(),
-            false => match &arguments.steps {
-                Some(steps) => steps.split(",").map(|s| s.trim().to_string()).collect(),
-                None => {
-                    return error(
-                        &format!("No steps specified. Choose a profile or what steps to run"),
-                        1,
-                    )
-                }
+        let profile: Vec<String> = match arguments.default_with_topo {
+            true => {
+                let mut profile = gpr::default_processing_profile();
+                profile.push("correct_topography".to_string());
+                profile
+            }
+            false => match arguments.default {
+                true => gpr::default_processing_profile(),
+                false => match &arguments.steps {
+                    Some(steps) => steps.split(",").map(|s| s.trim().to_string()).collect(),
+                    None => {
+                        return error(
+                            &format!("No steps specified. Choose a profile or what steps to run"),
+                            1,
+                        )
+                    }
+                },
             },
         };
 
