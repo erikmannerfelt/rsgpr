@@ -328,3 +328,92 @@ pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>>
         Ok(())
 
 }
+
+
+#[cfg(test)]
+mod tests {
+
+    use super::{load_cor, load_rad};
+
+
+    #[test]
+    fn test_load_cor() {
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cor_path = temp_dir.path().join("hello.cor");
+
+        // Fake some data. One point is in the northern hemisphere and one is in the southern
+        let cor_text = [
+            "1\t2022-01-01\t00:00:01\t78.0\tN\t16.0\tE\t100.0\tM\t1",
+            "10\t2022-01-01\t00:01:00\t78.0\tS\t16.0\tW\t100.0\tM\t1",
+            "11\t2022-01",  // This simulates an unfinished line that should be skipped
+        ].join("\r\n");
+
+        std::fs::write(&cor_path, cor_text).unwrap();
+
+        // Load it and "convert" (or rather don't convert) the CRS to WGS84
+        let locations = load_cor(&cor_path, "EPSG:4326").unwrap();
+
+        // Check that the trace number is now zero based, and that the other fields were read
+        // correctly
+        assert_eq!(locations.cor_points[0].trace_n, 0);
+        assert_eq!(locations.cor_points[0].easting, 16.0);
+        assert_eq!(locations.cor_points[0].northing, 78.0);
+        assert_eq!(locations.cor_points[0].altitude, 100.0);
+        assert_eq!(locations.cor_points[0].time_seconds, chrono::DateTime::parse_from_rfc3339("2022-01-01T00:00:01+00:00").unwrap().timestamp() as f64);
+
+        // Check that the second point has inverted signs (since it's 78*S, 16*W)
+        assert_eq!(locations.cor_points[1].easting, -16.0);
+        assert_eq!(locations.cor_points[1].northing, -78.0);
+
+        // Load the data again but convert it to WGS84 UTM Zone 33N
+        let locations = load_cor(&cor_path, "EPSG:32633").unwrap();
+
+        // Check that the coordinates are within reason
+        assert!((locations.cor_points[0].easting > 500_000_f64) & (locations.cor_points[0].easting < 600_000_f64));
+        assert!((locations.cor_points[0].northing > 8_000_000_f64) & (locations.cor_points[0].easting < 9_000_000_f64));
+        assert!((locations.cor_points[1].northing < 0_f64) & (locations.cor_points[1].northing > -9_000_000_f64));
+    }
+
+
+    #[test]
+    fn test_load_rad() {
+
+        // Fake a .rad metadata file
+        let temp_dir = tempfile::tempdir().unwrap();
+        let rad_path = temp_dir.path().join("hello.rad");
+        let rd3_path = rad_path.with_extension("rd3");
+        let rad_text = [
+            "SAMPLES:2024",
+            "FREQUENCY:                 1000.",
+            "FREQUENCY STEPS: 20",
+            "TIME INTERVAL: 0.1",
+            "ANTENNAS: 100 MHz unshielded",
+            "ANTENNA SEPARATION: 0.5",
+            "TIMEWINDOW:2000",
+            "LAST TRACE: 40",
+
+        ].join("\r\n");
+
+        std::fs::write(&rad_path, rad_text).unwrap();
+
+        // The rd3 file needs to exist, but it doesn't need to contain anything
+        std::fs::write(&rd3_path, "").unwrap();
+
+
+        let gpr_meta = load_rad(&rad_path, 0.1).unwrap();
+
+        // Check that the correct values were parsed
+        assert_eq!(gpr_meta.samples, 2024);
+        assert_eq!(gpr_meta.frequency, 1000.);
+        assert_eq!(gpr_meta.frequency_steps, 20); 
+        assert_eq!(gpr_meta.time_interval, 0.1); 
+        assert_eq!(gpr_meta.antenna_mhz, 100.); 
+        assert_eq!(gpr_meta.antenna_separation, 0.5); 
+        assert_eq!(gpr_meta.time_window, 2000.); 
+        assert_eq!(gpr_meta.last_trace, 40); 
+        assert_eq!(gpr_meta.rd3_filepath, rd3_path);
+    }
+
+
+}

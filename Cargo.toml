@@ -23,3 +23,6 @@ gdal = {version = "*", features = ["ndarray"]}  # For reading DEMs
 netcdf = {version = "*", features = ["ndarray"]}
 proj = "*"
 clap = { version = "3.1.8", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "*"
