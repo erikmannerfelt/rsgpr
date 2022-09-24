@@ -1,8 +1,8 @@
+/// Functions to handle input and output (I/O) of GPR data files.
 use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::error::Error;
-/// Functions to handle input and output (I/O) of files.
 use std::path::{Path, PathBuf};
 
 use crate::{gpr, tools};
@@ -28,7 +28,7 @@ pub fn load_rad(filepath: &Path, medium_velocity: f32) -> Result<gpr::GPRMeta, B
 
     let rd3_filepath = filepath.with_extension("rd3");
     if !rd3_filepath.is_file() {
-        return Err(format!("File not found: {:?}", rd3_filepath).into());
+        return Err(format!("File not found: {rd3_filepath:?}").into());
     };
 
     // Extract and parse all required metadata into a new GPRMeta object.
@@ -178,7 +178,7 @@ pub fn load_rd3(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn s
     for byte_pair in bytes.chunks_exact(2) {
         let value = i16::from_le_bytes([byte_pair[0], byte_pair[1]]);
         data.push(value as f32 * bits_to_millivolt);
-    }
+    };
 
     let width: usize = data.len() / height;
 
@@ -187,7 +187,7 @@ pub fn load_rd3(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn s
 
 /// Export a GPR profile and its metadata to a NetCDF (".nc") file.
 ///
-/// It will remove any file that already exists with the same filename.
+/// It will overwrite any file that already exists with the same filename.
 ///
 /// # Arguments
 /// - `gpr`: The GPR object to export
@@ -411,11 +411,12 @@ pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>>
 
     let data = data_to_render.iter().collect::<Vec<&f32>>();
 
-    // Get quick and dirty quantiles by only looking at 10th of the data
+    // Get quick and dirty quantiles by only looking at a 10th of the data
     let q = tools::quantiles(&data, &[0.01, 0.99], Some(10));
     let mut minval = q[0];
     let maxval = q[1];
 
+    // If unphase has been run, there are no (valid) negative numbers, so it should instead start at 0
     let unphase_run = gpr.log.iter().any(|s| s.contains("unphase"));
     if unphase_run {
         minval = &0.;
@@ -423,6 +424,7 @@ pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>>
 
     //let logit99 = (0.99_f32 / (1.0_f32 - 0.99_f32)).log(std::f32::consts::E);
 
+    // Render the pixels into a grayscale image
     let pixels: Vec<u8> = data
         .into_par_iter()
         .map(|f| {
@@ -456,7 +458,7 @@ pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>>
 ///
 /// # Arguments
 /// - `gpr_locations`: The GPRLocation object to export
-/// - `potential_track_path`: The output path of the track file (if any)
+/// - `potential_track_path`: The output path of the track file or a directory (if provided)
 /// - `output_filepath`: The output filepath to derive a track filepath from in case
 /// `potential_track_path` was not provided
 /// - `verbose`: Print progress?
@@ -465,7 +467,7 @@ pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>>
 /// The exit code of the function
 pub fn export_locations(
     gpr_locations: &gpr::GPRLocation,
-    potential_track_path: &Option<PathBuf>,
+    potential_track_path: Option<&PathBuf>,
     output_filepath: &Path,
     verbose: bool,
 ) -> Result<(), Box<dyn Error>> {
@@ -473,7 +475,9 @@ pub fn export_locations(
     // parent and file stem + "_track.csv" of the output filepath. If a directory was given,
     // use the directory + the file stem of the output filepath + "_track.csv".
     let track_path: PathBuf = match potential_track_path {
+        // Here is in case a filepath or directory was given
         Some(fp) => match fp.is_dir() {
+            // In case the filepath points to a directory
             true => fp
                 .join(
                     output_filepath
@@ -485,8 +489,10 @@ pub fn export_locations(
                         + "_track",
                 )
                 .with_extension("csv"),
+            // In case it is not a directory (and thereby assumed to be a normal filepath)
             false => fp.clone().to_path_buf(),
         },
+        // Here is if no filepath was given
         None => output_filepath
             .with_file_name(
                 output_filepath
@@ -510,21 +516,23 @@ pub fn export_locations(
 mod tests {
 
     use super::{load_cor, load_rad};
+    
+    /// Fake some data. One point is in the northern hemisphere and one is in the southern
+    fn fake_cor_text() -> String {
+        [
+            "1\t2022-01-01\t00:00:01\t78.0\tN\t16.0\tE\t100.0\tM\t1",
+            "10\t2022-01-01\t00:01:00\t78.0\tS\t16.0\tW\t100.0\tM\t1",
+            "11\t2022-01", // This simulates an unfinished line that should be skipped
+        ]
+        .join("\r\n")        
+    }
 
     #[test]
     fn test_load_cor() {
         let temp_dir = tempfile::tempdir().unwrap();
         let cor_path = temp_dir.path().join("hello.cor");
 
-        // Fake some data. One point is in the northern hemisphere and one is in the southern
-        let cor_text = [
-            "1\t2022-01-01\t00:00:01\t78.0\tN\t16.0\tE\t100.0\tM\t1",
-            "10\t2022-01-01\t00:01:00\t78.0\tS\t16.0\tW\t100.0\tM\t1",
-            "11\t2022-01", // This simulates an unfinished line that should be skipped
-        ]
-        .join("\r\n");
-
-        std::fs::write(&cor_path, cor_text).unwrap();
+        std::fs::write(&cor_path, fake_cor_text()).unwrap();
 
         // Load it and "convert" (or rather don't convert) the CRS to WGS84
         let locations = load_cor(&cor_path, "EPSG:4326").unwrap();
@@ -599,5 +607,65 @@ mod tests {
         assert_eq!(gpr_meta.time_window, 2000.);
         assert_eq!(gpr_meta.last_trace, 40);
         assert_eq!(gpr_meta.rd3_filepath, rd3_path);
+    }
+    
+    #[test]
+    fn test_export_locations() {
+        use super::export_locations;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cor_path = temp_dir.path().join("hello.cor");
+
+        std::fs::write(&cor_path, fake_cor_text()).unwrap();
+
+
+        // Load it and "convert" (or rather don't convert) the CRS to WGS84
+        let locations = load_cor(&cor_path, "EPSG:4326").unwrap();
+        
+        let out_dir = temp_dir.path().to_path_buf();
+        let out_path = out_dir.join("track.csv"); 
+        
+        // The GPR filepath will be used in case no explicit filepath was given
+        let dummy_gpr_output_path = out_dir.join("gpr.nc");
+        let expected_default_path = out_dir.join("gpr_track.csv");
+        
+        
+        for alternative in [
+            Some(&out_path),  // In case of a target filepath
+            Some(&out_dir),   // In case of a target directory
+            None              // In case of a default name beside the GPR file
+        ] {
+            export_locations(&locations, alternative, &dummy_gpr_output_path, false).unwrap();
+            
+            let expected_path = match alternative {
+                Some(p) if p == &out_path => &out_path,
+                _ => &expected_default_path 
+            };
+            assert!(expected_path.is_file());
+            
+            let content = std::fs::read_to_string(expected_path).unwrap().split("\n").map(|s| s.to_string()).collect::<Vec<String>>();
+            
+            assert_eq!(content[0], "trace_n,easting,northing,altitude");
+            
+            let line0: Vec<&str> = content[1].split(",").collect();
+            
+            // The cor file says 1 but rsgpr is zero-indexed, hence 0
+            assert_eq!(line0[0], "0");
+            assert_eq!(line0[1], "16");
+            assert_eq!(line0[2], "78");
+            assert_eq!(line0[3], "100");
+            
+            let line1: Vec<&str> = content[2].split(",").collect();
+            assert_eq!(line1[2], "-78");
+            
+            std::fs::remove_file(expected_path).unwrap();
+        };
+        
+        
+        
+
+        
+        
+        
+        
     }
 }

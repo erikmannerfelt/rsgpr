@@ -842,7 +842,7 @@ impl GPR {
     pub fn auto_gain(&mut self, n_bins: usize, exponent: Option<f32>) {
         let start_time = SystemTime::now();
 
-        let step = (self.height() / n_bins) as isize;
+        let step = ((self.height() / n_bins) as isize).max(1);
 
         let mut step_mids: Vec<f32> = Vec::new();
         let mut stds: Vec<f32> = Vec::new();
@@ -1253,7 +1253,7 @@ pub fn run(
             if let Some(potential_track_path) = &track_path {
                 io::export_locations(
                     &gpr_locations,
-                    potential_track_path,
+                    potential_track_path.into(),
                     &output_filepath,
                     !quiet,
                 )?;
@@ -1396,7 +1396,7 @@ pub fn run(
         if let Some(potential_track_path) = &track_path {
             io::export_locations(
                 &gpr.location,
-                potential_track_path,
+                potential_track_path.into(),
                 &output_filepath,
                 !quiet,
             )?;
@@ -1415,7 +1415,7 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
         ["normalize_horizontal_magnitudes", "Normalize the magnitudes of the traces in the horizontal axis. This removes or reduces horizontal banding. The uppermost samples of the trace can be excluded, either by sample number (integer; e.g. 'normalize_horizontal_magnitudes(300)') or by a fraction of the trace (float; e.g. 'normalize_horizontal_magnitudes(0.3)'). Default: 0.3"],
         ["dewow", "Subtract the horizontal moving average magnitude for each trace. This reduces artefacts that are consistent among every trace. The averaging window can be set, e.g. 'dewow(10)'. Default: 5"],
         ["auto_gain", "Automatically determine the best linear gain and apply it. The data are binned vertically and the standard deviation of the values is used as a proxy for signal attenuation. A linear model is fit to the standard deviations vs. depth, and the subsequent linear coefficient is given to the gain filter. Note that this will show up as having run auto_gain and then gain in the log. The amounts of bins can be given, e.g. 'auto_gain(100). Default: 100"],
-        ["gain", "Multiply the magnitude as a function of depth. This is most often used to correct for signal attenuation with time/distance. Gain is applied by: 'gain * sample_index^exponent' where gain is the given gain, sample_index is the zero-based index of the sample from the top, and exponent is the exponent of the gain (default=2). Examples: power-2-gain: gain(0.1), linear-gain: gain(0.1, 1). No default value."],
+        ["gain", "Multiply the magnitude as a function of depth. This is most often used to correct for signal attenuation with time/distance. Gain is applied by: 'gain * sample_index^exponent' where gain is the given gain, sample_index is the zero-based index of the sample from the top, and exponent is the exponent of the gain (default=2). Examples: power-2-gain: gain(0.1), linear-gain: gain(0.1 1). No default value."],
         ["kirchhoff_migration2d", "Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data. The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the mean of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions."],
         ["unphase", "Combine the positive and negative phases of the signal into one positive magntiude. The assumption is made that the positive magnitude of the signal comes first, followed by an offset negative component. The distance between the positive and negative peaks are found, and then the negative part is shifted accordingly."],
         ["correct_topography", "Make a copy of the data and topographically correct it. In the output, the data will be called \"topo_data\". Note that the copying means any step run after this will not be reflected in \"topo_data\". This is thus recommended to run last."],

@@ -263,7 +263,7 @@ pub fn groupby_average(
 ///
 pub fn return_time_to_depth(return_time: f32, velocity: f32, antenna_separation: f32) -> f32 {
     let two_way_distance = return_time * velocity;
-    match two_way_distance > antenna_separation {
+    match two_way_distance > (2. * antenna_separation) {
         true => ((two_way_distance).powi(2) - 4. * antenna_separation.powi(2)).sqrt() / 2.,
         false => 0.,
     }
@@ -390,5 +390,10 @@ mod tests {
         // If the return time is tiny and the antenna separation is too large, 0. should be
         // returned.
         assert_eq!(super::return_time_to_depth(2., 0.1, 2.), 0.);
+
+
+        // A weird NAN error came up with these settings which should not occur
+        let depth = super::return_time_to_depth(5.9624557, 0.168, 1.0);
+        assert!(depth.is_finite(), "{}", depth);
     }
 }

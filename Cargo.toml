@@ -8,23 +8,23 @@ authors = ["Erik Schytt Mannerfelt"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ndarray = "*"   # For base ndarrays
-ndarray-stats = "*"  # For ndarray statistics
+ndarray = "0.15.4"   # For base ndarrays
+ndarray-stats = "0.5.0"  # For ndarray statistics
 #utm = "*"  # To convert lat/lon to easting/northing
-chrono = "*"  # Convert timestamps to seconds before epoch
+chrono = "0.4.19"  # Convert timestamps to seconds before epoch
 #nshare = "*"  # Write to an image as an ndarray
 #show-image = "*"
-image = "*"  # Write images
+image = "0.24.1"  # Write images
 #ndarray-linalg = {version = "0.13", features = ["openblas-static"]}
-smartcore = "*"  # (Linear) regression packages
-noisy_float = "*"  # For inputs to ndarray-stats 
-rayon = "*"  # For parallelization of functions
-gdal = {version = "*", features = ["ndarray"]}  # For reading DEMs
-netcdf = {version = "*", features = ["ndarray"]}
-proj = "*"
+smartcore = "0.2.0"  # (Linear) regression packages
+noisy_float = "0.2.0"  # For inputs to ndarray-stats 
+rayon = "1.5.1"  # For parallelization of functions
+gdal = {version = "0.12.0", features = ["ndarray"]}  # For reading DEMs
+netcdf = {version = "0.7.0", features = ["ndarray", "static"]}
+proj = {version="0.27.0", features =  ["pkg_config"]}
 clap = { version = "3.1.8", features = ["derive"] }
-glob = "*"
-parse_duration = "*"
+glob = "0.3.0"
+parse_duration = "2.1.1"
 
 [dev-dependencies]
-tempfile = "*"
+tempfile = "3.3.0"
