@@ -40,7 +40,7 @@ pub fn interpolate_values<
 
 /// Interpolate linearly between two known points
 ///
-/// https://en.wikipedia.org/wiki/Linear_interpolation#Linear_interpolation_between_two_known_points
+/// <https://en.wikipedia.org/wiki/Linear_interpolation#Linear_interpolation_between_two_known_points>
 ///
 /// # Arguments
 /// - `known_xy0`: The first known point as (explanatory, independent)
@@ -100,6 +100,7 @@ where
 /// # Returns
 /// A string representation of the datetime
 pub fn seconds_to_rfc3339(seconds: f64) -> String {
+
     chrono::DateTime::<chrono::Utc>::from_utc(
         chrono::NaiveDateTime::from_timestamp(seconds as i64, (seconds.fract() * 1e9) as u32),
         chrono::Utc,
@@ -116,7 +117,7 @@ pub fn seconds_to_rfc3339(seconds: f64) -> String {
 /// # Examples
 /// ```
 /// assert_eq!(parse_option::<u32>("dewow(5)", 0), Ok(Some(5)));
-/// assert_eq!(parse_option::<f32>("some_fancy_step(1 2.0)", 1), Ok(Some(2.0));
+/// assert_eq!(parse_option::<f32>("some_fancy_step(1 2.0)", 1), Ok(Some(2.0)));
 /// assert_eq!(parse_option::<f32>("some_fancy_step", 1), Ok(None));
 ///
 /// ```
@@ -170,9 +171,10 @@ pub enum Axis2D {
 
 /// Average the data by binning them along one axis in a specified dimension
 ///
-/// The python-equivalent would be:
-///
+/// The python (pandas) equivalent would be:
+/// ```python
 /// DATA.groupby((X_VALUES / BIN_SIZE).astype(int)).mean(axis=AXIS)
+/// ```
 ///
 /// # Arguments
 /// - `data`: The data to modify inplace

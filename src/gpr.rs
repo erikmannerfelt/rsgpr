@@ -26,16 +26,26 @@ const DEFAULT_AUTOGAIN_EXPONENT: f32 = 2.;
 /// This contains all required informaton except the location data and the actual data
 #[derive(Debug, Clone)]
 pub struct GPRMeta {
+    /// The number of samples per trace (the vertical data size)
     pub samples: u32,
+    /// The control unit sampling frequency (MHz)
     pub frequency: f32,
     pub frequency_steps: u32,
+    /// The interval between traces (s)
     pub time_interval: f32,
+    /// The name of the antenna
     pub antenna: String,
+    /// The frequency of the antenna (MHz)
     pub antenna_mhz: f32,
+    /// The horizontal separation between the antenna transmitter and receiver (m)
     pub antenna_separation: f32,
+    /// The return time window (ns) 
     pub time_window: f32,
+    /// The number of traces in the data (the horizontal data size)
     pub last_trace: u32,
+    /// The path to the RD3 metadata file
     pub rd3_filepath: PathBuf,
+    /// The velocity of the medium (m / ns)
     pub medium_velocity: f32,
 }
 
@@ -343,13 +353,21 @@ CRS:\t\t\t{}
     }
 }
 
+/// An in-memory GPR dataset
 pub struct GPR {
+    /// The data matrix, with rows of traces (originally in mV)
     pub data: Array2<f32>,
+    /// Topographically corrected data matrix, if processed.
     pub topo_data: Option<Array2<f32>>,
+    /// Trace X/Y/Z location data
     pub location: GPRLocation,
+    /// Metadata for the GPR dataset
     pub metadata: GPRMeta,
+    /// Processing log. Each line is one processing step
     pub log: Vec<String>,
+    /// The horizontal component of the signal distance (m). Defaults to the antenna separation if no correction has been made.
     horizontal_signal_distance: f32,
+    /// The calculated zero-point (ns). It represents the delay between the transmitter and the receiver.
     zero_point_ns: f32,
 }
 
