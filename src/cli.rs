@@ -11,13 +11,13 @@ use std::{
 #[clap(group(
         clap::ArgGroup::new("step_choice")
         .required(false)
-        .args(&["steps", "default", "default-with-topo"]),
+        .args(&["steps", "default", "default_with_topo"]),
     ))
 ]
 #[clap(group(
         clap::ArgGroup::new("exit_choice")
         .required(false)
-        .args(&["show-default", "info", "show-all-steps", "output"]),
+        .args(&["show_default", "info", "show_all_steps", "output"]),
     ))
 ]
 pub struct Args {
@@ -126,10 +126,14 @@ pub fn main(arguments: Args) -> i32 {
         None => None,
     };
 
-    let filepaths = glob::glob(&arguments.filepath.unwrap())
-        .unwrap()
-        .map(|v| v.unwrap())
-        .collect::<Vec<PathBuf>>();
+    let filepaths = match arguments.filepath {
+        Some(fp) => glob::glob(&fp)
+            .unwrap()
+            .map(|v| v.unwrap())
+            .collect::<Vec<PathBuf>>(),
+        None => return error("No filepath given.\nUse the help text (\"-h\" or \"--help\") for assistance.", 1),
+    };
+        
     // The profile (the list of steps) is the default profile if "--default" was given, or a
     // list of "--steps a,b,c". If none were given, raise an error
     let profile: Vec<String> = match arguments.info {

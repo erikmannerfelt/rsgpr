@@ -7,8 +7,9 @@ use std::time::{Duration, SystemTime};
 
 use ndarray::{Array1, Array2, Axis, Slice};
 use rayon::prelude::*;
-use smartcore::linalg::naive::dense_matrix::DenseMatrix;
-use smartcore::linalg::BaseMatrix;
+use smartcore::linalg::basic::matrix::DenseMatrix;
+use smartcore::linalg::basic::arrays::Array2 as OtherArray2;
+use smartcore::linalg::basic::arrays::Array;
 use smartcore::linear::linear_regression::{
     LinearRegression, LinearRegressionParameters, LinearRegressionSolverName,
 };
@@ -887,7 +888,7 @@ impl GPR {
         )
         .unwrap();
 
-        self.gain(-lr.coefficients().get(0, 0), exponent);
+        self.gain(-lr.coefficients().get((0, 0)), exponent);
         self.log_event(
             "auto_gain",
             &format!("Applied autogain from {} bins", n_bins),
