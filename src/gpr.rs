@@ -1428,6 +1428,7 @@ pub fn run(
 
 pub fn all_available_steps() -> Vec<[&'static str; 2]> {
     vec![
+        ["subset", "Subset the data in x (traces) and/or y (samples). Examples: Clip to the first 500 samples: subset(0, -1, 0, 500). Clip to the first 300 traces, subset(0, 300)"],
         ["zero_corr_max_peak", "Shift the location of the zero return time by finding the maximum row value. The peak is found for each trace individually."],
         ["zero_corr", "Shift the location of the zero return time by finding the first row where data appear. The correction can be tweaked to allow more or less data, e.g. 'zero_corr(0.9)'. Default: 1.0"],
         ["equidistant_traces", "Make all traces equidistant by averaging them in a fixed horizontal grid. The step size is determined from the median moving velocity. Other step sizes in m can be given, e.g. 'equidistant_traces(2.)' for 2 m. Default: auto"],
