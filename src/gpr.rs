@@ -7,12 +7,6 @@ use std::time::{Duration, SystemTime};
 
 use ndarray::{Array1, Array2, Axis, Slice};
 use rayon::prelude::*;
-use smartcore::linalg::basic::matrix::DenseMatrix;
-use smartcore::linalg::basic::arrays::Array2 as OtherArray2;
-use smartcore::linalg::basic::arrays::Array;
-use smartcore::linear::linear_regression::{
-    LinearRegression, LinearRegressionParameters, LinearRegressionSolverName,
-};
 
 use crate::{dem, io, tools};
 
@@ -20,7 +14,6 @@ const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
 const DEFAULT_DEWOW_WINDOW: u32 = 5;
 const DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF: f32 = 0.3;
 const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
-const DEFAULT_AUTOGAIN_EXPONENT: f32 = 2.;
 
 /// Metadata associated with a GPR dataset
 ///
@@ -414,17 +407,7 @@ impl GPR {
         } else if step_name.contains("auto_gain") {
             let n_bins =
                 tools::parse_option::<usize>(step_name, 0)?.unwrap_or(DEFAULT_AUTOGAIN_N_BINS);
-            let exponent: Option<f32> = match tools::parse_option::<f32>(step_name, 1) {
-                Ok(v) => match v {
-                    Some(v2) => Ok(Some(v2)),
-                    None => Ok(Some(DEFAULT_AUTOGAIN_EXPONENT)),
-                },
-                Err(e) => match e.contains("out of bounds") {
-                    true => Ok(Some(DEFAULT_AUTOGAIN_EXPONENT)),
-                    false => Err(e),
-                },
-            }?;
-            self.auto_gain(n_bins, exponent);
+            self.auto_gain(n_bins);
         } else if step_name.contains("gain") {
             let factor = match tools::parse_option::<f32>(step_name, 0)? {
                 Some(v) => Ok(v),
@@ -433,15 +416,7 @@ impl GPR {
                         .to_string(),
                 ),
             }?;
-            let exponent: Option<f32> = match tools::parse_option::<f32>(step_name, 1) {
-                Ok(v) => Ok(v),
-                Err(e) => match e.contains("out of bounds") {
-                    true => Ok(None),
-                    false => Err(e),
-                },
-            }?;
-
-            self.gain(factor, exponent);
+            self.gain(factor);
         } else if step_name.contains("subset") {
             let min_trace: Option<u32> = match tools::parse_option::<u32>(step_name, 0)? {
                 Some(v) => Ok(Some(v)),
@@ -858,59 +833,52 @@ impl GPR {
         );
     }
 
-    pub fn auto_gain(&mut self, n_bins: usize, exponent: Option<f32>) {
+    pub fn auto_gain(&mut self, n_bins: usize) {
         let start_time = SystemTime::now();
 
         let step = ((self.height() / n_bins) as isize).max(1);
 
-        let mut step_mids: Vec<f32> = Vec::new();
-        let mut stds: Vec<f32> = Vec::new();
+        let mut old_att: Option<f32> = None;
+        let mut attenuations: Vec<f32> = Vec::new();
 
         for i in (0..(self.height() as isize - step)).step_by(step as usize) {
             let slice = self
                 .data
                 .slice_axis(Axis(0), Slice::new(i, Some(i + step), step));
 
-            step_mids.push((i as f32 + (i + step) as f32) / 2.0);
-
-            stds.push(slice.mapv(|a| a.abs()).mean().unwrap());
+            let new_att = slice.mapv(|a| a.abs().log10()).mean().unwrap();
+            if let Some(old) = old_att {
+                attenuations.push(old - new_att);
+            }
+            old_att = Some(new_att);
         }
-        if let Some(exp) = exponent {
-            step_mids = step_mids.iter().map(|v| v.powf(exp)).collect::<Vec<f32>>();
-        };
 
-        let xs = DenseMatrix::from_2d_array(&[&step_mids]).transpose();
+        let median_att = tools::quantiles(&attenuations, &[0.5], None)[0];
 
-        let lr = LinearRegression::fit(
-            &xs,
-            &stds,
-            LinearRegressionParameters::default().with_solver(LinearRegressionSolverName::QR),
-        )
-        .unwrap();
+        let slope = (median_att.abs() / ((self.height() as f32) / (n_bins as f32))).sqrt() * median_att.signum();
 
-        self.gain(-lr.coefficients().get((0, 0)), exponent);
         self.log_event(
             "auto_gain",
-            &format!("Applied autogain from {} bins", n_bins),
+            &format!("Measured gain factor using autogain from {} bins", n_bins),
             start_time,
         );
+        self.gain(slope);
     }
 
-    pub fn gain(&mut self, factor: f32, exponent: Option<f32>) {
+    pub fn gain(&mut self, factor: f32) {
         let start_time = SystemTime::now();
 
         for i in 0..self.height() as isize {
             let mut view = self
                 .data
                 .slice_axis_mut(Axis(0), Slice::new(i, Some(i + 1), 1_isize));
-            view *= (i as f32).powf(exponent.unwrap_or(1.)) * factor;
+
+            view *= 10_f32.powf(factor * (i as f32).sqrt());
         }
         self.log_event(
             "gain",
             &format!(
-                "Applied gain of *= {} * index^{}",
-                factor,
-                exponent.unwrap_or(1.)
+                "Applied gain of *= 10^({factor} * sqrt(index))",
             ),
             start_time,
         );
@@ -1434,9 +1402,9 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
         ["equidistant_traces", "Make all traces equidistant by averaging them in a fixed horizontal grid. The step size is determined from the median moving velocity. Other step sizes in m can be given, e.g. 'equidistant_traces(2.)' for 2 m. Default: auto"],
         ["normalize_horizontal_magnitudes", "Normalize the magnitudes of the traces in the horizontal axis. This removes or reduces horizontal banding. The uppermost samples of the trace can be excluded, either by sample number (integer; e.g. 'normalize_horizontal_magnitudes(300)') or by a fraction of the trace (float; e.g. 'normalize_horizontal_magnitudes(0.3)'). Default: 0.3"],
         ["dewow", "Subtract the horizontal moving average magnitude for each trace. This reduces artefacts that are consistent among every trace. The averaging window can be set, e.g. 'dewow(10)'. Default: 5"],
-        ["auto_gain", "Automatically determine the best linear gain and apply it. The data are binned vertically and the standard deviation of the values is used as a proxy for signal attenuation. A linear model is fit to the standard deviations vs. depth, and the subsequent linear coefficient is given to the gain filter. Note that this will show up as having run auto_gain and then gain in the log. The amounts of bins can be given, e.g. 'auto_gain(100). Default: 100"],
-        ["gain", "Multiply the magnitude as a function of depth. This is most often used to correct for signal attenuation with time/distance. Gain is applied by: 'gain * sample_index^exponent' where gain is the given gain, sample_index is the zero-based index of the sample from the top, and exponent is the exponent of the gain (default=2). Examples: power-2-gain: gain(0.1), linear-gain: gain(0.1 1). No default value."],
-        ["kirchhoff_migration2d", "Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data. The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the mean of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions."],
+        ["auto_gain", "Automatically determine the best gain factor and apply it. The data are binned vertically and the mean absolute deviation of the values is used as a proxy for signal attenuation. The median attenuation in decibel volts is given to the gain filter. The amounts of bins can be given, e.g. 'auto_gain(100). Default: 100"],
+        ["gain", "Multiply the magnitude as a function of depth. This is most often used to correct for signal attenuation with time/distance. Gain is applied by: '10 ^(gain * sqrt(sample_index))' where gain is the given gain factor and sample_index is the zero-based index of the sample from the top. Examples: gain(0.1). No default value."],
+        ["kirchhoff_migration2d", "Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data. The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the sum of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions."],
         ["unphase", "Combine the positive and negative phases of the signal into one positive magntiude. The assumption is made that the positive magnitude of the signal comes first, followed by an offset negative component. The distance between the positive and negative peaks are found, and then the negative part is shifted accordingly."],
         ["correct_topography", "Make a copy of the data and topographically correct it. In the output, the data will be called \"topo_data\". Note that the copying means any step run after this will not be reflected in \"topo_data\". This is thus recommended to run last."],
         ["correct_antenna_separation", "Correct for the separation between the antenna transmitter and receiver. The consequence is that depths are slightly over-exaggerated at low return-times before correction. This step averages samples so that each sample represents a consistent depth interval."],

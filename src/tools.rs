@@ -78,7 +78,7 @@ where
         .into_iter()
         .step_by(downsample.unwrap_or(1))
         .collect();
-    vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut output = [*vals[0]; L];
 
