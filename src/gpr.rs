@@ -451,6 +451,21 @@ impl GPR {
             self.correct_topography();
         } else if step_name.contains("correct_antenna_separation") {
             self.correct_antenna_separation();
+        } else if step_name.contains("remove_traces") {
+            
+            let mut traces = Vec::<usize>::new();
+            for i in 0..self.width() {
+                if let Some(trace) = tools::parse_option::<usize>(step_name, i)? {
+                    traces.push(trace);
+                } else {
+                    break
+                }
+            };
+            if traces.len() == 0 {
+                return Err("Indices must be given when calling remove_traces, e.g. remove_traces(0 1 5)".into())
+            };
+            self.remove_traces(&traces)?;
+            
         } else {
             return Err(format!("Step name not recognized: {}", step_name).into());
         }
@@ -1092,6 +1107,52 @@ impl GPR {
         );
     }
 
+    /// Remove traces based on their integer index
+    pub fn remove_traces(&mut self, traces: &[usize]) -> Result<(), String> {
+        let start_time = SystemTime::now();
+        // The width will be called multiple times, so it's better to assign it statically.
+        let width = self.width();
+
+        // Make the traces unique, and validate that they are not out of bounds
+        let mut unique_traces = Vec::<usize>::new();
+        for trace in traces {
+            if trace >= &width {
+                return Err(format!("Trace index {trace:?} is out of bounds (number of traces: {width})").into())
+            }
+            if !unique_traces.contains(trace) {
+                unique_traces.push(*trace);
+            }
+        };
+        // Sort them, and then subtract the amount of removals that are done before this index.
+        // For example, if trace 0,1 and 2 should be removed, by the time the loop reaches 2, it's now the zeroth index.
+        // Therefore, the true index is index - i, where i is the count of indices before
+        unique_traces.sort_unstable();
+        for i in 0..unique_traces.len() {
+            unique_traces[i] -= i;
+        };
+       
+        // Remove each selected trace from the data, (potentially) topo. corr. data, and the location info.
+        for trace in &unique_traces {
+
+            self.data.remove_index(Axis(1), *trace);
+
+            match self.topo_data.as_mut() {
+                Some(data) => data.remove_index(Axis(1), *trace),
+                None => (),
+            };
+            self.location.cor_points.remove(*trace);
+        };
+        self.metadata.last_trace = self.width() as u32;
+
+        self.log_event(
+            "remove_traces",
+            &format!("Removed trace indices {unique_traces:?}"),
+            start_time,
+        );
+
+        Ok(())
+    }
+
     pub fn height(&self) -> usize {
         self.data.shape()[0]
     }
@@ -1396,7 +1457,8 @@ pub fn run(
 
 pub fn all_available_steps() -> Vec<[&'static str; 2]> {
     vec![
-        ["subset", "Subset the data in x (traces) and/or y (samples). Examples: Clip to the first 500 samples: subset(0, -1, 0, 500). Clip to the first 300 traces, subset(0, 300)"],
+        ["subset", "Subset the data in x (traces) and/or y (samples). Examples: Clip to the first 500 samples: subset(0 -1 0 500). Clip to the first 300 traces, subset(0 300)"],
+        ["remove_traces", "Manually remove trace indices, for example in case they are visually deemed bad. Example: Remove the first two traces: remove_traces(0 1)"],
         ["zero_corr_max_peak", "Shift the location of the zero return time by finding the maximum row value. The peak is found for each trace individually."],
         ["zero_corr", "Shift the location of the zero return time by finding the first row where data appear. The correction can be tweaked to allow more or less data, e.g. 'zero_corr(0.9)'. Default: 1.0"],
         ["equidistant_traces", "Make all traces equidistant by averaging them in a fixed horizontal grid. The step size is determined from the median moving velocity. Other step sizes in m can be given, e.g. 'equidistant_traces(2.)' for 2 m. Default: auto"],
@@ -1471,6 +1533,27 @@ mod tests {
         }
     }
 
+    fn make_dummy_gpr(
+            n_traces: usize,
+            n_samples: usize,
+            spacing: Option<f64>,
+            crs: Option<String>,
+            correction: Option<LocationCorrection>
+        ) -> super::GPR {
+
+        let gpr_location = make_gpr_location(n_traces, spacing, None, None);
+        let metadata = super::GPRMeta {samples: n_samples as u32, frequency: 5000., frequency_steps: 0, time_interval: 0.2, antenna: "500MHz".to_string(), antenna_mhz: 500., antenna_separation: 1., time_window: 2000., last_trace: n_traces as u32, rd3_filepath: std::path::PathBuf::new(), medium_velocity: 0.167};
+
+        let mut data = ndarray::Array2::<f32>::zeros((n_samples, n_traces));
+        let new_row = ndarray::Array1::<f32>::range(0., n_traces as f32, 1.);
+        for mut row in data.rows_mut() {
+            row.assign(&new_row);
+        };
+        
+
+        super::GPR {location: gpr_location, metadata, data, topo_data: None, zero_point_ns: 0., horizontal_signal_distance: 1., log: Vec::new()}
+    }
+
     #[test]
     fn test_gpr_location() {
         let mut gpr_location = make_gpr_location(10, None, None, None);
@@ -1528,5 +1611,43 @@ mod tests {
         }
         assert_eq!(gpr_location0.duration_since(&gpr_location1), -11.);
         assert_eq!(gpr_location1.duration_since(&gpr_location0), 11.);
+    }
+
+
+    #[test]
+    fn test_remove_traces() {
+        let mut gpr = make_dummy_gpr(20, 30, Some(1.), None, None);
+
+        gpr.topo_data = Some(gpr.data.clone());
+
+        // Make sure that the dummy GPR is indeed 30x20 and it varies linearly from 0-19
+        assert_eq!(gpr.width(), 20);
+        assert_eq!(gpr.height(), 30);
+        assert_eq!(gpr.location.cor_points.len(), 20);
+        assert_eq!(gpr.data[[0, 0]], 0.);
+        assert_eq!(gpr.data[[0, 19]], 19.);
+
+        if let Some(topo_data) = &gpr.topo_data {
+            assert_eq!(topo_data[[0, 19]], 19.);
+        };
+        // Remove indices 5 and 6, and "accidentally" duplicate one trace
+        gpr.remove_traces(&[5, 5, 6]).unwrap();
+
+        // Validate that the dummy GPR is now shorter, and that the values are shifted correctly.
+        assert_eq!(gpr.width(), 18);
+        assert_eq!(gpr.height(), 30);
+        assert_eq!(gpr.location.cor_points.len(), 18);
+        assert_eq!(gpr.data[[0, 0]], 0.);
+        assert_eq!(gpr.data[[0, 17]], 19.);
+        assert_eq!(gpr.data[[0, 5]], 7.);
+
+        if let Some(topo_data) = &gpr.topo_data {
+            assert_eq!(topo_data[[0, 17]], 19.);
+            assert_eq!(topo_data[[0, 5]], 7.);
+        };
+
+        // Check that the out of bounds error works expectedly
+        assert_eq!(gpr.remove_traces(&[18]), Err("Trace index 18 is out of bounds (number of traces: 18)".to_string()));
+
     }
 }
