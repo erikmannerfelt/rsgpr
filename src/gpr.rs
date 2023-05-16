@@ -33,7 +33,7 @@ pub struct GPRMeta {
     pub antenna_mhz: f32,
     /// The horizontal separation between the antenna transmitter and receiver (m)
     pub antenna_separation: f32,
-    /// The return time window (ns) 
+    /// The return time window (ns)
     pub time_window: f32,
     /// The number of traces in the data (the horizontal data size)
     pub last_trace: u32,
@@ -452,20 +452,23 @@ impl GPR {
         } else if step_name.contains("correct_antenna_separation") {
             self.correct_antenna_separation();
         } else if step_name.contains("remove_traces") {
-            
             let mut traces = Vec::<usize>::new();
             for i in 0..self.width() {
-                if let Some(trace) = tools::parse_option::<usize>(step_name, i)? {
-                    traces.push(trace);
-                } else {
-                    break
-                }
-            };
+                match tools::parse_option::<usize>(step_name, i) {
+                    Ok(trace_o) => match trace_o {
+                        Some(trace) => traces.push(trace),
+                        None => break,
+                    },
+                    Err(_) => break,
+                };
+            }
             if traces.len() == 0 {
-                return Err("Indices must be given when calling remove_traces, e.g. remove_traces(0 1 5)".into())
+                return Err(
+                    "Indices must be given when calling remove_traces, e.g. remove_traces(0 1 5)"
+                        .into(),
+                );
             };
             self.remove_traces(&traces)?;
-            
         } else {
             return Err(format!("Step name not recognized: {}", step_name).into());
         }
@@ -870,7 +873,8 @@ impl GPR {
 
         let median_att = tools::quantiles(&attenuations, &[0.5], None)[0];
 
-        let slope = (median_att.abs() / ((self.height() as f32) / (n_bins as f32))).sqrt() * median_att.signum();
+        let slope = (median_att.abs() / ((self.height() as f32) / (n_bins as f32))).sqrt()
+            * median_att.signum();
 
         self.log_event(
             "auto_gain",
@@ -892,9 +896,7 @@ impl GPR {
         }
         self.log_event(
             "gain",
-            &format!(
-                "Applied gain of *= 10^({factor} * sqrt(index))",
-            ),
+            &format!("Applied gain of *= 10^({factor} * sqrt(index))",),
             start_time,
         );
     }
@@ -1117,23 +1119,25 @@ impl GPR {
         let mut unique_traces = Vec::<usize>::new();
         for trace in traces {
             if trace >= &width {
-                return Err(format!("Trace index {trace:?} is out of bounds (number of traces: {width})").into())
+                return Err(format!(
+                    "Trace index {trace:?} is out of bounds (number of traces: {width})"
+                )
+                .into());
             }
             if !unique_traces.contains(trace) {
                 unique_traces.push(*trace);
             }
-        };
+        }
         // Sort them, and then subtract the amount of removals that are done before this index.
         // For example, if trace 0,1 and 2 should be removed, by the time the loop reaches 2, it's now the zeroth index.
         // Therefore, the true index is index - i, where i is the count of indices before
         unique_traces.sort_unstable();
         for i in 0..unique_traces.len() {
             unique_traces[i] -= i;
-        };
-       
+        }
+
         // Remove each selected trace from the data, (potentially) topo. corr. data, and the location info.
         for trace in &unique_traces {
-
             self.data.remove_index(Axis(1), *trace);
 
             match self.topo_data.as_mut() {
@@ -1141,7 +1145,7 @@ impl GPR {
                 None => (),
             };
             self.location.cor_points.remove(*trace);
-        };
+        }
         self.metadata.last_trace = self.width() as u32;
 
         self.log_event(
@@ -1209,7 +1213,11 @@ impl GPR {
             self.metadata.samples = self.height() as u32;
             self.metadata.last_trace = self.width() as u32;
 
-            self.log_event("merge", &format!("Merged {:?}", other.metadata.rd3_filepath), start_time);
+            self.log_event(
+                "merge",
+                &format!("Merged {:?}", other.metadata.rd3_filepath),
+                start_time,
+            );
 
             Ok(())
         }
@@ -1260,7 +1268,7 @@ pub fn run(
                     true => {
                         eprintln!("Error in batch mode, continuing anyway: {:?}", e);
                         continue;
-                    },
+                    }
                     false => Err(e),
                 },
             }?,
@@ -1326,10 +1334,8 @@ pub fn run(
 
     // Merge GPR profiles if the merge flag was used
     if let Some(merge) = merge.and_then(|m| Some(m.as_secs_f64())) {
-
         let mut incompatible: Vec<(usize, usize)> = Vec::new();
         for _ in 0..gprs.len() {
-
             let mut distances: Vec<(usize, usize, f64)> = Vec::new();
             for i in 0..gprs.len() {
                 for j in (0..gprs.len()).rev() {
@@ -1344,19 +1350,21 @@ pub fn run(
                     let diff = gprs[i].1.location.duration_since(&gprs[j].1.location);
 
                     distances.push((i, j, diff));
-                };
-            };
-            distances.sort_by(|(i0, j0, _), (i1, j1, _) | {
-                match i0.partial_cmp(i1).unwrap() {
+                }
+            }
+            distances.sort_by(
+                |(i0, j0, _), (i1, j1, _)| match i0.partial_cmp(i1).unwrap() {
                     std::cmp::Ordering::Equal => j0.partial_cmp(j1).unwrap(),
                     o => o,
-                }
-
-            });
+                },
+            );
 
             if let Some(min_i) = distances.iter().map(|d| d.0).min() {
                 let mut merged = 0_usize;
-                for (_, j, distance) in distances.iter().filter_map(|d| match d.0 == min_i {true => Some(d), false => None}) {
+                for (_, j, distance) in distances.iter().filter_map(|d| match d.0 == min_i {
+                    true => Some(d),
+                    false => None,
+                }) {
                     if distance > &merge {
                         continue;
                     };
@@ -1364,7 +1372,10 @@ pub fn run(
                     match gprs[min_i].1.merge(&gpr) {
                         Ok(_) => (),
                         Err(e) => {
-                            eprintln!("Could not merge {:?} -> {:?}: {}", output_fp, &gprs[min_i].0, e); 
+                            eprintln!(
+                                "Could not merge {:?} -> {:?}: {}",
+                                output_fp, &gprs[min_i].0, e
+                            );
                             gprs.insert(j - merged, (output_fp, gpr));
                             incompatible.push((min_i, j - merged));
                             continue;
@@ -1372,11 +1383,11 @@ pub fn run(
                     };
                     println!("Merged {:?} -> {:?}", output_fp, &gprs[min_i].0);
                     merged += 1;
-                };
+                }
             } else {
                 continue;
             };
-        };
+        }
     };
 
     for (output_filepath, mut gpr) in gprs {
@@ -1453,7 +1464,6 @@ pub fn run(
 
     Ok(empty)
 }
-
 
 pub fn all_available_steps() -> Vec<[&'static str; 2]> {
     vec![
@@ -1534,24 +1544,42 @@ mod tests {
     }
 
     fn make_dummy_gpr(
-            n_traces: usize,
-            n_samples: usize,
-            spacing: Option<f64>,
-            crs: Option<String>,
-            correction: Option<LocationCorrection>
-        ) -> super::GPR {
-
+        n_traces: usize,
+        n_samples: usize,
+        spacing: Option<f64>,
+        crs: Option<String>,
+        correction: Option<LocationCorrection>,
+    ) -> super::GPR {
         let gpr_location = make_gpr_location(n_traces, spacing, None, None);
-        let metadata = super::GPRMeta {samples: n_samples as u32, frequency: 5000., frequency_steps: 0, time_interval: 0.2, antenna: "500MHz".to_string(), antenna_mhz: 500., antenna_separation: 1., time_window: 2000., last_trace: n_traces as u32, rd3_filepath: std::path::PathBuf::new(), medium_velocity: 0.167};
+        let metadata = super::GPRMeta {
+            samples: n_samples as u32,
+            frequency: 5000.,
+            frequency_steps: 0,
+            time_interval: 0.2,
+            antenna: "500MHz".to_string(),
+            antenna_mhz: 500.,
+            antenna_separation: 1.,
+            time_window: 2000.,
+            last_trace: n_traces as u32,
+            rd3_filepath: std::path::PathBuf::new(),
+            medium_velocity: 0.167,
+        };
 
         let mut data = ndarray::Array2::<f32>::zeros((n_samples, n_traces));
         let new_row = ndarray::Array1::<f32>::range(0., n_traces as f32, 1.);
         for mut row in data.rows_mut() {
             row.assign(&new_row);
-        };
-        
+        }
 
-        super::GPR {location: gpr_location, metadata, data, topo_data: None, zero_point_ns: 0., horizontal_signal_distance: 1., log: Vec::new()}
+        super::GPR {
+            location: gpr_location,
+            metadata,
+            data,
+            topo_data: None,
+            zero_point_ns: 0.,
+            horizontal_signal_distance: 1.,
+            log: Vec::new(),
+        }
     }
 
     #[test]
@@ -1613,7 +1641,6 @@ mod tests {
         assert_eq!(gpr_location1.duration_since(&gpr_location0), 11.);
     }
 
-
     #[test]
     fn test_remove_traces() {
         let mut gpr = make_dummy_gpr(20, 30, Some(1.), None, None);
@@ -1647,7 +1674,9 @@ mod tests {
         };
 
         // Check that the out of bounds error works expectedly
-        assert_eq!(gpr.remove_traces(&[18]), Err("Trace index 18 is out of bounds (number of traces: 18)".to_string()));
-
+        assert_eq!(
+            gpr.remove_traces(&[18]),
+            Err("Trace index 18 is out of bounds (number of traces: 18)".to_string())
+        );
     }
 }
