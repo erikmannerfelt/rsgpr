@@ -665,8 +665,10 @@ impl GPR {
         }
 
         let max_diff = diffs.max().unwrap();
+        let resampler = tools::Resampler::new(depths, *max_diff);
 
-        tools::groupby_average(&mut self.data, tools::Axis2D::Row, &depths, *max_diff);
+        resampler.resample_along_axis(&mut self.data, tools::Axis2D::Row);
+        //tools::groupby_average(&mut self.data, tools::Axis2D::Row, &depths, *max_diff);
         self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m.", max_diff, max_diff / (self.metadata.time_window / self.height() as f32), self.horizontal_signal_distance), start_time);
 
         self.horizontal_signal_distance = 0.;
@@ -1595,7 +1597,9 @@ mod tests {
         let mut gpr = make_test_gpr(None, Some(1024));
 
         assert_eq!(gpr.data[[10, 0]], 10.);
+        assert_eq!(gpr.log.len(), 0);
         gpr.correct_antenna_separation();
+        assert!(gpr.log.last().unwrap().contains("correct_antenna_separation"));
 
         assert_ne!(gpr.height(), 1024);
 
