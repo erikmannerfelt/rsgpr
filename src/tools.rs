@@ -3,6 +3,7 @@ use ndarray::{Array1, Array2, Axis, Slice, ArrayView1};
 use ndarray_stats::QuantileExt;
 /// Miscellaneous functions that are used in other parts of the program
 use std::str::FromStr;
+use num::{Float, Zero};
 
 /// Interpolate an arbitrary amount of independent values between two known points
 ///
@@ -272,9 +273,9 @@ pub fn return_time_to_depth(return_time: f32, velocity: f32, antenna_separation:
 }
 
 
-fn digitize(values: &[f32], bins: &[f32]) -> Vec<usize> {
+fn digitize<F: Float>(values: &[F], bins: &[F]) -> Vec<usize> {
 
-    let mut bins = bins.iter().collect::<Vec<&f32>>();
+    let mut bins = bins.iter().collect::<Vec<&F>>();
     bins.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let mut indices = Vec::<usize>::new();
@@ -299,20 +300,20 @@ fn digitize(values: &[f32], bins: &[f32]) -> Vec<usize> {
     indices
 }
 
-pub struct Resampler {
-    pub x_values: Array1<f32>,
-    pub target_x_values: Array1<f32>,
+pub struct Resampler <F: Float>{
+    pub x_values: Array1<F>,
+    pub target_x_values: Array1<F>,
     pub digitized: Vec<usize>,
     slope_indices: Vec<Vec<usize>>,
     intercept_indices: Vec<Vec<usize>>,
     _debug: bool
 }
 
-impl Resampler {
+impl<F: Float + std::fmt::Display + std::iter::Sum> Resampler<F>  {
 
-    fn _new(x_values: Array1<f32>, resolution: f32, debug: bool) -> Self {
+    fn _new(x_values: Array1<F>, resolution: F, debug: bool) -> Resampler<F> {
 
-        let target_x_values = Array1::<f32>::range(*x_values.min().unwrap(), x_values.max().unwrap() + resolution, resolution);
+        let target_x_values = Array1::<F>::range(*x_values.min().unwrap(), x_values.max().unwrap().clone() + resolution, resolution);
 
         let digitized = digitize(x_values.as_slice().unwrap(), target_x_values.as_slice().unwrap());
 
@@ -367,26 +368,26 @@ impl Resampler {
             slope_indices.push(indices_for_slope);
         }
 
-        return Self {x_values, target_x_values, digitized, slope_indices, intercept_indices, _debug: false}
+        return Resampler {x_values, target_x_values, digitized, slope_indices, intercept_indices, _debug: false}
     }
 
-    pub fn new(x_values: Array1<f32>, resolution: f32) -> Self {
+    pub fn new(x_values: Array1<F>, resolution: F) -> Self {
             Resampler::_new(x_values, resolution, false)
     }
 
-    fn _new_debug(x_values: Array1<f32>, resolution: f32) -> Self {
+    fn _new_debug(x_values: Array1<F>, resolution: F) -> Self {
         Self::_new(x_values, resolution, true)
     }
 
-    pub fn resample(&self, y_values: &ArrayView1<f32>) -> Array1<f32> {
+    pub fn resample(&self, y_values: &ArrayView1<F>) -> Array1<F> {
 
-        let mut new_y_values = Vec::<f32>::new();
+        let mut new_y_values = Vec::<F>::new();
         for (i, target_x_value) in self.target_x_values.iter().enumerate() {
 
             let indices_for_slope = &self.slope_indices[i];
             let indices_for_intercept = &self.intercept_indices[i];
-            let mut x_diffs = Vec::<f32>::new();
-            let mut y_diffs = Vec::<f32>::new();
+            let mut x_diffs = Vec::<F>::new();
+            let mut y_diffs = Vec::<F>::new();
             for j in 0..indices_for_slope.len() {
                 for k in 0..indices_for_slope.len() {
                     if j <= k {
@@ -400,7 +401,7 @@ impl Resampler {
                         println!("{j} - {k}: y_diff={y_diff}, x_diff={x_diff}");
                     }
 
-                    if x_diff == 0. {
+                    if x_diff == Zero::zero() {
                         continue
                     }
 
@@ -408,25 +409,25 @@ impl Resampler {
                     y_diffs.push(y_diff);
                 }
             }
-            let mean_xdiff = x_diffs.iter().sum::<f32>();
-            let mean_slope = match mean_xdiff != 0. {
-                true => y_diffs.iter().sum::<f32>() / mean_xdiff,
-                false => 0.
+            let mean_xdiff = x_diffs.iter().map(|v| v.to_owned()).sum::<F>();
+            let mean_slope = match mean_xdiff != Zero::zero() {
+                true => y_diffs.iter().map(|v| v.to_owned()).sum::<F>() / mean_xdiff,
+                false => Zero::zero()
             };
 
-            let mut intercepts = Vec::<f32>::new();
+            let mut intercepts = Vec::<F>::new();
 
             for j in 0..indices_for_intercept.len() {
 
                 let x_value = self.x_values[indices_for_intercept[j]];
-                let intercept = y_values[indices_for_intercept[j]] - (x_value - target_x_value) * mean_slope;
+                let intercept = y_values[indices_for_intercept[j]] - (x_value - *target_x_value) * mean_slope;
                 if self._debug {
                     println!("Calculating intercept for {x_value} => {intercept}");
                 }
                 intercepts.push(intercept);
             }
 
-            let mean_intercept = intercepts.iter().sum::<f32>() / intercepts.len() as f32;
+            let mean_intercept = intercepts.iter().map(|v| v.to_owned()).sum::<F>() / F::from(intercepts.len()).unwrap();
 
             new_y_values.push(mean_intercept);
 
@@ -437,20 +438,49 @@ impl Resampler {
 
         if self._debug {
             let targetx = &self.target_x_values;
-            println!("New X values: {targetx:?}");
-            println!("New Y values: {new_y_values:?}");
+            //println!("New X values: {targetx:?}");
+            //println!("New Y values: {new_y_values:?}");
         }
 
-        return Array1::<f32>::from_vec(new_y_values);
+        return Array1::<F>::from_vec(new_y_values);
 
     }
 
-    pub fn resample_along_axis(&self, data: &mut Array2<f32>, axis: Axis2D){
+    pub fn resample_along_axis(&self, data: &mut Array2<F>, axis: Axis2D){
 
+        let nd_axis = match axis {
+            Axis2D::Row => Axis(0),
+            Axis2D::Col => Axis(1),
+        };
+        let slice = Slice::new(0, Some(self.target_x_values.len() as isize), 1);
+
+        let length = match axis {
+            Axis2D::Row => data.shape()[0],
+            Axis2D::Col => data.shape()[1],
+        };
+
+        let mut buffer = Array1::<F>::zeros(length);
+
+        let axis_values = match axis {
+            Axis2D::Row => data.columns_mut(),
+            Axis2D::Col => data.rows_mut(),
+        }; 
+
+        for mut arr in axis_values {
+            let resampled = self.resample(&arr.view());
+
+            let mut slice = buffer.slice_axis_mut(nd_axis, slice);
+            slice.assign(&resampled);
+            arr.assign(&buffer);
+        }
+
+        data.slice_axis_inplace(nd_axis, slice);
+
+
+        /*
         match axis {
             Axis2D::Row => {
-                let slice = Slice::new(0, Some(self.target_x_values.len() as isize), 1);
-                let mut buffer = Array1::<f32>::zeros(data.shape()[0]);
+                let mut buffer = ;
                 for mut col in data.columns_mut() {
                     let resampled = self.resample(&col.view());
 
@@ -466,6 +496,7 @@ impl Resampler {
                 unimplemented!();
             }
         }
+        */
     }
 }
 
@@ -623,7 +654,7 @@ mod tests {
 
         let resolution =  1.;
 
-        let resampler = super::Resampler::_new_debug(x_values, resolution);
+        let resampler = super::Resampler::<f32>::_new_debug(x_values, resolution);
        
         let new_ys = resampler.resample(&y_values.view());
 

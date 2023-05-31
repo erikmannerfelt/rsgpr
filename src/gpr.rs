@@ -665,7 +665,7 @@ impl GPR {
         }
 
         let max_diff = diffs.max().unwrap();
-        let resampler = tools::Resampler::new(depths, *max_diff);
+        let resampler = tools::Resampler::<f32>::new(depths, *max_diff);
 
         resampler.resample_along_axis(&mut self.data, tools::Axis2D::Row);
         //tools::groupby_average(&mut self.data, tools::Axis2D::Row, &depths, *max_diff);
@@ -919,7 +919,22 @@ impl GPR {
             return;
         };
 
+        /*
+        let resampler = tools::Resampler::<f32>::new(distances, step);
+        resampler.resample_along_axis(&mut self.data, tools::Axis2D::Col);
+
+        self.metadata.last_trace = self.data.shape()[1] as u32;
+
+        //let coord_resampler = tools::Resampler::new(
+
+        //let eastings = resampler.resample(&Array1::from_vec(self.location.cor_points.iter().map(|p| p.easting).collect::<Vec<f64>>()).view());
+        let northings = Array1::from_vec(self.location.cor_points.iter().map(|p| p.northing).collect::<Vec<f64>>());
+        let times = Array1::from_vec(self.location.cor_points.iter().map(|p| p.time_seconds).collect::<Vec<f64>>());
+        let altitudes = Array1::from_vec(self.location.cor_points.iter().map(|p| p.altitude).collect::<Vec<f64>>());
+        */
+
         let breaks = tools::groupby_average(&mut self.data, tools::Axis2D::Col, &distances, step);
+
         self.metadata.last_trace = self.data.shape()[1] as u32;
 
         self.location.cor_points = breaks
