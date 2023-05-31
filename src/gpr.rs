@@ -661,22 +661,16 @@ impl GPR {
 
         let depths = self.depths();
 
-        /*
-        let mut diffs = Array1::<f32>::zeros((depths.shape()[0] - 1,));
-        for i in 1..depths.shape()[0] {
-            diffs[i - 1] = depths[i] - depths[i - 1];
+        if depths.max().unwrap() == &0. {
+            eprintln!("correct_antenna_separation failed. Max depth after antenna correction ({} m) would be 0 m", self.horizontal_signal_distance); 
+            panic!("");
         }
 
-        //let max_diff = *diffs.max().unwrap();
-        let max_diff = diffs.mean().unwrap();
-        */
         let resolution = self.vertical_resolution_m();
         let resampler = tools::Resampler::<f32>::new(depths, resolution);
 
-        //println!("{:?} {max_diff}", tools::quantiles(&diffs, &[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.], None ));
-
-        resampler.resample_along_axis(&mut self.data, tools::Axis2D::Row);
-        //self.update_data(resampler.resample_along_axis_par(&self.data, tools::Axis2D::Row));
+        //resampler.resample_along_axis(&mut self.data, tools::Axis2D::Row);
+        self.update_data(resampler.resample_along_axis_par(&self.data, tools::Axis2D::Row));
         //tools::groupby_average(&mut self.data, tools::Axis2D::Row, &depths, *max_diff);
         self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m (height changed from {} px to {} px).", resolution, resolution / (self.metadata.time_window / self.height() as f32), self.horizontal_signal_distance, height_before, self.height()), start_time);
 
@@ -691,8 +685,7 @@ impl GPR {
         for i in 1..depths.shape()[0] {
             diffs[i - 1] = depths[i] - depths[i - 1];
         }
-        diffs.mean().unwrap()
-
+        tools::quantiles(&diffs, &[0.8], None)[0]
     }
 
     pub fn correct_topography(&mut self) {
@@ -1637,9 +1630,9 @@ mod tests {
     #[test]
     fn test_correct_antenna_separation() {
 
-        let mut gpr = make_test_gpr(Some(512), Some(1024));
+        let mut gpr = make_test_gpr(Some(10), Some(1024));
 
-        gpr.horizontal_signal_distance = 20.;
+        gpr.horizontal_signal_distance = 30.;
 
         assert_eq!(gpr.data[[10, 0]], 10.);
         assert_eq!(gpr.log.len(), 0);
@@ -1653,8 +1646,8 @@ mod tests {
 
     #[test]
     fn test_equidistant_traces() {
-        let width = 512;
-        let mut gpr = make_test_gpr(Some(width), Some(5000));
+        let width = 128;
+        let mut gpr = make_test_gpr(Some(width), Some(256));
 
         let first = gpr.location.cor_points[0].clone();
 

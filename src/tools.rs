@@ -518,17 +518,27 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
             Axis2D::Col => (data.shape()[0], self.target_x_values.len()), 
         };
 
-        let output: Vec<F> = (0..length).into_par_iter().map(|i| {
+        let output: Vec<Array1<F>> = (0..length).into_par_iter().map(|i| {
             let y_vals = match axis {
                 Axis2D::Row => data.column(i),
                 Axis2D::Col => data.row(i)
             };
-            let out: Vec<F> = self.resample(&y_vals).to_vec();
+            self.resample(&y_vals)
 
-            out
-        }).flatten().collect();
+        }).collect();
 
-        Array2::<F>::from_shape_vec(out_shape, output).unwrap()
+        let mut out = Array2::<F>::zeros(out_shape);
+
+        let iterator = match axis {
+            Axis2D::Row => out.columns_mut(),
+            Axis2D::Col => out.rows_mut(),
+        };
+        for (i, mut slice) in iterator.into_iter().enumerate() {
+            slice.assign(&output[i]);
+
+        }
+
+        out
 
     }
 }
