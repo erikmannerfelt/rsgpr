@@ -271,6 +271,186 @@ pub fn return_time_to_depth(return_time: f32, velocity: f32, antenna_separation:
     }
 }
 
+
+fn digitize(values: &[f32], bins: &[f32]) -> Vec<usize> {
+
+    let mut bins = bins.iter().collect::<Vec<&f32>>();
+    bins.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let mut indices = Vec::<usize>::new();
+
+    for value in values {
+        // Initialize the upper bin index by the "out of bounds" value
+        let mut upper_bin = 0;
+
+        if value >= bins[bins.len() - 1] {
+            upper_bin = bins.len();
+        } else if value > bins[0] {
+            for bin in &bins {
+                if bin > &value {
+                    break;
+                }
+                upper_bin += 1;
+            };
+        } 
+        indices.push(upper_bin);
+    };
+
+    indices
+}
+
+pub struct Resampler {
+    x_values: Array1<f32>,
+    target_x_values: Array1<f32>,
+    digitized: Vec<usize>,
+    _debug: bool
+}
+
+impl Resampler {
+
+    pub fn new(x_values: Array1<f32>, resolution: f32) -> Resampler {
+        let target_x_values = Array1::<f32>::range(*x_values.min().unwrap(), x_values.max().unwrap() + resolution, resolution);
+
+        let digitized = digitize(x_values.as_slice().unwrap(), target_x_values.as_slice().unwrap());
+
+        Resampler {x_values, target_x_values, digitized, _debug: false}
+    }
+
+    fn _new_debug(x_values: Array1<f32>, resolution: f32) -> Resampler {
+        let mut remapper = Resampler::new(x_values, resolution);
+        remapper._debug = true;
+        return remapper;
+    }
+
+    pub fn resample(&self, y_values: &Array1<f32>) -> Array1<f32> {
+
+        let mut new_y_values = Vec::<f32>::new();
+        for (i, target_x_value) in self.target_x_values.iter().enumerate() {
+            let mut indices_between = Vec::<usize>::new();
+            let mut potential_outside_behind = Vec::<(usize, usize)>::new();
+            let mut potential_outside_ahead = Vec::<(usize, usize)>::new();
+            let mut indices_outside = Vec::<usize>::new();
+            for (j, k) in self.digitized.iter().enumerate() {
+
+                if *k < i {
+                    potential_outside_behind.push((i - k, j));
+                } else if *k > i {
+                    potential_outside_ahead.push((*k - i, j));
+                } else {
+                    indices_between.push(j);
+                };
+              
+            }
+            if (indices_between.len() == 1) {
+                 if &self.x_values[indices_between[0]] == target_x_value {
+                    new_y_values.push(y_values[indices_between[0]]);
+                    continue;
+                }
+            }
+
+            if indices_between.len() < 2 {
+                potential_outside_behind.sort_by(|a, b| a.0.cmp(&b.0));
+                potential_outside_ahead.sort_by(|a, b| a.0.cmp(&b.0));
+
+                if let Some(point_behind) = potential_outside_behind.first() {
+                    for index in potential_outside_behind.iter().filter_map(|(distance, index)| (distance == &point_behind.0).then_some(index)) {
+                        indices_outside.push(*index);
+                    };
+                }
+                if let Some(point_ahead) = potential_outside_ahead.first() {
+                    for index in potential_outside_ahead.iter().filter_map(|(distance, index)| (distance == &point_ahead.0).then_some(index)) {
+                        indices_outside.push(*index);
+                    };
+                }
+
+
+            };
+            if self._debug {
+                println!("\n\nTarget X value: {target_x_value} (idx: {i})");// indices between: {indices_between:?}, indices outside: {indices_outside:?}");
+                for j in &indices_between {
+                    let xval = self.x_values[*j];
+                    let yval = y_values[*j];
+                    println!("Inside: {j}: x={xval}, y={yval}");
+
+                }
+                for j in &indices_outside {
+                    let xval = self.x_values[*j];
+                    let yval = y_values[*j];
+                    println!("Outside: {j}: x={xval}, y={yval}");
+                }
+            }
+
+            let mut x_diffs = Vec::<f32>::new();
+            let mut y_diffs = Vec::<f32>::new();
+            let mut all_indices = indices_outside.clone();
+            all_indices.append(indices_between.clone().as_mut());
+            let indices_for_slope = match indices_between.len() < 2 {
+                true => &all_indices,
+                false => &indices_between,
+            };
+            for j in 0..indices_for_slope.len() {
+                for k in 0..indices_for_slope.len() {
+                    if j <= k {
+                        continue
+                    }
+
+                    let x_diff = self.x_values[indices_for_slope[k]] - self.x_values[indices_for_slope[j]]; 
+                    let y_diff = y_values[indices_for_slope[k]] - y_values[indices_for_slope[j]];
+
+                    if self._debug {
+                        println!("{j} - {k}: y_diff={y_diff}, x_diff={x_diff}");
+                    }
+
+                    if x_diff == 0. {
+                        continue
+                    }
+
+                    x_diffs.push(x_diff);
+                    y_diffs.push(y_diff);
+                }
+            }
+            let mean_xdiff = x_diffs.iter().sum::<f32>();
+            let mean_slope = match mean_xdiff != 0. {
+                true => y_diffs.iter().sum::<f32>() / mean_xdiff,
+                false => 0.
+            };
+
+            let mut intercepts = Vec::<f32>::new();
+
+            let indices_for_intercept = match indices_between.is_empty() {
+                true => &all_indices,
+                false => &indices_between,
+            };
+            for j in 0..indices_for_intercept.len() {
+
+                let x_value = self.x_values[indices_for_intercept[j]];
+                let intercept = y_values[indices_for_intercept[j]] - (x_value - target_x_value) * mean_slope;
+                if self._debug {
+                    println!("Calculating intercept for {x_value} => {intercept}");
+                }
+                intercepts.push(intercept);
+            }
+
+            let mean_intercept = intercepts.iter().sum::<f32>() / intercepts.len() as f32;
+
+            new_y_values.push(mean_intercept);
+
+            if self._debug {
+                println!("{mean_slope} * x + {mean_intercept}");
+            }
+        }
+
+        if self._debug {
+            let targetx = &self.target_x_values;
+            println!("New X values: {targetx:?}");
+            println!("New Y values: {new_y_values:?}");
+        }
+
+        return Array1::<f32>::from_vec(new_y_values);
+
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ndarray::Array1;
@@ -397,5 +577,43 @@ mod tests {
         // A weird NAN error came up with these settings which should not occur
         let depth = super::return_time_to_depth(5.9624557, 0.168, 1.0);
         assert!(depth.is_finite(), "{}", depth);
+    }
+
+    #[test]
+    fn test_digitize() {
+
+        let bins = [0., 1., 2., 3.];
+        let values = [-0.5, 1., 0.5, 0.8, 0.9, 2.3, 3.4];
+
+        let expected = [0, 2, 1, 1, 1, 3, 4];
+
+        assert_eq!(super::digitize(&values, &bins), expected);
+    }
+
+    #[test]
+    fn test_resample() {
+
+        let x_values = Array1::from_vec(vec![0., 0.01, 0.5, 0.99, 1.99, 2.05, 2.05, 5.05]);
+        let y_values = Array1::from_vec(vec![1., 1., 2., 3., 4.,4.,4., 5.]);
+
+        for i in 0..x_values.len() {
+            let xval = &x_values[i];
+            let yval = &y_values[i];
+            println!("{i}: x={xval}, y={yval}");
+
+        };
+
+        let resolution =  1.;
+
+        let resampler = super::Resampler::_new_debug(x_values, resolution);
+       
+        let new_ys = resampler.resample(&y_values);
+
+        assert_eq!(new_ys[0], 1.);
+        assert!((new_ys[1] - 3.).abs() < 1e-1);
+        assert!((new_ys[2] > 3.5) & (new_ys[2] < 5.));
+
+        assert!(new_ys.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() < &5.5);
+
     }
 }

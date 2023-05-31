@@ -1433,6 +1433,8 @@ pub fn default_processing_profile() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use ndarray::{Array1, Axis, Slice};
 
     use super::{CorPoint, GPRLocation, LocationCorrection};
@@ -1528,5 +1530,76 @@ mod tests {
         }
         assert_eq!(gpr_location0.duration_since(&gpr_location1), -11.);
         assert_eq!(gpr_location1.duration_since(&gpr_location0), 11.);
+    }
+
+    fn make_test_metadata() -> super::GPRMeta {
+
+        super::GPRMeta{
+            samples: 1024,
+            frequency: 8000.,
+            frequency_steps: 1,
+            time_interval: 1000.,
+            antenna: "800MHz".into(),
+            antenna_mhz: 800.,
+            antenna_separation: 2.,
+            time_window: 500.,
+            last_trace: 2048,
+            rd3_filepath: PathBuf::new(),
+            medium_velocity: 0.168,
+        }
+
+
+    }
+
+
+    fn make_test_gpr(width: Option<usize>, height: Option<usize>) -> super::GPR {
+
+        let width = width.unwrap_or(2024);
+        let height = height.unwrap_or(1024);
+
+        let gpr_location = make_gpr_location(10, Some(1.), None, None);
+
+        let meta = make_test_metadata();
+
+        let antenna_separation = meta.antenna_separation;
+
+        let mut data = ndarray::Array2::<f32>::zeros((height, width));
+
+        for mut col in data.columns_mut() {
+            col.assign(&Array1::<f32>::linspace(0., (height - 1) as f32, height));
+        }
+
+        super::GPR{
+            data,
+            topo_data: None,
+            location: gpr_location,
+            metadata: meta,
+            log: Vec::new(),
+            horizontal_signal_distance: antenna_separation,
+            zero_point_ns: 0.
+        }
+    }
+
+    #[test]
+    fn test_make_test_gpr() {
+
+        let gpr = make_test_gpr(None, None);
+
+        assert_eq!(gpr.data[[0, 0]], 0.);
+        assert_eq!(gpr.data[[gpr.data.shape()[0] - 1, 0]], (gpr.data.shape()[0] - 1) as f32);
+    }
+
+    #[test]
+    fn test_correct_antenna_separation() {
+
+        let mut gpr = make_test_gpr(None, Some(1024));
+
+        assert_eq!(gpr.data[[10, 0]], 10.);
+        gpr.correct_antenna_separation();
+
+        assert_ne!(gpr.height(), 1024);
+
+        assert!(gpr.data[[10, 0]] > 10.);
+
     }
 }
