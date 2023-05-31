@@ -4,6 +4,7 @@ use ndarray_stats::QuantileExt;
 /// Miscellaneous functions that are used in other parts of the program
 use std::str::FromStr;
 use num::{Float, Zero};
+use rayon::prelude::*;
 
 /// Interpolate an arbitrary amount of independent values between two known points
 ///
@@ -84,7 +85,7 @@ where
     let mut output = [*vals[0]; L];
 
     for (i, quantile) in quantiles.iter().enumerate() {
-        output[i] = *vals[(vals.len() as f32 * quantile) as usize];
+        output[i] = *vals[((vals.len() as f32 * quantile) as usize).min(vals.len() - 1)];
     }
 
     output
@@ -309,7 +310,7 @@ pub struct Resampler <F: Float>{
     _debug: bool
 }
 
-impl<F: Float + std::fmt::Display + std::iter::Sum> Resampler<F>  {
+impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Debug> Resampler<F>  {
 
     fn _new(x_values: Array1<F>, resolution: F, debug: bool) -> Resampler<F> {
 
@@ -368,7 +369,7 @@ impl<F: Float + std::fmt::Display + std::iter::Sum> Resampler<F>  {
             slope_indices.push(indices_for_slope);
         }
 
-        return Resampler {x_values, target_x_values, digitized, slope_indices, intercept_indices, _debug: false}
+        return Resampler {x_values, target_x_values, digitized, slope_indices, intercept_indices, _debug: debug}
     }
 
     pub fn new(x_values: Array1<F>, resolution: F) -> Self {
@@ -379,22 +380,31 @@ impl<F: Float + std::fmt::Display + std::iter::Sum> Resampler<F>  {
         Self::_new(x_values, resolution, true)
     }
 
-    pub fn resample(&self, y_values: &ArrayView1<F>) -> Array1<F> {
+    /*
+    fn _resample_par<F2: Float + std::fmt::Display + std::iter::Sum + Sized>(&self, x_values: &[F2], target_x_values: &[F2], y_values: &[F2]) -> Array1<F2> {
 
-        let mut new_y_values = Vec::<F>::new();
-        for (i, target_x_value) in self.target_x_values.iter().enumerate() {
+        
+        //let xs = target_x_values.iter().map(|v| v.to_owned()).collect::<Vec<F2>>().iter().into_par_iter();
+
+
+    }
+    */
+
+    fn _resample<F2: Float + std::fmt::Display + std::iter::Sum + Send>(&self, x_values: &Array1<F2>, target_x_values: &Array1<F2>, y_values: &ArrayView1<F2>) -> Array1<F2> {
+        let mut new_y_values = Vec::<F2>::new();
+        for (i, target_x_value) in target_x_values.iter().enumerate() {
 
             let indices_for_slope = &self.slope_indices[i];
             let indices_for_intercept = &self.intercept_indices[i];
-            let mut x_diffs = Vec::<F>::new();
-            let mut y_diffs = Vec::<F>::new();
+            let mut x_diffs = Vec::<F2>::new();
+            let mut y_diffs = Vec::<F2>::new();
             for j in 0..indices_for_slope.len() {
                 for k in 0..indices_for_slope.len() {
                     if j <= k {
                         continue
                     }
 
-                    let x_diff = self.x_values[indices_for_slope[k]] - self.x_values[indices_for_slope[j]]; 
+                    let x_diff = x_values[indices_for_slope[k]] - x_values[indices_for_slope[j]]; 
                     let y_diff = y_values[indices_for_slope[k]] - y_values[indices_for_slope[j]];
 
                     if self._debug {
@@ -409,25 +419,25 @@ impl<F: Float + std::fmt::Display + std::iter::Sum> Resampler<F>  {
                     y_diffs.push(y_diff);
                 }
             }
-            let mean_xdiff = x_diffs.iter().map(|v| v.to_owned()).sum::<F>();
+            let mean_xdiff = x_diffs.iter().map(|v| v.to_owned()).sum::<F2>();
             let mean_slope = match mean_xdiff != Zero::zero() {
-                true => y_diffs.iter().map(|v| v.to_owned()).sum::<F>() / mean_xdiff,
+                true => y_diffs.iter().map(|v| v.to_owned()).sum::<F2>() / mean_xdiff,
                 false => Zero::zero()
             };
 
-            let mut intercepts = Vec::<F>::new();
+            let mut intercepts = Vec::<F2>::new();
 
             for j in 0..indices_for_intercept.len() {
 
-                let x_value = self.x_values[indices_for_intercept[j]];
-                let intercept = y_values[indices_for_intercept[j]] - (x_value - *target_x_value) * mean_slope;
+                let x_value = x_values[indices_for_intercept[j]];
+                let intercept: F2 = y_values[indices_for_intercept[j]] - (x_value - *target_x_value) * mean_slope;
                 if self._debug {
                     println!("Calculating intercept for {x_value} => {intercept}");
                 }
                 intercepts.push(intercept);
             }
 
-            let mean_intercept = intercepts.iter().map(|v| v.to_owned()).sum::<F>() / F::from(intercepts.len()).unwrap();
+            let mean_intercept: F2 = intercepts.iter().map(|v| v.to_owned()).sum::<F2>() / F2::from(intercepts.len()).unwrap();
 
             new_y_values.push(mean_intercept);
 
@@ -437,13 +447,21 @@ impl<F: Float + std::fmt::Display + std::iter::Sum> Resampler<F>  {
         }
 
         if self._debug {
-            let targetx = &self.target_x_values;
+            //let targetx = &self.target_x_values;
             //println!("New X values: {targetx:?}");
             //println!("New Y values: {new_y_values:?}");
         }
 
-        return Array1::<F>::from_vec(new_y_values);
+        return Array1::<F2>::from_vec(new_y_values);
+    }
+    pub fn resample_convert<F2: Float + std::fmt::Display + std::iter::Sum + Send>(&self, y_values: &ArrayView1<F2>) -> Array1<F2> {
+        let target_x_values: Array1<F2> = self.target_x_values.mapv(|v| F2::from(v).unwrap());
+        let x_values = self.x_values.mapv(|v| F2::from(v).unwrap());
 
+        self._resample(&x_values, &target_x_values, y_values)
+    }
+    pub fn resample(&self, y_values: &ArrayView1<F>) -> Array1<F> {
+        self._resample(&self.x_values, &self.target_x_values, y_values)
     }
 
     pub fn resample_along_axis(&self, data: &mut Array2<F>, axis: Axis2D){
@@ -469,36 +487,54 @@ impl<F: Float + std::fmt::Display + std::iter::Sum> Resampler<F>  {
         for mut arr in axis_values {
             let resampled = self.resample(&arr.view());
 
-            let mut slice = buffer.slice_axis_mut(nd_axis, slice);
+
+            let mut slice = buffer.slice_axis_mut(Axis(0), slice);
             slice.assign(&resampled);
             arr.assign(&buffer);
         }
-
         data.slice_axis_inplace(nd_axis, slice);
+    }
 
+    pub fn resample_along_axis_par(&self, data: &Array2<F>, axis: Axis2D) -> Array2<F> {
+        
+        let length = match axis {
+            Axis2D::Row => data.shape()[1],
+            Axis2D::Col => data.shape()[0],
+        };
 
-        /*
-        match axis {
-            Axis2D::Row => {
-                let mut buffer = ;
-                for mut col in data.columns_mut() {
-                    let resampled = self.resample(&col.view());
+        let out_shape = match axis {
+            Axis2D::Row => (self.target_x_values.len(), data.shape()[1]),
+            Axis2D::Col => (data.shape()[0], self.target_x_values.len()), 
+        };
 
-                    let mut slice = buffer.slice_axis_mut(Axis(0), slice);
-                    slice.assign(&resampled);
+        let output: Vec<F> = (0..length).into_par_iter().map(|i| {
+            let y_vals = match axis {
+                Axis2D::Row => data.column(i),
+                Axis2D::Col => data.row(i)
+            };
+            let out: Vec<F> = self.resample(&y_vals).to_vec();
 
-                    col.assign(&buffer);
-                };
+            out
+        }).flatten().collect();
 
-                data.slice_axis_inplace(Axis(0), slice);
-            },
-            Axis2D::Col => {
-                unimplemented!();
-            }
-        }
-        */
+        Array2::<F>::from_shape_vec(out_shape, output).unwrap()
+
     }
 }
+
+
+impl std::convert::From<Resampler<f32>> for Resampler<f64> {
+
+    fn from(resampler: Resampler<f32>) -> Resampler<f64> {
+        let x_values = resampler.x_values.mapv(|v| f64::from(v));
+        let target_x_values = resampler.target_x_values.mapv(|v| f64::from(v));
+        Resampler {x_values, target_x_values, digitized: resampler.digitized.clone(), slope_indices: resampler.slope_indices.clone(), intercept_indices: resampler.intercept_indices.clone(), _debug: resampler._debug}        
+
+    }
+
+}
+
+//}
 
 #[cfg(test)]
 mod tests {
@@ -649,14 +685,16 @@ mod tests {
             let xval = &x_values[i];
             let yval = &y_values[i];
             println!("{i}: x={xval}, y={yval}");
-
         };
 
         let resolution =  1.;
 
-        let resampler = super::Resampler::<f32>::_new_debug(x_values, resolution);
+        let mut resampler = super::Resampler::<f32>::_new_debug(x_values, resolution);
        
         let new_ys = resampler.resample(&y_values.view());
+        let new_ys_f64 = resampler.resample_convert::<f64>(&y_values.mapv(|v| f64::from(v)).view());
+
+        assert_eq!(new_ys_f64[0] as f32, new_ys[0]);
 
         assert_eq!(new_ys[0], 1.);
         assert!((new_ys[1] - 3.).abs() < 1e-1);
@@ -664,5 +702,14 @@ mod tests {
 
         assert!(new_ys.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() < &5.5);
 
+
+        resampler._debug = false;
+        let y_matrix_manyrows = ndarray::Array2::from_shape_fn((50, y_values.len()), |(_, j)| y_values[j]);
+        let resampled_colwise = resampler.resample_along_axis_par(&y_matrix_manyrows, super::Axis2D::Col);
+        assert_eq!(resampled_colwise.shape(), [50, resampler.target_x_values.len()]);
+
+        let y_matrix_manycols = ndarray::Array2::from_shape_fn((y_values.len(), 50), |(i, _)| y_values[i]);
+        let resampled_rowwise = resampler.resample_along_axis_par(&y_matrix_manycols, super::Axis2D::Row);
+        assert_eq!(resampled_rowwise.shape(), [resampler.target_x_values.len(), 50]);
     }
 }

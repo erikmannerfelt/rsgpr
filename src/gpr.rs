@@ -657,6 +657,8 @@ impl GPR {
             return;
         };
 
+        let height_before = self.height();
+
         let depths = self.depths();
 
         let mut diffs = Array1::<f32>::zeros((depths.shape()[0] - 1,));
@@ -664,12 +666,16 @@ impl GPR {
             diffs[i - 1] = depths[i] - depths[i - 1];
         }
 
-        let max_diff = diffs.max().unwrap();
-        let resampler = tools::Resampler::<f32>::new(depths, *max_diff);
+        //let max_diff = *diffs.max().unwrap();
+        let max_diff = diffs.mean().unwrap();
+        let resampler = tools::Resampler::<f32>::new(depths, max_diff);
+
+        //println!("{:?} {max_diff}", tools::quantiles(&diffs, &[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.], None ));
 
         resampler.resample_along_axis(&mut self.data, tools::Axis2D::Row);
+        //self.update_data(resampler.resample_along_axis_par(&self.data, tools::Axis2D::Row));
         //tools::groupby_average(&mut self.data, tools::Axis2D::Row, &depths, *max_diff);
-        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m.", max_diff, max_diff / (self.metadata.time_window / self.height() as f32), self.horizontal_signal_distance), start_time);
+        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m (height changed from {} px to {} px).", max_diff, max_diff / (self.metadata.time_window / self.height() as f32), self.horizontal_signal_distance, height_before, self.height()), start_time);
 
         self.horizontal_signal_distance = 0.;
         self.metadata.samples = self.height() as u32;
@@ -919,20 +925,27 @@ impl GPR {
             return;
         };
 
-        /*
         let resampler = tools::Resampler::<f32>::new(distances, step);
-        resampler.resample_along_axis(&mut self.data, tools::Axis2D::Col);
-
-        self.metadata.last_trace = self.data.shape()[1] as u32;
-
-        //let coord_resampler = tools::Resampler::new(
+        //resampler.resample_along_axis(&mut self.data, tools::Axis2D::Col);
+        self.update_data(resampler.resample_along_axis_par(&self.data, tools::Axis2D::Col));
 
         //let eastings = resampler.resample(&Array1::from_vec(self.location.cor_points.iter().map(|p| p.easting).collect::<Vec<f64>>()).view());
-        let northings = Array1::from_vec(self.location.cor_points.iter().map(|p| p.northing).collect::<Vec<f64>>());
-        let times = Array1::from_vec(self.location.cor_points.iter().map(|p| p.time_seconds).collect::<Vec<f64>>());
-        let altitudes = Array1::from_vec(self.location.cor_points.iter().map(|p| p.altitude).collect::<Vec<f64>>());
-        */
+        let eastings = resampler.resample_convert::<f64>(&Array1::from_vec(self.location.cor_points.iter().map(|p| p.easting).collect::<Vec<f64>>()).view());
+        let northings = resampler.resample_convert::<f64>(&Array1::from_vec(self.location.cor_points.iter().map(|p| p.northing).collect::<Vec<f64>>()).view());
+        let times = resampler.resample_convert::<f64>(&Array1::from_vec(self.location.cor_points.iter().map(|p| p.time_seconds).collect::<Vec<f64>>()).view());
+        let altitudes = resampler.resample_convert::<f64>(&Array1::from_vec(self.location.cor_points.iter().map(|p| p.altitude).collect::<Vec<f64>>()).view());
 
+        let mut cor_points = Vec::<CorPoint>::new();
+
+        for i in 0..eastings.len() {
+            let cor = CorPoint{trace_n: i as u32, time_seconds: times[i], easting: eastings[i], northing: northings[i], altitude: altitudes[i] };
+            cor_points.push(cor);
+        }
+
+        self.metadata.last_trace = self.data.shape()[1] as u32;
+        self.location.cor_points = cor_points;
+        self.log_event("equidistant_traces", &format!("Ran equidistant traces with a spacing of {step} m"), start_time);
+        /*
         let breaks = tools::groupby_average(&mut self.data, tools::Axis2D::Col, &distances, step);
 
         self.metadata.last_trace = self.data.shape()[1] as u32;
@@ -954,6 +967,7 @@ impl GPR {
         };
 
         self.log_event("equidistant_traces", "Ran equidistant traces", start_time);
+        */
     }
 
     fn log_event(&mut self, step_name: &str, event: &str, start_time: SystemTime) {
@@ -1549,10 +1563,10 @@ mod tests {
         assert_eq!(gpr_location1.duration_since(&gpr_location0), 11.);
     }
 
-    fn make_test_metadata() -> super::GPRMeta {
+    fn make_test_metadata(width: Option<usize>, height: Option<usize>) -> super::GPRMeta {
 
         super::GPRMeta{
-            samples: 1024,
+            samples: height.unwrap_or(1024) as u32,
             frequency: 8000.,
             frequency_steps: 1,
             time_interval: 1000.,
@@ -1560,7 +1574,7 @@ mod tests {
             antenna_mhz: 800.,
             antenna_separation: 2.,
             time_window: 500.,
-            last_trace: 2048,
+            last_trace: width.unwrap_or(2048) as u32,
             rd3_filepath: PathBuf::new(),
             medium_velocity: 0.168,
         }
@@ -1574,9 +1588,9 @@ mod tests {
         let width = width.unwrap_or(2024);
         let height = height.unwrap_or(1024);
 
-        let gpr_location = make_gpr_location(10, Some(1.), None, None);
+        let gpr_location = make_gpr_location(width, Some(1.), None, None);
 
-        let meta = make_test_metadata();
+        let meta = make_test_metadata(Some(width), Some(height));
 
         let antenna_separation = meta.antenna_separation;
 
@@ -1609,7 +1623,9 @@ mod tests {
     #[test]
     fn test_correct_antenna_separation() {
 
-        let mut gpr = make_test_gpr(None, Some(1024));
+        let mut gpr = make_test_gpr(Some(512), Some(1024));
+
+        gpr.horizontal_signal_distance = 20.;
 
         assert_eq!(gpr.data[[10, 0]], 10.);
         assert_eq!(gpr.log.len(), 0);
@@ -1619,6 +1635,31 @@ mod tests {
         assert_ne!(gpr.height(), 1024);
 
         assert!(gpr.data[[10, 0]] > 10.);
+    }
+
+    #[test]
+    fn test_equidistant_traces() {
+        let width = 512;
+        let mut gpr = make_test_gpr(Some(width), Some(5000));
+
+        let first = gpr.location.cor_points[0].clone();
+
+        let n_stationary = 10;
+
+        for (i, point) in gpr.location.cor_points.iter_mut().enumerate() {
+
+            if i == n_stationary {
+                break;
+            }
+
+            point.easting = first.easting;
+            point.northing = first.northing;
+            point.altitude = first.altitude;
+        }
+        assert_eq!(gpr.width(), width);
+        gpr.make_equidistant(None);
+        // Now, the N stationary points should be coerced into one
+        assert_eq!(gpr.width(), width - (n_stationary - 1));
 
     }
 }
