@@ -661,6 +661,7 @@ impl GPR {
 
         let depths = self.depths();
 
+        /*
         let mut diffs = Array1::<f32>::zeros((depths.shape()[0] - 1,));
         for i in 1..depths.shape()[0] {
             diffs[i - 1] = depths[i] - depths[i - 1];
@@ -668,17 +669,30 @@ impl GPR {
 
         //let max_diff = *diffs.max().unwrap();
         let max_diff = diffs.mean().unwrap();
-        let resampler = tools::Resampler::<f32>::new(depths, max_diff);
+        */
+        let resolution = self.vertical_resolution_m();
+        let resampler = tools::Resampler::<f32>::new(depths, resolution);
 
         //println!("{:?} {max_diff}", tools::quantiles(&diffs, &[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.], None ));
 
         resampler.resample_along_axis(&mut self.data, tools::Axis2D::Row);
         //self.update_data(resampler.resample_along_axis_par(&self.data, tools::Axis2D::Row));
         //tools::groupby_average(&mut self.data, tools::Axis2D::Row, &depths, *max_diff);
-        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m (height changed from {} px to {} px).", max_diff, max_diff / (self.metadata.time_window / self.height() as f32), self.horizontal_signal_distance, height_before, self.height()), start_time);
+        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m (height changed from {} px to {} px).", resolution, resolution / (self.metadata.time_window / self.height() as f32), self.horizontal_signal_distance, height_before, self.height()), start_time);
 
         self.horizontal_signal_distance = 0.;
         self.metadata.samples = self.height() as u32;
+    }
+
+    pub fn vertical_resolution_m(&self) -> f32 {
+        let depths = self.depths();
+
+        let mut diffs = Array1::<f32>::zeros((depths.shape()[0] - 1,));
+        for i in 1..depths.shape()[0] {
+            diffs[i - 1] = depths[i] - depths[i - 1];
+        }
+        diffs.mean().unwrap()
+
     }
 
     pub fn correct_topography(&mut self) {

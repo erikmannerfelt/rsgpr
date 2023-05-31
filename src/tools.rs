@@ -310,11 +310,15 @@ pub struct Resampler <F: Float>{
     _debug: bool
 }
 
+fn equally_spaced_from_sparse<F: Float>(sparse: &Array1<F>, resolution: F) -> Array1<F> {
+    Array1::<F>::range(*sparse.min().unwrap(), sparse.max().unwrap().clone() + resolution, resolution)
+}
+
 impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Debug> Resampler<F>  {
 
-    fn _new(x_values: Array1<F>, resolution: F, debug: bool) -> Resampler<F> {
+    fn _new(x_values: Array1<F>, target_x_values: Array1<F>, debug: bool) -> Resampler<F> {
 
-        let target_x_values = Array1::<F>::range(*x_values.min().unwrap(), x_values.max().unwrap().clone() + resolution, resolution);
+        //let target_x_values = Array1::<F>::range(*x_values.min().unwrap(), x_values.max().unwrap().clone() + resolution, resolution);
 
         let digitized = digitize(x_values.as_slice().unwrap(), target_x_values.as_slice().unwrap());
 
@@ -373,11 +377,18 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
     }
 
     pub fn new(x_values: Array1<F>, resolution: F) -> Self {
-            Resampler::_new(x_values, resolution, false)
+            let target_x_values = equally_spaced_from_sparse::<F>(&x_values, resolution);
+            Resampler::_new(x_values, target_x_values, false)
+    }
+
+    pub fn new_with_target(x_values: Array1<F>, target_x_values: Array1<F>) -> Self {
+        Resampler::_new(x_values, target_x_values, false)
+
     }
 
     fn _new_debug(x_values: Array1<F>, resolution: F) -> Self {
-        Self::_new(x_values, resolution, true)
+        let target_x_values = equally_spaced_from_sparse::<F>(&x_values, resolution);
+        Self::_new(x_values, target_x_values, true)
     }
 
     /*
