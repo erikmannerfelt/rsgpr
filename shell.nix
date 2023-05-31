@@ -21,6 +21,7 @@ pkgs.mkShell {
        libclang
        clang
        my-gdal
+       rustfmt
 
   ];
   LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
