@@ -1,8 +1,10 @@
 use core::ops::{Add, Div, Mul, Sub};
-use ndarray::{Array1, Array2, Axis, Slice};
+use ndarray::{Array1, Array2, Axis, Slice, ArrayView1};
 use ndarray_stats::QuantileExt;
 /// Miscellaneous functions that are used in other parts of the program
 use std::str::FromStr;
+use num::{Float, Zero};
+use rayon::prelude::*;
 
 /// Interpolate an arbitrary amount of independent values between two known points
 ///
@@ -83,7 +85,7 @@ where
     let mut output = [*vals[0]; L];
 
     for (i, quantile) in quantiles.iter().enumerate() {
-        output[i] = *vals[(vals.len() as f32 * quantile) as usize];
+        output[i] = *vals[((vals.len() as f32 * quantile) as usize).min(vals.len() - 1)];
     }
 
     output
@@ -271,6 +273,290 @@ pub fn return_time_to_depth(return_time: f32, velocity: f32, antenna_separation:
     }
 }
 
+
+fn digitize<F: Float>(values: &[F], bins: &[F]) -> Vec<usize> {
+
+    let mut bins = bins.iter().collect::<Vec<&F>>();
+    bins.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let mut indices = Vec::<usize>::new();
+
+    for value in values {
+        // Initialize the upper bin index by the "out of bounds" value
+        let mut upper_bin = 0;
+
+        if value >= bins[bins.len() - 1] {
+            upper_bin = bins.len();
+        } else if value > bins[0] {
+            for bin in &bins {
+                if bin > &value {
+                    break;
+                }
+                upper_bin += 1;
+            };
+        } 
+        indices.push(upper_bin);
+    };
+
+    indices
+}
+
+pub struct Resampler <F: Float>{
+    pub x_values: Array1<F>,
+    pub target_x_values: Array1<F>,
+    pub digitized: Vec<usize>,
+    slope_indices: Vec<Vec<usize>>,
+    intercept_indices: Vec<Vec<usize>>,
+    _debug: bool
+}
+
+fn equally_spaced_from_sparse<F: Float>(sparse: &Array1<F>, resolution: F) -> Array1<F> {
+    Array1::<F>::range(*sparse.min().unwrap(), sparse.max().unwrap().clone() + resolution, resolution)
+}
+
+impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Debug> Resampler<F>  {
+
+    fn _new(x_values: Array1<F>, target_x_values: Array1<F>, debug: bool) -> Resampler<F> {
+
+        //let target_x_values = Array1::<F>::range(*x_values.min().unwrap(), x_values.max().unwrap().clone() + resolution, resolution);
+
+        let digitized = digitize(x_values.as_slice().unwrap(), target_x_values.as_slice().unwrap());
+
+        let mut slope_indices = Vec::<Vec<usize>>::new();
+        let mut intercept_indices = slope_indices.clone();
+        for (i, target_x_value) in target_x_values.iter().enumerate() {
+            let mut indices_between = Vec::<usize>::new();
+            let mut potential_outside_behind = Vec::<(usize, usize)>::new();
+            let mut potential_outside_ahead = Vec::<(usize, usize)>::new();
+            let mut indices_outside = Vec::<usize>::new();
+            for (j, k) in digitized.iter().enumerate() {
+
+                if *k < i {
+                    potential_outside_behind.push((i - k, j));
+                } else if *k > i {
+                    potential_outside_ahead.push((*k - i, j));
+                } else {
+                    indices_between.push(j);
+                };
+          
+            }
+
+            if indices_between.len() < 2 {
+                potential_outside_behind.sort_by(|a, b| a.0.cmp(&b.0));
+                potential_outside_ahead.sort_by(|a, b| a.0.cmp(&b.0));
+
+                if let Some(point_behind) = potential_outside_behind.first() {
+                    for index in potential_outside_behind.iter().filter_map(|(distance, index)| (distance == &point_behind.0).then_some(index)) {
+                        indices_outside.push(*index);
+                    };
+                }
+                if let Some(point_ahead) = potential_outside_ahead.first() {
+                    for index in potential_outside_ahead.iter().filter_map(|(distance, index)| (distance == &point_ahead.0).then_some(index)) {
+                        indices_outside.push(*index);
+                    };
+                }
+
+
+            };
+            let mut all_indices = indices_outside.clone();
+            all_indices.append(indices_between.clone().as_mut());
+            let indices_for_intercept = match indices_between.is_empty() {
+                true => all_indices.clone(),
+                false => indices_between.clone(),
+            };
+            let indices_for_slope = match indices_between.len() < 2 {
+                true => all_indices.clone(),
+                false => indices_between,
+            };
+
+            intercept_indices.push(indices_for_intercept);
+            slope_indices.push(indices_for_slope);
+        }
+
+        return Resampler {x_values, target_x_values, digitized, slope_indices, intercept_indices, _debug: debug}
+    }
+
+    pub fn new(x_values: Array1<F>, resolution: F) -> Self {
+            let target_x_values = equally_spaced_from_sparse::<F>(&x_values, resolution);
+            Resampler::_new(x_values, target_x_values, false)
+    }
+
+    pub fn new_with_target(x_values: Array1<F>, target_x_values: Array1<F>) -> Self {
+        Resampler::_new(x_values, target_x_values, false)
+
+    }
+
+    fn _new_debug(x_values: Array1<F>, resolution: F) -> Self {
+        let target_x_values = equally_spaced_from_sparse::<F>(&x_values, resolution);
+        Self::_new(x_values, target_x_values, true)
+    }
+
+    /*
+    fn _resample_par<F2: Float + std::fmt::Display + std::iter::Sum + Sized>(&self, x_values: &[F2], target_x_values: &[F2], y_values: &[F2]) -> Array1<F2> {
+
+        
+        //let xs = target_x_values.iter().map(|v| v.to_owned()).collect::<Vec<F2>>().iter().into_par_iter();
+
+
+    }
+    */
+
+    fn _resample<F2: Float + std::fmt::Display + std::iter::Sum + Send>(&self, x_values: &Array1<F2>, target_x_values: &Array1<F2>, y_values: &ArrayView1<F2>) -> Array1<F2> {
+        let mut new_y_values = Vec::<F2>::new();
+        for (i, target_x_value) in target_x_values.iter().enumerate() {
+
+            let indices_for_slope = &self.slope_indices[i];
+            let indices_for_intercept = &self.intercept_indices[i];
+            let mut x_diffs = Vec::<F2>::new();
+            let mut y_diffs = Vec::<F2>::new();
+            for j in 0..indices_for_slope.len() {
+                for k in 0..indices_for_slope.len() {
+                    if j <= k {
+                        continue
+                    }
+
+                    let x_diff = x_values[indices_for_slope[k]] - x_values[indices_for_slope[j]]; 
+                    let y_diff = y_values[indices_for_slope[k]] - y_values[indices_for_slope[j]];
+
+                    if self._debug {
+                        println!("{j} - {k}: y_diff={y_diff}, x_diff={x_diff}");
+                    }
+
+                    if x_diff == Zero::zero() {
+                        continue
+                    }
+
+                    x_diffs.push(x_diff);
+                    y_diffs.push(y_diff);
+                }
+            }
+            let mean_xdiff = x_diffs.iter().map(|v| v.to_owned()).sum::<F2>();
+            let mean_slope = match mean_xdiff != Zero::zero() {
+                true => y_diffs.iter().map(|v| v.to_owned()).sum::<F2>() / mean_xdiff,
+                false => Zero::zero()
+            };
+
+            let mut intercepts = Vec::<F2>::new();
+
+            for j in 0..indices_for_intercept.len() {
+
+                let x_value = x_values[indices_for_intercept[j]];
+                let intercept: F2 = y_values[indices_for_intercept[j]] - (x_value - *target_x_value) * mean_slope;
+                if self._debug {
+                    println!("Calculating intercept for {x_value} => {intercept}");
+                }
+                intercepts.push(intercept);
+            }
+
+            let mean_intercept: F2 = intercepts.iter().map(|v| v.to_owned()).sum::<F2>() / F2::from(intercepts.len()).unwrap();
+
+            new_y_values.push(mean_intercept);
+
+            if self._debug {
+                println!("{mean_slope} * x + {mean_intercept}");
+            }
+        }
+
+        if self._debug {
+            //let targetx = &self.target_x_values;
+            //println!("New X values: {targetx:?}");
+            //println!("New Y values: {new_y_values:?}");
+        }
+
+        return Array1::<F2>::from_vec(new_y_values);
+    }
+    pub fn resample_convert<F2: Float + std::fmt::Display + std::iter::Sum + Send>(&self, y_values: &ArrayView1<F2>) -> Array1<F2> {
+        let target_x_values: Array1<F2> = self.target_x_values.mapv(|v| F2::from(v).unwrap());
+        let x_values = self.x_values.mapv(|v| F2::from(v).unwrap());
+
+        self._resample(&x_values, &target_x_values, y_values)
+    }
+    pub fn resample(&self, y_values: &ArrayView1<F>) -> Array1<F> {
+        self._resample(&self.x_values, &self.target_x_values, y_values)
+    }
+
+    pub fn resample_along_axis(&self, data: &mut Array2<F>, axis: Axis2D){
+
+        let nd_axis = match axis {
+            Axis2D::Row => Axis(0),
+            Axis2D::Col => Axis(1),
+        };
+        let slice = Slice::new(0, Some(self.target_x_values.len() as isize), 1);
+
+        let length = match axis {
+            Axis2D::Row => data.shape()[0],
+            Axis2D::Col => data.shape()[1],
+        };
+
+        let mut buffer = Array1::<F>::zeros(length);
+
+        let axis_values = match axis {
+            Axis2D::Row => data.columns_mut(),
+            Axis2D::Col => data.rows_mut(),
+        }; 
+
+        for mut arr in axis_values {
+            let resampled = self.resample(&arr.view());
+
+
+            let mut slice = buffer.slice_axis_mut(Axis(0), slice);
+            slice.assign(&resampled);
+            arr.assign(&buffer);
+        }
+        data.slice_axis_inplace(nd_axis, slice);
+    }
+
+    pub fn resample_along_axis_par(&self, data: &Array2<F>, axis: Axis2D) -> Array2<F> {
+        
+        let length = match axis {
+            Axis2D::Row => data.shape()[1],
+            Axis2D::Col => data.shape()[0],
+        };
+
+        let out_shape = match axis {
+            Axis2D::Row => (self.target_x_values.len(), data.shape()[1]),
+            Axis2D::Col => (data.shape()[0], self.target_x_values.len()), 
+        };
+
+        let output: Vec<Array1<F>> = (0..length).into_par_iter().map(|i| {
+            let y_vals = match axis {
+                Axis2D::Row => data.column(i),
+                Axis2D::Col => data.row(i)
+            };
+            self.resample(&y_vals)
+
+        }).collect();
+
+        let mut out = Array2::<F>::zeros(out_shape);
+
+        let iterator = match axis {
+            Axis2D::Row => out.columns_mut(),
+            Axis2D::Col => out.rows_mut(),
+        };
+        for (i, mut slice) in iterator.into_iter().enumerate() {
+            slice.assign(&output[i]);
+
+        }
+
+        out
+
+    }
+}
+
+
+impl std::convert::From<Resampler<f32>> for Resampler<f64> {
+
+    fn from(resampler: Resampler<f32>) -> Resampler<f64> {
+        let x_values = resampler.x_values.mapv(|v| f64::from(v));
+        let target_x_values = resampler.target_x_values.mapv(|v| f64::from(v));
+        Resampler {x_values, target_x_values, digitized: resampler.digitized.clone(), slope_indices: resampler.slope_indices.clone(), intercept_indices: resampler.intercept_indices.clone(), _debug: resampler._debug}        
+
+    }
+
+}
+
+//}
+
 #[cfg(test)]
 mod tests {
     use ndarray::Array1;
@@ -397,5 +683,54 @@ mod tests {
         // A weird NAN error came up with these settings which should not occur
         let depth = super::return_time_to_depth(5.9624557, 0.168, 1.0);
         assert!(depth.is_finite(), "{}", depth);
+    }
+
+    #[test]
+    fn test_digitize() {
+
+        let bins = [0., 1., 2., 3.];
+        let values = [-0.5, 1., 0.5, 0.8, 0.9, 2.3, 3.4];
+
+        let expected = [0, 2, 1, 1, 1, 3, 4];
+
+        assert_eq!(super::digitize(&values, &bins), expected);
+    }
+
+    #[test]
+    fn test_resample() {
+
+        let x_values = Array1::from_vec(vec![0., 0.01, 0.5, 0.99, 1.99, 2.05, 2.05, 5.05]);
+        let y_values = Array1::from_vec(vec![1., 1., 2., 3., 4.,4.,4., 5.]);
+
+        for i in 0..x_values.len() {
+            let xval = &x_values[i];
+            let yval = &y_values[i];
+            println!("{i}: x={xval}, y={yval}");
+        };
+
+        let resolution =  1.;
+
+        let mut resampler = super::Resampler::<f32>::_new_debug(x_values, resolution);
+       
+        let new_ys = resampler.resample(&y_values.view());
+        let new_ys_f64 = resampler.resample_convert::<f64>(&y_values.mapv(|v| f64::from(v)).view());
+
+        assert_eq!(new_ys_f64[0] as f32, new_ys[0]);
+
+        assert_eq!(new_ys[0], 1.);
+        assert!((new_ys[1] - 3.).abs() < 1e-1);
+        assert!((new_ys[2] > 3.5) & (new_ys[2] < 5.));
+
+        assert!(new_ys.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() < &5.5);
+
+
+        resampler._debug = false;
+        let y_matrix_manyrows = ndarray::Array2::from_shape_fn((50, y_values.len()), |(_, j)| y_values[j]);
+        let resampled_colwise = resampler.resample_along_axis_par(&y_matrix_manyrows, super::Axis2D::Col);
+        assert_eq!(resampled_colwise.shape(), [50, resampler.target_x_values.len()]);
+
+        let y_matrix_manycols = ndarray::Array2::from_shape_fn((y_values.len(), 50), |(i, _)| y_values[i]);
+        let resampled_rowwise = resampler.resample_along_axis_par(&y_matrix_manycols, super::Axis2D::Row);
+        assert_eq!(resampled_rowwise.shape(), [resampler.target_x_values.len(), 50]);
     }
 }

@@ -1295,6 +1295,7 @@ dependencies = [
  "ndarray-stats",
  "netcdf",
  "noisy_float",
+ "num 0.4.0",
  "parse_duration",
  "proj",
  "rayon",
