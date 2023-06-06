@@ -19,7 +19,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt update -y
-        sudo apt install -y libgdal-dev proj-bin
+        sudo apt install -y libgdal-dev# proj-bin
     - name: Build
       run: cargo build --verbose
     - name: Run tests
