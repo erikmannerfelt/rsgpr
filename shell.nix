@@ -1,10 +1,11 @@
 { pkgs ? import <nixpkgs> {}, gdal ? null }:
 
 let 
-  # The rust gdal system is a bit hard to compile without precompiled headers.
-  # So the minimum supported gdal version is currently 3.5 (2022-11-03)
+  # The rust gdal system is a bit hard to compile without precompiled bindings.
+  # Sometimes the unstable version of GDAL is updated faster than the precompiled bindings are in gdal-sys.
+  # Therefore, it may be necessary to provide an older GDAL as an argument. This "hack" is kept here in case
+  # it becomes needed in the future.
   my-gdal = if gdal != null then gdal else pkgs.gdal;
-
 in
 
 pkgs.mkShell {
