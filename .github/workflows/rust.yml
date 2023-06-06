@@ -2,9 +2,9 @@ name: Rust
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
   pull_request:
-    branches: [ "main" ]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,7 +20,11 @@ jobs:
       run: |
         sudo apt update -y
         sudo apt install -y libgdal-dev
+    - name: Formatting
+      run: cargo fmt --check
     - name: Build
       run: cargo build --verbose
+    - name: Linting
+      run: cargo clippy -- -Dwarnings --no-deps
     - name: Run tests
       run: cargo test --verbose
