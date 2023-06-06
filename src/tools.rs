@@ -327,7 +327,7 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
 
         let mut slope_indices = Vec::<Vec<usize>>::new();
         let mut intercept_indices = slope_indices.clone();
-        for (i, target_x_value) in target_x_values.iter().enumerate() {
+        for i in 0..target_x_values.len() {
             let mut indices_between = Vec::<usize>::new();
             let mut potential_outside_behind = Vec::<(usize, usize)>::new();
             let mut potential_outside_ahead = Vec::<(usize, usize)>::new();
@@ -566,7 +566,7 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
 impl std::convert::From<Resampler<f32>> for Resampler<f64> {
     fn from(resampler: Resampler<f32>) -> Resampler<f64> {
         let x_values = resampler.x_values.mapv(|v| f64::from(v));
-        let target_x_values = resampler.target_x_values.mapv(|v| f64::from(v));
+        let target_x_values = resampler.target_x_values.mapv(f64::from);
         Resampler {
             x_values,
             target_x_values,
