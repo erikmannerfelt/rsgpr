@@ -680,7 +680,7 @@ impl GPR {
         let depths = self.depths();
 
         if depths.max().unwrap() == &0. {
-            eprintln!("correct_antenna_separation failed. Max depth after antenna correction ({} m) would be 0 m", self.horizontal_signal_distance); 
+            eprintln!("correct_antenna_separation failed. Max depth after antenna correction ({} m) would be 0 m", self.horizontal_signal_distance);
             panic!("");
         }
 
@@ -954,21 +954,67 @@ impl GPR {
         self.update_data(resampler.resample_along_axis_par(&self.data, tools::Axis2D::Col));
 
         //let eastings = resampler.resample(&Array1::from_vec(self.location.cor_points.iter().map(|p| p.easting).collect::<Vec<f64>>()).view());
-        let eastings = resampler.resample_convert::<f64>(&Array1::from_vec(self.location.cor_points.iter().map(|p| p.easting).collect::<Vec<f64>>()).view());
-        let northings = resampler.resample_convert::<f64>(&Array1::from_vec(self.location.cor_points.iter().map(|p| p.northing).collect::<Vec<f64>>()).view());
-        let times = resampler.resample_convert::<f64>(&Array1::from_vec(self.location.cor_points.iter().map(|p| p.time_seconds).collect::<Vec<f64>>()).view());
-        let altitudes = resampler.resample_convert::<f64>(&Array1::from_vec(self.location.cor_points.iter().map(|p| p.altitude).collect::<Vec<f64>>()).view());
+        let eastings = resampler.resample_convert::<f64>(
+            &Array1::from_vec(
+                self.location
+                    .cor_points
+                    .iter()
+                    .map(|p| p.easting)
+                    .collect::<Vec<f64>>(),
+            )
+            .view(),
+        );
+        let northings = resampler.resample_convert::<f64>(
+            &Array1::from_vec(
+                self.location
+                    .cor_points
+                    .iter()
+                    .map(|p| p.northing)
+                    .collect::<Vec<f64>>(),
+            )
+            .view(),
+        );
+        let times = resampler.resample_convert::<f64>(
+            &Array1::from_vec(
+                self.location
+                    .cor_points
+                    .iter()
+                    .map(|p| p.time_seconds)
+                    .collect::<Vec<f64>>(),
+            )
+            .view(),
+        );
+        let altitudes = resampler.resample_convert::<f64>(
+            &Array1::from_vec(
+                self.location
+                    .cor_points
+                    .iter()
+                    .map(|p| p.altitude)
+                    .collect::<Vec<f64>>(),
+            )
+            .view(),
+        );
 
         let mut cor_points = Vec::<CorPoint>::new();
 
         for i in 0..eastings.len() {
-            let cor = CorPoint{trace_n: i as u32, time_seconds: times[i], easting: eastings[i], northing: northings[i], altitude: altitudes[i] };
+            let cor = CorPoint {
+                trace_n: i as u32,
+                time_seconds: times[i],
+                easting: eastings[i],
+                northing: northings[i],
+                altitude: altitudes[i],
+            };
             cor_points.push(cor);
         }
 
         self.metadata.last_trace = self.data.shape()[1] as u32;
         self.location.cor_points = cor_points;
-        self.log_event("equidistant_traces", &format!("Ran equidistant traces with a spacing of {step} m"), start_time);
+        self.log_event(
+            "equidistant_traces",
+            &format!("Ran equidistant traces with a spacing of {step} m"),
+            start_time,
+        );
         /*
         let breaks = tools::groupby_average(&mut self.data, tools::Axis2D::Col, &distances, step);
 
@@ -1682,8 +1728,7 @@ mod tests {
     }
 
     fn make_test_metadata(width: Option<usize>, height: Option<usize>) -> super::GPRMeta {
-
-        super::GPRMeta{
+        super::GPRMeta {
             samples: height.unwrap_or(1024) as u32,
             frequency: 8000.,
             frequency_steps: 1,
@@ -1696,13 +1741,9 @@ mod tests {
             rd3_filepath: PathBuf::new(),
             medium_velocity: 0.168,
         }
-
-
     }
 
-
     fn make_test_gpr(width: Option<usize>, height: Option<usize>) -> super::GPR {
-
         let width = width.unwrap_or(2024);
         let height = height.unwrap_or(1024);
 
@@ -1718,29 +1759,30 @@ mod tests {
             col.assign(&Array1::<f32>::linspace(0., (height - 1) as f32, height));
         }
 
-        super::GPR{
+        super::GPR {
             data,
             topo_data: None,
             location: gpr_location,
             metadata: meta,
             log: Vec::new(),
             horizontal_signal_distance: antenna_separation,
-            zero_point_ns: 0.
+            zero_point_ns: 0.,
         }
     }
 
     #[test]
     fn test_make_test_gpr() {
-
         let gpr = make_test_gpr(None, None);
 
         assert_eq!(gpr.data[[0, 0]], 0.);
-        assert_eq!(gpr.data[[gpr.data.shape()[0] - 1, 0]], (gpr.data.shape()[0] - 1) as f32);
+        assert_eq!(
+            gpr.data[[gpr.data.shape()[0] - 1, 0]],
+            (gpr.data.shape()[0] - 1) as f32
+        );
     }
 
     #[test]
     fn test_correct_antenna_separation() {
-
         let mut gpr = make_test_gpr(Some(10), Some(1024));
 
         gpr.horizontal_signal_distance = 30.;
@@ -1748,7 +1790,11 @@ mod tests {
         assert_eq!(gpr.data[[10, 0]], 10.);
         assert_eq!(gpr.log.len(), 0);
         gpr.correct_antenna_separation();
-        assert!(gpr.log.last().unwrap().contains("correct_antenna_separation"));
+        assert!(gpr
+            .log
+            .last()
+            .unwrap()
+            .contains("correct_antenna_separation"));
 
         assert_ne!(gpr.height(), 1024);
 
@@ -1765,7 +1811,6 @@ mod tests {
         let n_stationary = 10;
 
         for (i, point) in gpr.location.cor_points.iter_mut().enumerate() {
-
             if i == n_stationary {
                 break;
             }
@@ -1778,7 +1823,6 @@ mod tests {
         gpr.make_equidistant(None);
         // Now, the N stationary points should be coerced into one
         assert_eq!(gpr.width(), width - (n_stationary - 1));
-
     }
 
     #[test]

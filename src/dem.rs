@@ -30,11 +30,10 @@ pub fn read_elevations(
     // TODO: Try to pre-initialize the full-size array
     let mut px_coords = Array2::<f32>::from_elem((0, 2), 0.);
 
-    // Loop over each coordinate and project them to pixel space  
+    // Loop over each coordinate and project them to pixel space
     // TODO: Try to do this in one closure for simplicity and easier debugging.
     for coord in xy_coords.rows() {
-        px_coords
-            .push_row(project_geo_to_px(coord[0], coord[1], &transform).view())?;
+        px_coords.push_row(project_geo_to_px(coord[0], coord[1], &transform).view())?;
     }
 
     // Measure the median step size in pixels of the coordinate sequence.
@@ -42,13 +41,14 @@ pub fn read_elevations(
     // If no upscaling is done on a coarse DEM, the entire coordinate sequence might be in very few DEM pixels,
     // which gives a blocky appearance to the elevation track.
     let med_diff = {
-        // First, measure the differences pixels (read the coordinate distances in pixels) 
+        // First, measure the differences pixels (read the coordinate distances in pixels)
         let mut px_diffs = Vec::<f32>::new();
         for i in 1..px_coords.shape()[0] {
             px_diffs.push(
                 (px_coords.get((i, 0)).unwrap() - px_coords.get((i - 1, 0)).unwrap()).powi(2)
-                    + ((px_coords.get((i, 0)).unwrap() - px_coords.get((i - 1, 0)).unwrap()).powi(2))
-                        .sqrt(),
+                    + ((px_coords.get((i, 0)).unwrap() - px_coords.get((i - 1, 0)).unwrap())
+                        .powi(2))
+                    .sqrt(),
             );
         }
         // Then, in a slightly convoluted syntax, measure the median pixel difference
@@ -67,18 +67,18 @@ pub fn read_elevations(
     // Here, the potential DEM upscaling is determined. It is clamped from 1 (no scaling) to 10
     let upscale = ((1. / med_diff) as usize).clamp(1, 10);
 
-    // Get the pixel bounds of the coordinate track to crop the DEM 
+    // Get the pixel bounds of the coordinate track to crop the DEM
     let min_xy = px_coords.map_axis(Axis(0), |a| a.min().unwrap().to_owned() as usize);
     let max_xy = px_coords.map_axis(Axis(0), |a| a.max().unwrap().to_owned().ceil() as usize);
 
     let upper_left = (min_xy[0], min_xy[1]);
 
-    // The window size is the "(width, height)" of the part to extract from the DEM 
+    // The window size is the "(width, height)" of the part to extract from the DEM
     let window_size = (max_xy[0] - min_xy[0] + 1, max_xy[1] - min_xy[1] + 1);
 
-    // The upscaled window size is the expected size of the read DEM, which may be larger 
+    // The upscaled window size is the expected size of the read DEM, which may be larger
     // than the original window size in the case of upscaling. If upscale == 1, this is identical
-    // It basically tells GDAL: "Read this window of `window_size` and (potentially) upscale it to `upscaled_window_size`" 
+    // It basically tells GDAL: "Read this window of `window_size` and (potentially) upscale it to `upscaled_window_size`"
     let upscaled_window_size = (window_size.0 * upscale, window_size.1 * upscale);
 
     // Read the DEM elevations as a 2D array
@@ -106,10 +106,10 @@ pub fn read_elevations(
 }
 
 /// Transform a geographical coordinate to the pixel-space using a transform
-/// 
+///
 /// The affine transform object consists of six components:
 /// [x_offset, x_resolution, unsupported_rotation, y_offset, unsupported_rotation, -y_resolution]
-/// 
+///
 /// The pixel space is assumed to be zero at the top left.
 ///
 /// # Arguments
@@ -139,17 +139,23 @@ fn project_geo_to_px(easting: f64, northing: f64, transform: &[f64; 6]) -> Array
 
 #[cfg(test)]
 mod tests {
-    
+
     #[test]
     fn test_project_geo_to_px() {
         use super::project_geo_to_px;
-        
-        let transform0: [f64; 6] = [5000., 5., 0., 10000., 0.,  -10.];
-        
-        let point0 = (5000., 5000.); 
-        assert_eq!(project_geo_to_px(point0.0, point0.1, &transform0).into_raw_vec(), vec![0., 500.]);
-        
+
+        let transform0: [f64; 6] = [5000., 5., 0., 10000., 0., -10.];
+
+        let point0 = (5000., 5000.);
+        assert_eq!(
+            project_geo_to_px(point0.0, point0.1, &transform0).into_raw_vec(),
+            vec![0., 500.]
+        );
+
         let point1 = (6000., 7500.);
-        assert_eq!(project_geo_to_px(point1.0, point1.1, &transform0).into_raw_vec(), vec![200., 250.]);
-    }    
+        assert_eq!(
+            project_geo_to_px(point1.0, point1.1, &transform0).into_raw_vec(),
+            vec![200., 250.]
+        );
+    }
 }

@@ -1,10 +1,7 @@
 use crate::gpr;
 /// Functions to handle the command line interface (CLI)
 use clap::Parser;
-use std::{
-    path::PathBuf,
-    time::Duration,
-};
+use std::{path::PathBuf, time::Duration};
 
 #[derive(Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -131,9 +128,14 @@ pub fn main(arguments: Args) -> i32 {
             .unwrap()
             .map(|v| v.unwrap())
             .collect::<Vec<PathBuf>>(),
-        None => return error("No filepath given.\nUse the help text (\"-h\" or \"--help\") for assistance.", 1),
+        None => {
+            return error(
+                "No filepath given.\nUse the help text (\"-h\" or \"--help\") for assistance.",
+                1,
+            )
+        }
     };
-        
+
     // The profile (the list of steps) is the default profile if "--default" was given, or a
     // list of "--steps a,b,c". If none were given, raise an error
     let profile: Vec<String> = match arguments.info {

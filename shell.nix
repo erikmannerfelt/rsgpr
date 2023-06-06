@@ -10,6 +10,7 @@ in pkgs.mkShell {
   buildInputs = with pkgs; [
     cargo-tarpaulin # Get test coverage statistics
     rustfmt
+    clippy
   ];
   LIBCLANG_PATH = package.LIBCLANG_PATH;
   PKG_CONFIG_PATH = package.PKG_CONFIG_PATH;
