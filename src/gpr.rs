@@ -3,12 +3,11 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use ndarray_stats::QuantileExt;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use ndarray::{Array1, Array2, Axis, Slice};
 use rayon::prelude::*;
 
-use crate::cli::RunParams;
 use crate::{dem, io, tools};
 
 const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
@@ -1292,25 +1291,23 @@ impl GPR {
         }
     }
 }
+pub struct RunParams {
+    pub filepaths: Vec<PathBuf>,
+    pub output_path: Option<PathBuf>,
+    pub only_info: bool,
+    pub dem_path: Option<PathBuf>,
+    pub cor_path: Option<PathBuf>,
+    pub medium_velocity: f32,
+    pub crs: String,
+    pub quiet: bool,
+    pub track_path: Option<Option<PathBuf>>,
+    pub steps: Vec<String>,
+    pub no_export: bool,
+    pub render_path: Option<Option<PathBuf>>,
+    pub merge: Option<Duration>,
+}
 
-pub fn run(
-    params: RunParams,
-    /*
-    paths: Vec<PathBuf>,
-    output_path: Option<PathBuf>,
-    only_info: bool,
-    dem_path: Option<PathBuf>,
-    cor_path: Option<PathBuf>,
-    medium_velocity: f32,
-    crs: String,
-    quiet: bool,
-    track_path: Option<Option<PathBuf>>,
-    steps: Vec<String>,
-    no_export: bool,
-    render_path: Option<Option<PathBuf>>,
-    merge: Option<Duration>,
-    */
-) -> Result<Vec<GPR>, Box<dyn Error>> {
+pub fn run(params: RunParams) -> Result<Vec<GPR>, Box<dyn Error>> {
     let empty: Vec<GPR> = Vec::new();
     let mut gprs: Vec<(PathBuf, GPR)> = Vec::new();
     for filepath in &params.filepaths {

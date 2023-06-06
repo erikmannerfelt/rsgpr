@@ -18,7 +18,7 @@ use std::{path::PathBuf, time::Duration};
     ))
 ]
 pub struct Args {
-    /// Filepath of the Malå rd3 file
+    /// Filepath of the Malå rd3 file or a glob pattern of many files
     #[clap(short, long)]
     filepath: Option<String>,
 
@@ -89,44 +89,108 @@ pub struct Args {
     merge: Option<String>,
 }
 
-pub struct RunParams {
-    pub filepaths: Vec<PathBuf>,
-    pub output_path: Option<PathBuf>,
-    pub only_info: bool,
-    pub dem_path: Option<PathBuf>,
-    pub cor_path: Option<PathBuf>,
-    pub medium_velocity: f32,
-    pub crs: String,
-    pub quiet: bool,
-    pub track_path: Option<Option<PathBuf>>,
-    pub steps: Vec<String>,
-    pub no_export: bool,
-    pub render_path: Option<Option<PathBuf>>,
-    pub merge: Option<Duration>,
+enum ParsedArgs {
+    Params(Box<gpr::RunParams>),
+    Error(String),
+    Done,
 }
 
-impl RunParams {
-    pub fn from_args(
-        filepaths: Vec<PathBuf>,
-        steps: Vec<String>,
-        merge: Option<Duration>,
-        arguments: Args,
-    ) -> RunParams {
-        RunParams {
-            filepaths,
-            output_path: arguments.output,
-            only_info: arguments.info,
-            dem_path: arguments.dem,
-            cor_path: arguments.cor,
-            medium_velocity: arguments.velocity,
-            crs: arguments.crs,
-            quiet: arguments.quiet,
-            track_path: arguments.track,
-            steps,
-            no_export: arguments.no_export,
-            render_path: arguments.render,
-            merge,
+impl Args {
+    fn parse(&self) -> ParsedArgs {
+        // If the user only wants to show the available steps, stop here.
+        if self.show_all_steps {
+            println!("Name\t\tDescription");
+
+            for line in gpr::all_available_steps() {
+                println!("{}\n{}\n{}\n", line[0], "-".repeat(line[0].len()), line[1]);
+            }
+            return ParsedArgs::Done;
+        };
+
+        // If the user only wants to show the default profile, stop here.
+        if self.show_default {
+            for line in gpr::default_processing_profile() {
+                println!("{}", line);
+            }
+            return ParsedArgs::Done;
+        };
+
+        let merge: Option<Duration> = match &self.merge {
+            Some(merge_string) => match parse_duration::parse(merge_string) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    return ParsedArgs::Error(format!("Error parsing --merge string: {:?}", e))
+                }
+            },
+            None => None,
+        };
+
+        let filepaths =
+            match &self.filepath {
+                Some(fp) => glob::glob(fp)
+                    .unwrap()
+                    .map(|v| v.unwrap())
+                    .collect::<Vec<PathBuf>>(),
+                None => return ParsedArgs::Error(
+                    "No filepath given.\nUse the help text (\"-h\" or \"--help\") for assistance."
+                        .to_string(),
+                ),
+            };
+
+        // The profile (the list of steps) is the default profile if "--default" was given, or a
+        // list of "--steps a,b,c". If none were given, raise an error
+        let steps: Vec<String> = match self.info {
+            true => Vec::new(),
+            false => match self.default_with_topo {
+                true => {
+                    let mut profile = gpr::default_processing_profile();
+                    profile.push("correct_topography".to_string());
+                    profile
+                }
+                false => match self.default {
+                    true => gpr::default_processing_profile(),
+                    false => match &self.steps {
+                        Some(steps) => steps.split(',').map(|s| s.trim().to_string()).collect(),
+                        None => {
+                            return ParsedArgs::Error(
+                                "No steps specified. Choose a profile or what steps to run"
+                                    .to_string(),
+                            )
+                        }
+                    },
+                },
+            },
+        };
+        // Fetch all allowed steps and validate that they exist.
+        // It's not a perfect validation, because "dewoww" will pass, but another validation is
+        // done later to make sure it's exact. This check is only to run into fewer errors
+        // mid-processing (and rather have them before beginning)
+        let allowed_steps = gpr::all_available_steps()
+            .iter()
+            .map(|s| s[0])
+            .collect::<Vec<&str>>();
+        for step in &steps {
+            if !allowed_steps.iter().any(|allowed| step.contains(allowed)) {
+                return ParsedArgs::Error(format!("Unrecognized step: {}", step));
+            };
         }
+        ParsedArgs::Params(Box::new(gpr::RunParams {
+            filepaths,
+            output_path: self.output.clone(),
+            only_info: self.info,
+            dem_path: self.dem.clone(),
+            cor_path: self.cor.clone(),
+            medium_velocity: self.velocity,
+            crs: self.crs.clone(),
+            quiet: self.quiet,
+            track_path: self.track.clone(),
+            steps,
+            no_export: self.no_export,
+            render_path: self.render.clone(),
+            merge,
+        }))
+
+        //gpr::run(RunParams::from_args(filepaths, steps, merge, self)).unwrap();
     }
 }
 
@@ -138,86 +202,14 @@ impl RunParams {
 /// # Returns
 /// The appropriate exit code.
 pub fn main(arguments: Args) -> i32 {
-    // If the user only wants to show the available steps, stop here.
-    if arguments.show_all_steps {
-        println!("Name\t\tDescription");
-
-        for line in gpr::all_available_steps() {
-            println!("{}\n{}\n{}\n", line[0], "-".repeat(line[0].len()), line[1]);
-        }
-        return 0;
-    };
-
-    // If the user only wants to show the default profile, stop here.
-    if arguments.show_default {
-        for line in gpr::default_processing_profile() {
-            println!("{}", line);
-        }
-        return 0;
-    };
-
-    let merge: Option<Duration> = match &arguments.merge {
-        Some(merge_string) => match parse_duration::parse(merge_string) {
-            Ok(d) => Some(d),
-            Err(e) => return error(&format!("Error parsing --merge string: {:?}", e), 1),
+    match arguments.parse() {
+        ParsedArgs::Params(params) => match gpr::run(*params) {
+            Ok(_) => 0,
+            Err(e) => error(&format!("{e:?}"), 1),
         },
-        None => None,
-    };
-
-    let filepaths = match &arguments.filepath {
-        Some(fp) => glob::glob(fp)
-            .unwrap()
-            .map(|v| v.unwrap())
-            .collect::<Vec<PathBuf>>(),
-        None => {
-            return error(
-                "No filepath given.\nUse the help text (\"-h\" or \"--help\") for assistance.",
-                1,
-            )
-        }
-    };
-
-    // The profile (the list of steps) is the default profile if "--default" was given, or a
-    // list of "--steps a,b,c". If none were given, raise an error
-    let steps: Vec<String> = match arguments.info {
-        true => Vec::new(),
-        false => match arguments.default_with_topo {
-            true => {
-                let mut profile = gpr::default_processing_profile();
-                profile.push("correct_topography".to_string());
-                profile
-            }
-            false => match arguments.default {
-                true => gpr::default_processing_profile(),
-                false => match &arguments.steps {
-                    Some(steps) => steps.split(',').map(|s| s.trim().to_string()).collect(),
-                    None => {
-                        return error(
-                            "No steps specified. Choose a profile or what steps to run",
-                            1,
-                        )
-                    }
-                },
-            },
-        },
-    };
-    // Fetch all allowed steps and validate that they exist.
-    // It's not a perfect validation, because "dewoww" will pass, but another validation is
-    // done later to make sure it's exact. This check is only to run into fewer errors
-    // mid-processing (and rather have them before beginning)
-    let allowed_steps = gpr::all_available_steps()
-        .iter()
-        .map(|s| s[0])
-        .collect::<Vec<&str>>();
-    for step in &steps {
-        if !allowed_steps.iter().any(|allowed| step.contains(allowed)) {
-            return error(&format!("Unrecognized step: {}", step), 1);
-        };
+        ParsedArgs::Error(message) => error(&message, 1),
+        ParsedArgs::Done => 0,
     }
-
-    gpr::run(RunParams::from_args(filepaths, steps, merge, arguments)).unwrap();
-
-    0
 }
 
 /// Print an error to /dev/stderr and return an exit code
