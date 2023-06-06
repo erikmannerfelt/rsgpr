@@ -239,10 +239,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     file.add_attribute("antenna", gpr.metadata.antenna.clone())?;
     file.add_attribute("antenna-separation", gpr.metadata.antenna_separation)?;
     file.add_attribute("frequency-steps", gpr.metadata.frequency_steps)?;
-    file.add_attribute(
-        "vertical-sampling-frequency",
-        gpr.metadata.frequency,
-    )?;
+    file.add_attribute("vertical-sampling-frequency", gpr.metadata.frequency)?;
 
     file.add_attribute("processing-log", gpr.log.join("\n"))?;
     file.add_attribute(

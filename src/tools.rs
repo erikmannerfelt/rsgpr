@@ -255,18 +255,17 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
             let mut potential_outside_ahead = Vec::<(usize, usize)>::new();
             let mut indices_outside = Vec::<usize>::new();
             for (j, k) in digitized.iter().enumerate() {
-
                 match k.cmp(&i) {
                     std::cmp::Ordering::Less => {
                         potential_outside_behind.push((i - k, j));
-                    },
+                    }
                     std::cmp::Ordering::Greater => {
                         potential_outside_ahead.push((*k - i, j));
-                    },
+                    }
                     std::cmp::Ordering::Equal => {
                         indices_between.push(j);
                     }
-               };
+                };
             }
 
             if indices_between.len() < 2 {
