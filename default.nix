@@ -23,9 +23,13 @@ in pkgs.rustPlatform.buildRustPackage rec {
     zlib
   ];
   buildInputs = with pkgs; [ proj proj.dev libclang my-gdal ];
+
   # libz-sys fails when compiling, so testing is disabled for now
   doCheck = false;
+
   src = pkgs.lib.cleanSource ./.;
+
+  # Environment variables that are needed to compile
   LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
   PKG_CONFIG_PATH =
     "${pkgs.gdal}/lib/pkgconfig/:${pkgs.proj.dev}/lib/pkgconfig";
