@@ -911,9 +911,9 @@ dependencies = [
 
 [[package]]
 name = "netcdf"
-version = "0.7.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9668c493289156ed0dce9472ea33ab7a6f6dfe4565a8433bd103995f8053b467"
+checksum = "dfea96e04fb6c7cc3e58d735dbf9213e30b7e88aac0349feeab66abbcb826acc"
 dependencies = [
  "bitflags 1.3.2",
  "lazy_static",
@@ -934,9 +934,9 @@ dependencies = [
 
 [[package]]
 name = "netcdf-sys"
-version = "0.4.1"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e52d92dd7d87feaad8b998db333ac28897b60dfa738f4705c2236bd55035655"
+checksum = "e2dfe2cacf1623a0f51f93d2cfd90386ad40b3daff596f5058ec3037c432c772"
 dependencies = [
  "curl-sys",
  "hdf5-sys",

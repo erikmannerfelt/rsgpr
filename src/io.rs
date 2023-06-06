@@ -289,8 +289,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
         let mut data = file.add_variable::<f32>("data", &["y", "x"])?;
         data.put_values(
             &gpr.data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(),
-            None,
-            Some(&[gpr.height(), gpr.width()]),
+            ..,
         )?;
 
         // The default coordinates are distance for x and return time for y
@@ -305,8 +304,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
         let mut data2 = file.add_variable::<f32>("data_topographically_corrected", &["y2", "x"])?;
         data2.put_values(
             &topo_data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(),
-            Some(&[0, 0]),
-            Some(&[height, gpr.width()]),
+            &[height, gpr.width()],
         )?;
 
         // The default coordinates are distance for x and return time for y
@@ -316,7 +314,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
 
     // Add the distance variable to the x dimension
     let mut ds = file.add_variable::<f32>("distance", &["x"])?;
-    ds.put_values(&distance_vec, Some(&[0]), None)?;
+    ds.put_values(&distance_vec, ..)?;
     ds.add_attribute("unit", "m")?;
 
     // Add the time variable to the x dimension
@@ -327,8 +325,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
             .iter()
             .map(|point| point.time_seconds)
             .collect::<Vec<f64>>(),
-        Some(&[0]),
-        None,
+        ..,
     )?;
     time.add_attribute("unit", "s")?;
 
@@ -340,8 +337,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
             .iter()
             .map(|point| point.easting)
             .collect::<Vec<f64>>(),
-        Some(&[0]),
-        None,
+        ..,
     )?;
     easting.add_attribute("unit", "m")?;
 
@@ -353,8 +349,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
             .iter()
             .map(|point| point.northing)
             .collect::<Vec<f64>>(),
-        Some(&[0]),
-        None,
+        ..,
     )?;
     northing.add_attribute("unit", "m")?;
 
@@ -366,8 +361,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
             .iter()
             .map(|point| point.altitude)
             .collect::<Vec<f64>>(),
-        Some(&[0]),
-        None,
+        ..,
     )?;
     elevation.add_attribute("unit", "m a.s.l.")?;
 
@@ -384,12 +378,12 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     .to_owned()
     .into_raw_vec();
     let mut return_time = file.add_variable::<f32>("return-time", &["y"])?;
-    return_time.put_values(&return_time_arr, Some(&[0]), None)?;
+    return_time.put_values(&return_time_arr, ..)?;
     return_time.add_attribute("unit", "ns")?;
 
     // Add the depth variable to the y dimension
     let mut depth = file.add_variable::<f32>("depth", &["y"])?;
-    depth.put_values(&gpr.depths().into_raw_vec(), Some(&[0]), None)?;
+    depth.put_values(&gpr.depths().into_raw_vec(), ..)?;
 
     depth.add_attribute("unit", "m")?;
 

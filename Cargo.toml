@@ -17,7 +17,7 @@ smartcore = "0.3.2"  # (Linear) regression packages
 noisy_float = "0.2.0"  # For inputs to ndarray-stats 
 rayon = "1.7.0"  # For parallelization of functions
 gdal = {version = "0.15.0", features = ["ndarray"]}  # For reading DEMs
-netcdf = {version = "0.7.0", features = ["ndarray", "static"]}
+netcdf = {version = "0.8.1", features = ["ndarray", "static"]}
 proj = {version="0.27.0", features =  []}  # Has C dynamic dependencies
 clap = { version = "4.3.2", features = ["derive"] }
 glob = "0.3.1"
