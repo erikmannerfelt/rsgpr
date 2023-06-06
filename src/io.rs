@@ -178,7 +178,7 @@ pub fn load_rd3(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn s
     for byte_pair in bytes.chunks_exact(2) {
         let value = i16::from_le_bytes([byte_pair[0], byte_pair[1]]);
         data.push(value as f32 * bits_to_millivolt);
-    };
+    }
 
     let width: usize = data.len() / height;
 
@@ -214,10 +214,11 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     file.add_attribute(
         "start-datetime",
         chrono::DateTime::<chrono::Utc>::from_utc(
-            chrono::NaiveDateTime::from_timestamp(
+            chrono::NaiveDateTime::from_timestamp_opt(
                 gpr.location.cor_points[0].time_seconds as i64,
                 0,
-            ),
+            )
+            .unwrap(),
             chrono::Utc,
         )
         .to_rfc3339(),
@@ -225,10 +226,11 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     file.add_attribute(
         "stop-datetime",
         chrono::DateTime::<chrono::Utc>::from_utc(
-            chrono::NaiveDateTime::from_timestamp(
+            chrono::NaiveDateTime::from_timestamp_opt(
                 gpr.location.cor_points[gpr.location.cor_points.len() - 1].time_seconds as i64,
                 0,
-            ),
+            )
+            .unwrap(),
             chrono::Utc,
         )
         .to_rfc3339(),
@@ -287,8 +289,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
         let mut data = file.add_variable::<f32>("data", &["y", "x"])?;
         data.put_values(
             &gpr.data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(),
-            None,
-            Some(&[gpr.height(), gpr.width()]),
+            ..,
         )?;
 
         // The default coordinates are distance for x and return time for y
@@ -303,8 +304,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
         let mut data2 = file.add_variable::<f32>("data_topographically_corrected", &["y2", "x"])?;
         data2.put_values(
             &topo_data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(),
-            Some(&[0, 0]),
-            Some(&[height, gpr.width()]),
+            &[height, gpr.width()],
         )?;
 
         // The default coordinates are distance for x and return time for y
@@ -314,7 +314,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
 
     // Add the distance variable to the x dimension
     let mut ds = file.add_variable::<f32>("distance", &["x"])?;
-    ds.put_values(&distance_vec, Some(&[0]), None)?;
+    ds.put_values(&distance_vec, ..)?;
     ds.add_attribute("unit", "m")?;
 
     // Add the time variable to the x dimension
@@ -325,8 +325,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
             .iter()
             .map(|point| point.time_seconds)
             .collect::<Vec<f64>>(),
-        Some(&[0]),
-        None,
+        ..,
     )?;
     time.add_attribute("unit", "s")?;
 
@@ -338,8 +337,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
             .iter()
             .map(|point| point.easting)
             .collect::<Vec<f64>>(),
-        Some(&[0]),
-        None,
+        ..,
     )?;
     easting.add_attribute("unit", "m")?;
 
@@ -351,8 +349,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
             .iter()
             .map(|point| point.northing)
             .collect::<Vec<f64>>(),
-        Some(&[0]),
-        None,
+        ..,
     )?;
     northing.add_attribute("unit", "m")?;
 
@@ -364,8 +361,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
             .iter()
             .map(|point| point.altitude)
             .collect::<Vec<f64>>(),
-        Some(&[0]),
-        None,
+        ..,
     )?;
     elevation.add_attribute("unit", "m a.s.l.")?;
 
@@ -382,12 +378,12 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     .to_owned()
     .into_raw_vec();
     let mut return_time = file.add_variable::<f32>("return-time", &["y"])?;
-    return_time.put_values(&return_time_arr, Some(&[0]), None)?;
+    return_time.put_values(&return_time_arr, ..)?;
     return_time.add_attribute("unit", "ns")?;
 
     // Add the depth variable to the y dimension
     let mut depth = file.add_variable::<f32>("depth", &["y"])?;
-    depth.put_values(&gpr.depths().into_raw_vec(), Some(&[0]), None)?;
+    depth.put_values(&gpr.depths().into_raw_vec(), ..)?;
 
     depth.add_attribute("unit", "m")?;
 
@@ -516,7 +512,7 @@ pub fn export_locations(
 mod tests {
 
     use super::{load_cor, load_rad};
-    
+
     /// Fake some data. One point is in the northern hemisphere and one is in the southern
     fn fake_cor_text() -> String {
         [
@@ -524,7 +520,7 @@ mod tests {
             "10\t2022-01-01\t00:01:00\t78.0\tS\t16.0\tW\t100.0\tM\t1",
             "11\t2022-01", // This simulates an unfinished line that should be skipped
         ]
-        .join("\r\n")        
+        .join("\r\n")
     }
 
     #[test]
@@ -608,7 +604,7 @@ mod tests {
         assert_eq!(gpr_meta.last_trace, 40);
         assert_eq!(gpr_meta.rd3_filepath, rd3_path);
     }
-    
+
     #[test]
     fn test_export_locations() {
         use super::export_locations;
@@ -617,55 +613,49 @@ mod tests {
 
         std::fs::write(&cor_path, fake_cor_text()).unwrap();
 
-
         // Load it and "convert" (or rather don't convert) the CRS to WGS84
         let locations = load_cor(&cor_path, "EPSG:4326").unwrap();
-        
+
         let out_dir = temp_dir.path().to_path_buf();
-        let out_path = out_dir.join("track.csv"); 
-        
+        let out_path = out_dir.join("track.csv");
+
         // The GPR filepath will be used in case no explicit filepath was given
         let dummy_gpr_output_path = out_dir.join("gpr.nc");
         let expected_default_path = out_dir.join("gpr_track.csv");
-        
-        
+
         for alternative in [
-            Some(&out_path),  // In case of a target filepath
-            Some(&out_dir),   // In case of a target directory
-            None              // In case of a default name beside the GPR file
+            Some(&out_path), // In case of a target filepath
+            Some(&out_dir),  // In case of a target directory
+            None,            // In case of a default name beside the GPR file
         ] {
             export_locations(&locations, alternative, &dummy_gpr_output_path, false).unwrap();
-            
+
             let expected_path = match alternative {
                 Some(p) if p == &out_path => &out_path,
-                _ => &expected_default_path 
+                _ => &expected_default_path,
             };
             assert!(expected_path.is_file());
-            
-            let content = std::fs::read_to_string(expected_path).unwrap().split("\n").map(|s| s.to_string()).collect::<Vec<String>>();
-            
+
+            let content = std::fs::read_to_string(expected_path)
+                .unwrap()
+                .split("\n")
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>();
+
             assert_eq!(content[0], "trace_n,easting,northing,altitude");
-            
+
             let line0: Vec<&str> = content[1].split(",").collect();
-            
+
             // The cor file says 1 but rsgpr is zero-indexed, hence 0
             assert_eq!(line0[0], "0");
             assert_eq!(line0[1], "16");
             assert_eq!(line0[2], "78");
             assert_eq!(line0[3], "100");
-            
+
             let line1: Vec<&str> = content[2].split(",").collect();
             assert_eq!(line1[2], "-78");
-            
-            std::fs::remove_file(expected_path).unwrap();
-        };
-        
-        
-        
 
-        
-        
-        
-        
+            std::fs::remove_file(expected_path).unwrap();
+        }
     }
 }

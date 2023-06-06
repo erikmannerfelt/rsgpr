@@ -11,22 +11,18 @@ authors = ["Erik Schytt Mannerfelt"]
 [dependencies]
 ndarray = "0.15.6"   # For base ndarrays
 ndarray-stats = "0.5.1"  # For ndarray statistics
-#utm = "*"  # To convert lat/lon to easting/northing
-chrono = "0.4.23"  # Convert timestamps to seconds before epoch
-#nshare = "*"  # Write to an image as an ndarray
-#show-image = "*"
-image = "0.24.5"  # Write images
-#ndarray-linalg = {version = "0.13", features = ["openblas-static"]}
-smartcore = "0.3.0"  # (Linear) regression packages
+chrono = "0.4.26"  # Convert timestamps to seconds before epoch
+image = "0.24.6"  # Write images
+smartcore = "0.3.2"  # (Linear) regression packages
 noisy_float = "0.2.0"  # For inputs to ndarray-stats 
-rayon = "1.6.0"  # For parallelization of functions
+rayon = "1.7.0"  # For parallelization of functions
 gdal = {version = "0.15.0", features = ["ndarray"]}  # For reading DEMs
-netcdf = {version = "0.7.0", features = ["ndarray", "static"]}
-proj = {version="0.27.0", features =  ["pkg_config"]}
-clap = { version = "4.0.29", features = ["derive"] }
-glob = "0.3.0"
+netcdf = {version = "0.8.1", features = ["ndarray", "static"]}
+proj = {version="0.27.0", features =  []}  # Has C dynamic dependencies
+clap = { version = "4.3.2", features = ["derive"] }
+glob = "0.3.1"
 parse_duration = "2.1.1"
 num = "0.4.0"
 
 [dev-dependencies]
-tempfile = "3.3.0"
+tempfile = "3.5.0"
