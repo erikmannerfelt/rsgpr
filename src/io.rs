@@ -24,7 +24,7 @@ pub fn load_rad(filepath: &Path, medium_velocity: f32) -> Result<gpr::GPRMeta, B
     let content = std::fs::read_to_string(filepath)?;
 
     // Collect all rows into a hashmap, assuming a "KEY:VALUE" structure.
-    let data: HashMap<&str, &str> = content.lines().filter_map(|s| s.split_once(":")).collect();
+    let data: HashMap<&str, &str> = content.lines().filter_map(|s| s.split_once(':')).collect();
 
     let rd3_filepath = filepath.with_extension("rd3");
     if !rd3_filepath.is_file() {
@@ -57,7 +57,7 @@ pub fn load_rad(filepath: &Path, medium_velocity: f32) -> Result<gpr::GPRMeta, B
         time_interval: data
             .get("TIME INTERVAL")
             .ok_or("No 'TIME INTERVAL' key in metadata")?
-            .replace(" ", "")
+            .replace(' ', "")
             .parse()?,
         antenna_mhz: antenna.split("MHz").collect::<Vec<&str>>()[0]
             .trim()
@@ -106,7 +106,7 @@ pub fn load_cor(filepath: &Path, projected_crs: &str) -> Result<gpr::GPRLocation
     // Loop over the lines of the file and parse CorPoints from it
     for line in content.lines() {
         // Split the line into ten separate columns.
-        let data: Vec<&str> = line.splitn(10, "\t").collect();
+        let data: Vec<&str> = line.splitn(10, '\t').collect();
 
         // If the line could not be split in ten columns, it is probably wrong.
         if data.len() < 10 {
@@ -143,10 +143,10 @@ pub fn load_cor(filepath: &Path, projected_crs: &str) -> Result<gpr::GPRLocation
         });
     }
 
-    if points.len() > 0 {
+    if !points.is_empty() {
         Ok(gpr::GPRLocation {
             cor_points: points,
-            correction: gpr::LocationCorrection::NONE,
+            correction: gpr::LocationCorrection::None,
             crs: projected_crs.to_string(),
         })
     } else {
@@ -241,7 +241,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     file.add_attribute("frequency-steps", gpr.metadata.frequency_steps)?;
     file.add_attribute(
         "vertical-sampling-frequency",
-        gpr.metadata.frequency.clone(),
+        gpr.metadata.frequency,
     )?;
 
     file.add_attribute("processing-log", gpr.log.join("\n"))?;
@@ -261,8 +261,8 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     file.add_attribute(
         "elevation-correction",
         match gpr.location.correction.clone() {
-            gpr::LocationCorrection::NONE => "None".to_string(),
-            gpr::LocationCorrection::DEM(fp) => format!(
+            gpr::LocationCorrection::None => "None".to_string(),
+            gpr::LocationCorrection::Dem(fp) => format!(
                 "DEM-corrected: {:?}",
                 fp.as_path().file_name().unwrap().to_str().unwrap()
             ),
@@ -304,7 +304,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
         let mut data2 = file.add_variable::<f32>("data_topographically_corrected", &["y2", "x"])?;
         data2.put_values(
             &topo_data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(),
-            &[height, gpr.width()],
+            [height, gpr.width()],
         )?;
 
         // The default coordinates are distance for x and return time for y
@@ -486,7 +486,7 @@ pub fn export_locations(
                 )
                 .with_extension("csv"),
             // In case it is not a directory (and thereby assumed to be a normal filepath)
-            false => fp.clone().to_path_buf(),
+            false => fp.clone(),
         },
         // Here is if no filepath was given
         None => output_filepath

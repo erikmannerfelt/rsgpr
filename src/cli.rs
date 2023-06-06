@@ -89,6 +89,47 @@ pub struct Args {
     merge: Option<String>,
 }
 
+pub struct RunParams {
+    pub filepaths: Vec<PathBuf>,
+    pub output_path: Option<PathBuf>,
+    pub only_info: bool,
+    pub dem_path: Option<PathBuf>,
+    pub cor_path: Option<PathBuf>,
+    pub medium_velocity: f32,
+    pub crs: String,
+    pub quiet: bool,
+    pub track_path: Option<Option<PathBuf>>,
+    pub steps: Vec<String>,
+    pub no_export: bool,
+    pub render_path: Option<Option<PathBuf>>,
+    pub merge: Option<Duration>,
+}
+
+impl RunParams {
+    pub fn from_args(
+        filepaths: Vec<PathBuf>,
+        steps: Vec<String>,
+        merge: Option<Duration>,
+        arguments: Args,
+    ) -> RunParams {
+        RunParams {
+            filepaths,
+            output_path: arguments.output,
+            only_info: arguments.info,
+            dem_path: arguments.dem,
+            cor_path: arguments.cor,
+            medium_velocity: arguments.velocity,
+            crs: arguments.crs,
+            quiet: arguments.quiet,
+            track_path: arguments.track,
+            steps,
+            no_export: arguments.no_export,
+            render_path: arguments.render,
+            merge,
+        }
+    }
+}
+
 /// Run the main CLI functionality based on the given arguments
 ///
 /// # Arguments
@@ -115,16 +156,16 @@ pub fn main(arguments: Args) -> i32 {
         return 0;
     };
 
-    let merge: Option<Duration> = match arguments.merge {
-        Some(merge_string) => match parse_duration::parse(&merge_string) {
+    let merge: Option<Duration> = match &arguments.merge {
+        Some(merge_string) => match parse_duration::parse(merge_string) {
             Ok(d) => Some(d),
             Err(e) => return error(&format!("Error parsing --merge string: {:?}", e), 1),
         },
         None => None,
     };
 
-    let filepaths = match arguments.filepath {
-        Some(fp) => glob::glob(&fp)
+    let filepaths = match &arguments.filepath {
+        Some(fp) => glob::glob(fp)
             .unwrap()
             .map(|v| v.unwrap())
             .collect::<Vec<PathBuf>>(),
@@ -138,7 +179,7 @@ pub fn main(arguments: Args) -> i32 {
 
     // The profile (the list of steps) is the default profile if "--default" was given, or a
     // list of "--steps a,b,c". If none were given, raise an error
-    let profile: Vec<String> = match arguments.info {
+    let steps: Vec<String> = match arguments.info {
         true => Vec::new(),
         false => match arguments.default_with_topo {
             true => {
@@ -149,10 +190,10 @@ pub fn main(arguments: Args) -> i32 {
             false => match arguments.default {
                 true => gpr::default_processing_profile(),
                 false => match &arguments.steps {
-                    Some(steps) => steps.split(",").map(|s| s.trim().to_string()).collect(),
+                    Some(steps) => steps.split(',').map(|s| s.trim().to_string()).collect(),
                     None => {
                         return error(
-                            &format!("No steps specified. Choose a profile or what steps to run"),
+                            "No steps specified. Choose a profile or what steps to run",
                             1,
                         )
                     }
@@ -168,30 +209,15 @@ pub fn main(arguments: Args) -> i32 {
         .iter()
         .map(|s| s[0])
         .collect::<Vec<&str>>();
-    for step in &profile {
+    for step in &steps {
         if !allowed_steps.iter().any(|allowed| step.contains(allowed)) {
             return error(&format!("Unrecognized step: {}", step), 1);
         };
     }
 
-    gpr::run(
-        filepaths,
-        arguments.output,
-        arguments.info,
-        arguments.dem,
-        arguments.cor,
-        arguments.velocity,
-        arguments.crs,
-        arguments.quiet,
-        arguments.track,
-        profile,
-        arguments.no_export,
-        arguments.render,
-        merge,
-    )
-    .unwrap();
+    gpr::run(RunParams::from_args(filepaths, steps, merge, arguments)).unwrap();
 
-    return 0;
+    0
 }
 
 /// Print an error to /dev/stderr and return an exit code

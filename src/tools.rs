@@ -1,5 +1,5 @@
 use core::ops::{Add, Div, Mul, Sub};
-use ndarray::{Array1, Array2, ArrayView1, Axis, Slice};
+use ndarray::{Array1, Array2, ArrayView1};
 use ndarray_stats::QuantileExt;
 use num::{Float, Zero};
 use rayon::prelude::*;
@@ -129,10 +129,10 @@ pub fn seconds_to_rfc3339(seconds: f64) -> String {
 /// - Ok(None) if there is no argument in the string
 /// - Err(e) if the argument could not be parsed
 pub fn parse_option<T: FromStr>(string: &str, argument_index: usize) -> Result<Option<T>, String> {
-    match string.split_once("(") {
+    match string.split_once('(') {
         None => Ok(None),
         Some((_, first_part)) => {
-            match first_part.split_once(")") {
+            match first_part.split_once(')') {
                 Some((within_parentheses, _)) => {
                     // Replace has to be run twice, as it may be an odd number of whitespaces:
                     // "_-_-_" => "_-_" => "_"
@@ -140,7 +140,7 @@ pub fn parse_option<T: FromStr>(string: &str, argument_index: usize) -> Result<O
                         within_parentheses.replace("  ", " ").replace("  ", " ");
 
                     let arguments = removed_consecutive_whitespace
-                        .split(" ")
+                        .split(' ')
                         .collect::<Vec<&str>>();
 
                     match arguments.get(argument_index) {
@@ -170,84 +170,6 @@ pub enum Axis2D {
     Row,
     Col,
 }
-
-/// Average the data by binning them along one axis in a specified dimension
-///
-/// The python (pandas) equivalent would be:
-/// ```python
-/// DATA.groupby((X_VALUES / BIN_SIZE).astype(int)).mean(axis=AXIS)
-/// ```
-///
-/// # Arguments
-/// - `data`: The data to modify inplace
-/// - `axis`: The axis (row-wise or column-wise0 to average the values
-/// - `x_values`: The values to bin, whose bins are later used to average the data in the specified
-/// axis
-/// - `bin_size`: The step size to bin the `x_values` in
-///
-/// # Returns
-/// The upper breaks + 1 of the slices of the old data, e.g. [1, 3] for the bins [0, 1, 1]
-pub fn groupby_average(
-    data: &mut Array2<f32>,
-    axis: Axis2D,
-    x_values: &Array1<f32>,
-    bin_size: f32,
-) -> Array1<usize> {
-    let bins = x_values.mapv(|value| (value / bin_size) as usize);
-
-    let nd_axis = match axis {
-        Axis2D::Row => Axis(0),
-        Axis2D::Col => Axis(1),
-    };
-
-    let new_size = *bins.max().unwrap() + 1;
-
-    let mut breaks = Array1::<usize>::from_elem((new_size,), bins.shape()[0] - 1);
-    let mut last_highest = 0_usize;
-    let mut i = 0_usize;
-    for j in 0..bins.shape()[0] {
-        if bins[j] > last_highest {
-            breaks[i] = j;
-            last_highest = bins[j];
-            i += 1;
-        };
-    }
-    let mut unique_breaks = breaks.into_raw_vec();
-    unique_breaks.dedup();
-    let breaks = Array1::from_vec(unique_breaks);
-
-    for i in 0..breaks.shape()[0] {
-        let lower = match i == 0 {
-            true => 0,
-            false => breaks[i - 1],
-        };
-
-        let upper = breaks[i];
-
-        let old_data_slice = match (upper - lower) > 1 {
-            true => data
-                .slice_axis(nd_axis, Slice::new(lower as isize, Some(upper as isize), 1))
-                .mean_axis(nd_axis)
-                .unwrap(),
-            false => match axis {
-                Axis2D::Row => data.row(lower as usize).to_owned(),
-                Axis2D::Col => data.column(lower as usize).to_owned(),
-            },
-        };
-        let mut new_data_slice = match axis {
-            Axis2D::Col => data.column_mut(i),
-            Axis2D::Row => data.row_mut(i),
-        };
-        new_data_slice.assign(&old_data_slice);
-    }
-    data.slice_axis_inplace(
-        nd_axis,
-        Slice::new(0, Some(breaks.shape()[0] as isize + 1), 1),
-    );
-
-    breaks
-}
-
 /// Convert the two-way return time to depth
 ///
 /// two_way_travel_distance = two_way_return_time * velocity
@@ -311,7 +233,7 @@ pub struct Resampler<F: Float> {
 fn equally_spaced_from_sparse<F: Float>(sparse: &Array1<F>, resolution: F) -> Array1<F> {
     Array1::<F>::range(
         *sparse.min().unwrap(),
-        sparse.max().unwrap().clone() + resolution,
+        *sparse.max().unwrap() + resolution,
         resolution,
     )
 }
@@ -333,13 +255,18 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
             let mut potential_outside_ahead = Vec::<(usize, usize)>::new();
             let mut indices_outside = Vec::<usize>::new();
             for (j, k) in digitized.iter().enumerate() {
-                if *k < i {
-                    potential_outside_behind.push((i - k, j));
-                } else if *k > i {
-                    potential_outside_ahead.push((*k - i, j));
-                } else {
-                    indices_between.push(j);
-                };
+
+                match k.cmp(&i) {
+                    std::cmp::Ordering::Less => {
+                        potential_outside_behind.push((i - k, j));
+                    },
+                    std::cmp::Ordering::Greater => {
+                        potential_outside_ahead.push((*k - i, j));
+                    },
+                    std::cmp::Ordering::Equal => {
+                        indices_between.push(j);
+                    }
+               };
             }
 
             if indices_between.len() < 2 {
@@ -382,14 +309,14 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
             slope_indices.push(indices_for_slope);
         }
 
-        return Resampler {
+        Resampler {
             x_values,
             target_x_values,
             digitized,
             slope_indices,
             intercept_indices,
             _debug: debug,
-        };
+        }
     }
 
     pub fn new(x_values: Array1<F>, resolution: F) -> Self {
@@ -397,24 +324,16 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
         Resampler::_new(x_values, target_x_values, false)
     }
 
+    /*
     pub fn new_with_target(x_values: Array1<F>, target_x_values: Array1<F>) -> Self {
         Resampler::_new(x_values, target_x_values, false)
     }
+    */
 
     fn _new_debug(x_values: Array1<F>, resolution: F) -> Self {
         let target_x_values = equally_spaced_from_sparse::<F>(&x_values, resolution);
         Self::_new(x_values, target_x_values, true)
     }
-
-    /*
-    fn _resample_par<F2: Float + std::fmt::Display + std::iter::Sum + Sized>(&self, x_values: &[F2], target_x_values: &[F2], y_values: &[F2]) -> Array1<F2> {
-
-
-        //let xs = target_x_values.iter().map(|v| v.to_owned()).collect::<Vec<F2>>().iter().into_par_iter();
-
-
-    }
-    */
 
     fn _resample<F2: Float + std::fmt::Display + std::iter::Sum + Send>(
         &self,
@@ -483,7 +402,7 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
             //println!("New Y values: {new_y_values:?}");
         }
 
-        return Array1::<F2>::from_vec(new_y_values);
+        Array1::<F2>::from_vec(new_y_values)
     }
     pub fn resample_convert<F2: Float + std::fmt::Display + std::iter::Sum + Send>(
         &self,
@@ -498,6 +417,7 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
         self._resample(&self.x_values, &self.target_x_values, y_values)
     }
 
+    /*
     pub fn resample_along_axis(&self, data: &mut Array2<F>, axis: Axis2D) {
         let nd_axis = match axis {
             Axis2D::Row => Axis(0),
@@ -526,6 +446,7 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
         }
         data.slice_axis_inplace(nd_axis, slice);
     }
+    */
 
     pub fn resample_along_axis_par(&self, data: &Array2<F>, axis: Axis2D) -> Array2<F> {
         let length = match axis {
@@ -565,7 +486,7 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
 
 impl std::convert::From<Resampler<f32>> for Resampler<f64> {
     fn from(resampler: Resampler<f32>) -> Resampler<f64> {
-        let x_values = resampler.x_values.mapv(|v| f64::from(v));
+        let x_values = resampler.x_values.mapv(f64::from);
         let target_x_values = resampler.target_x_values.mapv(f64::from);
         Resampler {
             x_values,
@@ -662,6 +583,7 @@ mod tests {
             "2020-09-13T12:26:40+00:00"
         );
     }
+    /*
     #[test]
     fn test_groupby_average() {
         let test_data = Array1::<f32>::range(0., 25., 1.)
@@ -683,6 +605,7 @@ mod tests {
         let expected = (test_data.get((0, 1)).unwrap() + test_data.get((0, 2)).unwrap()) / 2.;
         assert_eq!(test_data1.get((0, 1)), Some(&expected));
     }
+    */
     #[test]
     fn test_return_time_to_depth() {
         // The depth without antenna distance should be the time * velocity / 2

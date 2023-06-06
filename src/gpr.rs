@@ -3,11 +3,12 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use ndarray_stats::QuantileExt;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use ndarray::{Array1, Array2, Axis, Slice};
 use rayon::prelude::*;
 
+use crate::cli::RunParams;
 use crate::{dem, io, tools};
 
 const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
@@ -107,8 +108,8 @@ impl CorPoint {
 
 #[derive(Debug, Clone)]
 pub enum LocationCorrection {
-    NONE,
-    DEM(PathBuf),
+    None,
+    Dem(PathBuf),
 }
 
 #[derive(Debug, Clone)]
@@ -167,7 +168,7 @@ impl GPRLocation {
                     );
                     return (v[0], v[1], v[2], v[3]);
                 };
-                first_point = &point;
+                first_point = point;
             }
         };
         (
@@ -267,7 +268,7 @@ impl GPRLocation {
             self.cor_points[i].altitude = elev[i] as f64;
         }
 
-        self.correction = LocationCorrection::DEM(dem_path.to_path_buf());
+        self.correction = LocationCorrection::Dem(dem_path.to_path_buf());
     }
 
     pub fn to_csv(&self, filepath: &Path) -> Result<(), std::io::Error> {
@@ -348,6 +349,7 @@ CRS:\t\t\t{}
 }
 
 /// An in-memory GPR dataset
+#[allow(clippy::upper_case_acronyms)]
 pub struct GPR {
     /// The data matrix, with rows of traces (originally in mV)
     pub data: Array2<f32>,
@@ -462,7 +464,7 @@ impl GPR {
                     Err(_) => break,
                 };
             }
-            if traces.len() == 0 {
+            if traces.is_empty() {
                 return Err(
                     "Indices must be given when calling remove_traces, e.g. remove_traces(0 1 5)"
                         .into(),
@@ -484,18 +486,12 @@ impl GPR {
         max_sample: Option<u32>,
     ) -> GPR {
         let start_time = SystemTime::now();
-        let min_trace_ = match min_trace {
-            Some(x) => x,
-            None => 0,
-        };
+        let min_trace_ = min_trace.unwrap_or(0);
         let max_trace_ = match max_trace {
             Some(x) => x,
             None => self.width() as u32,
         };
-        let min_sample_ = match min_sample {
-            Some(x) => x,
-            None => 0,
-        };
+        let min_sample_ = min_sample.unwrap_or(0);
         let max_sample_ = match max_sample {
             Some(x) => x,
             None => self.height() as u32,
@@ -519,8 +515,7 @@ impl GPR {
         let mut metadata = self.metadata.clone();
 
         metadata.last_trace = max_trace_;
-        metadata.time_window =
-            metadata.time_window * ((max_sample_ - min_sample_) as f32 / metadata.samples as f32);
+        metadata.time_window *= (max_sample_ - min_sample_) as f32 / metadata.samples as f32;
         metadata.samples = max_sample_ - min_sample_;
 
         let log = self.log.clone();
@@ -564,7 +559,7 @@ impl GPR {
             true => location,
             false => location.range_fill(0, data.shape()[1] as u32),
         };
-        let horizontal_signal_distance = metadata.antenna_separation.clone();
+        let horizontal_signal_distance = metadata.antenna_separation;
 
         Ok(GPR {
             data,
@@ -655,8 +650,7 @@ impl GPR {
     fn update_data(&mut self, data: Array2<f32>) {
         self.data = data;
 
-        self.metadata.time_window =
-            self.metadata.time_window * (self.height() as f32 / self.metadata.samples as f32);
+        self.metadata.time_window *= self.height() as f32 / self.metadata.samples as f32;
         self.metadata.samples = self.height() as u32;
         self.metadata.last_trace = self.width() as u32;
     }
@@ -667,9 +661,7 @@ impl GPR {
         if self.horizontal_signal_distance == 0. {
             self.log_event(
                 "correct_antenna_separation",
-                &format!(
-                    "Skipping antenna separation correction since the antenna separation is 0 m."
-                ),
+                "Skipping antenna separation correction since the antenna separation is 0 m.",
                 start_time,
             );
             return;
@@ -733,8 +725,7 @@ impl GPR {
             self.width(),
         ));
 
-        let mut i = 0_usize;
-        for col in self.data.columns() {
+        for (i, col) in self.data.columns().into_iter().enumerate() {
             topo_data
                 .column_mut(i)
                 .slice_axis_mut(
@@ -746,15 +737,13 @@ impl GPR {
                     ),
                 )
                 .assign(&col);
-
-            i += 1;
         }
 
         self.topo_data = Some(topo_data);
 
         self.log_event(
             "correct_topography",
-            &format!("Generated a profile that is corrected for topography (topo_data)."),
+            "Generated a profile that is corrected for topography (topo_data).",
             start_time,
         );
     }
@@ -765,12 +754,9 @@ impl GPR {
         let mut positive_peaks = Array1::<isize>::zeros(self.width());
         let mut negative_peaks = Array1::<isize>::zeros(self.width());
 
-        let mut i = 0_usize;
-        for col in self.data.columns() {
+        for (i, col) in self.data.columns().into_iter().enumerate() {
             positive_peaks[i] = col.argmax().unwrap() as isize;
             negative_peaks[i] = col.argmin().unwrap() as isize;
-
-            i += 1;
         }
 
         let mean_peak_spacing = (negative_peaks - positive_peaks).mean().unwrap().abs();
@@ -1205,8 +1191,7 @@ impl GPR {
             if trace >= &width {
                 return Err(format!(
                     "Trace index {trace:?} is out of bounds (number of traces: {width})"
-                )
-                .into());
+                ));
             }
             if !unique_traces.contains(trace) {
                 unique_traces.push(*trace);
@@ -1217,16 +1202,17 @@ impl GPR {
         // Therefore, the true index is index - i, where i is the count of indices before
         unique_traces.sort_unstable();
         for i in 0..unique_traces.len() {
-            unique_traces[i] -= i;
+            // This is ugly but makes cargo clippy happy. Sorry, future developers!
+            let i2 = i;
+            unique_traces[i2] -= i;
         }
 
         // Remove each selected trace from the data, (potentially) topo. corr. data, and the location info.
         for trace in &unique_traces {
             self.data.remove_index(Axis(1), *trace);
 
-            match self.topo_data.as_mut() {
-                Some(data) => data.remove_index(Axis(1), *trace),
-                None => (),
+            if let Some(data) = self.topo_data.as_mut() {
+                data.remove_index(Axis(1), *trace)
             };
             self.location.cor_points.remove(*trace);
         }
@@ -1292,8 +1278,7 @@ impl GPR {
 
             self.data.append(Axis(1), other.data.view()).unwrap();
 
-            self.metadata.time_window =
-                self.metadata.time_window * (self.height() as f32 / self.metadata.samples as f32);
+            self.metadata.time_window *= self.height() as f32 / self.metadata.samples as f32;
             self.metadata.samples = self.height() as u32;
             self.metadata.last_trace = self.width() as u32;
 
@@ -1309,6 +1294,8 @@ impl GPR {
 }
 
 pub fn run(
+    params: RunParams,
+    /*
     paths: Vec<PathBuf>,
     output_path: Option<PathBuf>,
     only_info: bool,
@@ -1322,10 +1309,11 @@ pub fn run(
     no_export: bool,
     render_path: Option<Option<PathBuf>>,
     merge: Option<Duration>,
+    */
 ) -> Result<Vec<GPR>, Box<dyn Error>> {
     let empty: Vec<GPR> = Vec::new();
     let mut gprs: Vec<(PathBuf, GPR)> = Vec::new();
-    for filepath in &paths {
+    for filepath in &params.filepaths {
         // The given filepath may be ".rd3" or may not have an extension at all
         // Counterintuitively to the user point of view, it's the ".rad" file that should be given
         let rad_filepath = filepath.with_extension("rad");
@@ -1340,15 +1328,15 @@ pub fn run(
             return Err(format!("File not found: {:?}", rad_filepath).into());
         };
         // Load the GPR metadata from the rad file
-        let gpr_meta = io::load_rad(&rad_filepath, medium_velocity)?;
+        let gpr_meta = io::load_rad(&rad_filepath, params.medium_velocity)?;
 
         // Load the GPR location data
         // If the "--cor" argument was used, load from there. Otherwise, try to find a ".cor" file
-        let mut gpr_locations = match &cor_path {
-            Some(fp) => io::load_cor(&fp, &crs)?,
-            None => match gpr_meta.find_cor(&crs) {
+        let mut gpr_locations = match &params.cor_path {
+            Some(fp) => io::load_cor(fp, &params.crs)?,
+            None => match gpr_meta.find_cor(&params.crs) {
                 Ok(v) => Ok(v),
-                Err(e) => match &paths.len() > &1 {
+                Err(e) => match params.filepaths.len() > 1 {
                     true => {
                         eprintln!("Error in batch mode, continuing anyway: {:?}", e);
                         continue;
@@ -1359,14 +1347,14 @@ pub fn run(
         };
 
         // If a "--dem" was given, substitute elevations using said DEM
-        if let Some(dem_path) = &dem_path {
-            gpr_locations.get_dem_elevations(&dem_path);
+        if let Some(dem_path) = &params.dem_path {
+            gpr_locations.get_dem_elevations(dem_path);
         };
 
         // Construct the output filepath. If one was given, use that.
         // If a path was given and it's a directory, use the file stem + ".nc" of the input
         // filename. If no output path was given, default to the directory of the input.
-        let output_filepath = match &output_path {
+        let output_filepath = match &params.output_path {
             Some(p) => match p.is_dir() {
                 true => p.join(filepath.file_stem().unwrap()).with_extension("nc"),
                 false => {
@@ -1386,16 +1374,16 @@ pub fn run(
         };
 
         // If the "--info" argument was given, stop here and just show info.
-        if only_info {
+        if params.only_info {
             println!("{}", gpr_meta);
             println!("{}", gpr_locations);
             // If the track should be exported, do so.
-            if let Some(potential_track_path) = &track_path {
+            if let Some(potential_track_path) = &params.track_path {
                 io::export_locations(
                     &gpr_locations,
                     potential_track_path.into(),
                     &output_filepath,
-                    !quiet,
+                    !params.quiet,
                 )?;
             };
         } else {
@@ -1417,7 +1405,7 @@ pub fn run(
     }
 
     // Merge GPR profiles if the merge flag was used
-    if let Some(merge) = merge.and_then(|m| Some(m.as_secs_f64())) {
+    if let Some(merge) = params.merge.map(|m| m.as_secs_f64()) {
         let mut incompatible: Vec<(usize, usize)> = Vec::new();
         for _ in 0..gprs.len() {
             let mut distances: Vec<(usize, usize, f64)> = Vec::new();
@@ -1445,10 +1433,7 @@ pub fn run(
 
             if let Some(min_i) = distances.iter().map(|d| d.0).min() {
                 let mut merged = 0_usize;
-                for (_, j, distance) in distances.iter().filter_map(|d| match d.0 == min_i {
-                    true => Some(d),
-                    false => None,
-                }) {
+                for (_, j, distance) in distances.iter().filter(|d| d.0 == min_i) {
                     if distance > &merge {
                         continue;
                     };
@@ -1477,17 +1462,17 @@ pub fn run(
     for (output_filepath, mut gpr) in gprs {
         // Record the starting time to show "t+XX" times
         let start_time = SystemTime::now();
-        if !quiet {
+        if !params.quiet {
             println!("Processing {:?}", gpr.metadata.rd3_filepath);
         };
 
         // Run each step sequentially
-        for (i, step) in steps.iter().enumerate() {
-            if !quiet {
+        for (i, step) in params.steps.iter().enumerate() {
+            if !params.quiet {
                 println!(
                     "{}/{}, t+{:.2} s, Running step {}. ",
                     i + 1,
-                    steps.len(),
+                    params.steps.len(),
                     SystemTime::now()
                         .duration_since(start_time)
                         .unwrap()
@@ -1504,8 +1489,8 @@ pub fn run(
         }
 
         // Unless the "--no-export" flag was given, export the ".nc" result
-        if !no_export {
-            if !quiet {
+        if !params.no_export {
+            if !params.quiet {
                 println!("Exporting to {:?}", output_filepath);
             };
             match gpr.export(&output_filepath) {
@@ -1516,7 +1501,7 @@ pub fn run(
 
         // If "--render" was given, render an image of the output
         // The flag may or may not have a filepath (it can either be "-r" or "-r img.jpg")
-        if let Some(potential_fp) = &render_path {
+        if let Some(potential_fp) = &params.render_path {
             // Find out the output filepath. If one was given, use that. If none was given, use
             // the output filepath with a ".jpg" extension. If a directory was given, use the
             // file stem of the output filename and a ".jpg" extension
@@ -1529,19 +1514,19 @@ pub fn run(
                 },
                 None => output_filepath.with_extension("jpg"),
             };
-            if !quiet {
+            if !params.quiet {
                 println!("Rendering image to {:?}", render_filepath);
             };
             gpr.render(&render_filepath).unwrap();
         };
 
         // If "--track" was given, export the track file.
-        if let Some(potential_track_path) = &track_path {
+        if let Some(potential_track_path) = &params.track_path {
             io::export_locations(
                 &gpr.location,
                 potential_track_path.into(),
                 &output_filepath,
-                !quiet,
+                !params.quiet,
             )?;
         };
     }
@@ -1624,18 +1609,12 @@ mod tests {
     ) -> GPRLocation {
         GPRLocation {
             cor_points: make_cor_points(n_points, spacing.unwrap_or(1.)),
-            correction: correction.unwrap_or(LocationCorrection::NONE),
+            correction: correction.unwrap_or(LocationCorrection::None),
             crs: crs.unwrap_or("EPSG:32633".to_string()),
         }
     }
 
-    fn make_dummy_gpr(
-        n_traces: usize,
-        n_samples: usize,
-        spacing: Option<f64>,
-        crs: Option<String>,
-        correction: Option<LocationCorrection>,
-    ) -> super::GPR {
+    fn make_dummy_gpr(n_traces: usize, n_samples: usize, spacing: Option<f64>) -> super::GPR {
         let gpr_location = make_gpr_location(n_traces, spacing, None, None);
         let metadata = super::GPRMeta {
             samples: n_samples as u32,
@@ -1827,7 +1806,7 @@ mod tests {
 
     #[test]
     fn test_remove_traces() {
-        let mut gpr = make_dummy_gpr(20, 30, Some(1.), None, None);
+        let mut gpr = make_dummy_gpr(20, 30, Some(1.));
 
         gpr.topo_data = Some(gpr.data.clone());
 
