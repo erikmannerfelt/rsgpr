@@ -20,11 +20,11 @@ jobs:
       run: |
         sudo apt update -y
         sudo apt install -y libgdal-dev
-    - name: Build
-      run: cargo build --verbose
     - name: Formatting
       run: cargo fmt --check
+    - name: Build
+      run: cargo build --verbose
     - name: Linting
-      run: cargo clippy -- -Dwarnings
+      run: cargo clippy -- -Dwarnings --no-deps
     - name: Run tests
       run: cargo test --verbose
