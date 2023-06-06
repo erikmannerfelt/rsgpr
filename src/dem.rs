@@ -119,7 +119,7 @@ pub fn read_elevations(
 /// # Returns
 /// The projected (x, y) coordinate where x is horizontal and y is vertical
 /// # Panics
-/// If rotational components exist in the affine transform. These are extremly unusual
+/// If rotational components exist in the affine transform. These are extremely unusual
 /// and are also not supported in other large libraries.
 fn project_geo_to_px(easting: f64, northing: f64, transform: &[f64; 6]) -> Array1<f32> {
     if (transform[2] != 0.) | (transform[4] != 0.) {

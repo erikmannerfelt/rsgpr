@@ -71,7 +71,7 @@ pub struct Args {
     #[clap(short, long)]
     output: Option<PathBuf>,
 
-    /// Surpress progress messages
+    /// Suppress progress messages
     #[clap(short, long)]
     quiet: bool,
 

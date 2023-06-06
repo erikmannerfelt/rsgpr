@@ -7,7 +7,7 @@ Thank you to the creators of [RGPR](https://github.com/emanuelhuber/RGPR) from w
 This is still an early WIP, and currently only works with Malå (.rd3) radar formats.
 
 ### Possible meanings of the name
-- Really Simple GPR 
+- Really Simple GPR
 - rust GPR
 - [rsgpr](./README.md) simplifies GPR
 

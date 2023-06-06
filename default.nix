@@ -7,7 +7,8 @@ let
   my-gdal = if gdal != null then gdal else pkgs.gdal;
   manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
 
-in pkgs.rustPlatform.buildRustPackage rec {
+in
+pkgs.rustPlatform.buildRustPackage rec {
 
   pname = manifest.name;
   version = manifest.version;

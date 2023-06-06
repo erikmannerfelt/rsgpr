@@ -17,7 +17,7 @@ const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
 
 /// Metadata associated with a GPR dataset
 ///
-/// This contains all required informaton except the location data and the actual data
+/// This contains all required information except the location data and the actual data
 #[derive(Debug, Clone)]
 pub struct GPRMeta {
     /// The number of samples per trace (the vertical data size)
