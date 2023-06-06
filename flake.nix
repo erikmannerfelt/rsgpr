@@ -1,5 +1,5 @@
 {
-  description = "rsgpr development shell";
+  description = "Simple (-ish) Ground Penetrating Radar software";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
