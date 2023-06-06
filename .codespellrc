@@ -1,0 +1,3 @@
+[codespell]
+ignore-regex = \\[fnrstv]
+ignore-words-list = crate
