@@ -6,18 +6,21 @@ use crate::tools;
 pub fn abslog<T: Float>(data: &mut Array2<T>) {
     data.mapv_inplace(|v| v.abs());
 
-    let minvals = tools::quantiles(
-        data.iter().filter(|v| v >= &&T::zero()),
-        &[0.01, 0.05, 0.5, 0.9],
-        None,
-    );
+    let mut minval = T::one();
 
-    let minval = minvals
-        .iter()
-        .filter(|v| !v.is_zero())
-        .map(|v| v.to_owned())
-        .next()
-        .unwrap_or(T::one());
+    let subsampling = ((data.shape()[0] * data.shape()[1]) as f32 * 0.1).max(100.) as usize;
+    for quantile in [0.01, 0.05, 0.5, 0.9] {
+        let new_min = tools::quantiles(
+            data.iter().filter(|v| v >= &&T::zero()),
+            &[quantile],
+            Some(subsampling),
+        )[0];
+
+        if !new_min.is_zero() {
+            minval = new_min;
+            break;
+        }
+    }
 
     data.mapv_inplace(|v| (v + minval).log10());
 }
