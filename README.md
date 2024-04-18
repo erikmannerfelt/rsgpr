@@ -19,7 +19,7 @@ This is still an early WIP, and currently only works with Malå (.rd3) radar for
 - `gdal` bindings. For Debian or derivatives thereof, this means `libgdal-dev`.
 - `proj` bindings.
 
-Using cargo, `rsgpr` can be installed from the repo:
+Using cargo, `rsgpr` can be installed from the repo (after installing the requirements):
 ```bash
 cargo install --git https://github.com/erikmannerfelt/rsgpr.git
 ```

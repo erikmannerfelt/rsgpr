@@ -9,13 +9,20 @@
   outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let pkgs = nixpkgs.legacyPackages.${system};
+      rsgpr = import ./default.nix { inherit pkgs; };      
+
       in {
         devShells.default = import ./shell.nix { inherit pkgs; };
-        packages = rec {
-          rsgpr = import ./default.nix { inherit pkgs; };
+        defaultPackage = rsgpr;
+        packages = {
+          inherit rsgpr;
           default = rsgpr;
         };
       }
 
-    );
+    ) // {
+      overlays.default = final: prev: {
+        rsgpr = import ./default.nix {pkgs=final; };
+      };
+    };
 }
