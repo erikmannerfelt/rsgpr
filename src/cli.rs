@@ -152,10 +152,8 @@ impl Args {
                     false => match &self.steps {
                         Some(steps) => steps.split(',').map(|s| s.trim().to_string()).collect(),
                         None => {
-                            return ParsedArgs::Error(
-                                "No steps specified. Choose a profile or what steps to run"
-                                    .to_string(),
-                            )
+                            println!("No processing steps specified. Saving raw data.");
+                            vec![]
                         }
                     },
                 },
