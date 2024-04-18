@@ -14,6 +14,7 @@ use clap::Parser;
 
 mod cli;
 mod dem;
+mod filters;
 mod gpr;
 mod io;
 mod tools;
