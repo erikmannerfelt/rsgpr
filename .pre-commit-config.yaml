@@ -19,10 +19,10 @@ repos:
     types_or: [rust, markdown]
     #files: ^(src||tests)/
 
-- repo: https://github.com/lovesegfault/beautysh
-  rev: v6.2.1
-  hooks:
-  - id: beautysh
+# - repo: https://github.com/lovesegfault/beautysh
+#   rev: v6.2.1
+#   hooks:
+#   - id: beautysh
 
 - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
   rev: v2.13.0
