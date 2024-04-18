@@ -1,4 +1,5 @@
 use core::ops::{Add, Div, Mul, Sub};
+use enterpolation::Generator;
 use ndarray::{Array1, Array2, ArrayView1};
 use ndarray_stats::QuantileExt;
 use num::{Float, Zero};
@@ -60,6 +61,57 @@ pub fn interpolate_between_known<
 ) -> T {
     (known_xy0.1 * (known_xy1.0 - x) + known_xy1.1 * (x - known_xy0.0))
         / (known_xy1.0 - known_xy0.0)
+}
+
+fn interpolate<T: Float + Copy + Sub<Output = T> + std::fmt::Display>(
+    x_new: T,
+    x_old_0: T,
+    x_old_1: T,
+    y_old_0: T,
+    y_old_1: T,
+) -> T {
+    let res = if (!y_old_0.is_finite()) & (!y_old_1.is_finite()) {
+        T::nan()
+    } else {
+        if !y_old_0.is_finite() {
+            y_old_1
+        } else if !y_old_1.is_finite() {
+            y_old_0
+        } else {
+            y_old_0 + (x_new - x_old_0) * (y_old_1 - y_old_0) / (x_old_1 - x_old_0)
+        }
+    };
+    println!("x=[{x_old_0}, {x_old_1}], y=[{y_old_0}, {y_old_1}] => [{x_new}, {res}]");
+    res
+}
+
+fn interpolate_vec<T: Float + Copy + Sub<Output = T> + std::fmt::Debug>(
+    x_old: &[T],
+    y_old: &[T],
+    x_new: &[T],
+) -> Vec<T> {
+    if x_old.len() != y_old.len() {
+        panic!("Interpolation failed. x_old and y_old must have the same length");
+    }
+
+    let model = enterpolation::linear::Linear::builder()
+        .elements(y_old)
+        .knots(x_old)
+        .build()
+        .unwrap();
+    model.sample(x_new.iter().map(|v| v.to_owned())).collect()
+}
+
+fn interpolate_ndarray<T: Float + std::fmt::Debug>(
+    x_old: &ArrayView1<T>,
+    y_old: &ArrayView1<T>,
+    x_new: &ArrayView1<T>,
+) -> Array1<T> {
+    Array1::<T>::from_vec(interpolate_vec(
+        &x_old.to_vec(),
+        &y_old.to_vec(),
+        &x_new.to_vec(),
+    ))
 }
 
 /// Derive the quantiles of an iterator of values
@@ -333,77 +385,17 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
         let target_x_values = equally_spaced_from_sparse::<F>(&x_values, resolution);
         Self::_new(x_values, target_x_values, true)
     }
-
-    fn _resample<F2: Float + std::fmt::Display + std::iter::Sum + Send>(
+    fn _resample<F2: Float + std::fmt::Display + std::iter::Sum + Send + std::fmt::Debug>(
         &self,
         x_values: &Array1<F2>,
         target_x_values: &Array1<F2>,
         y_values: &ArrayView1<F2>,
     ) -> Array1<F2> {
-        let mut new_y_values = Vec::<F2>::new();
-        for (i, target_x_value) in target_x_values.iter().enumerate() {
-            let indices_for_slope = &self.slope_indices[i];
-            let indices_for_intercept = &self.intercept_indices[i];
-            let mut x_diffs = Vec::<F2>::new();
-            let mut y_diffs = Vec::<F2>::new();
-            for j in 0..indices_for_slope.len() {
-                for k in 0..indices_for_slope.len() {
-                    if j <= k {
-                        continue;
-                    }
-
-                    let x_diff = x_values[indices_for_slope[k]] - x_values[indices_for_slope[j]];
-                    let y_diff = y_values[indices_for_slope[k]] - y_values[indices_for_slope[j]];
-
-                    if self._debug {
-                        println!("{j} - {k}: y_diff={y_diff}, x_diff={x_diff}");
-                    }
-
-                    if x_diff == Zero::zero() {
-                        continue;
-                    }
-
-                    x_diffs.push(x_diff);
-                    y_diffs.push(y_diff);
-                }
-            }
-            let mean_xdiff = x_diffs.iter().map(|v| v.to_owned()).sum::<F2>();
-            let mean_slope = match mean_xdiff != Zero::zero() {
-                true => y_diffs.iter().map(|v| v.to_owned()).sum::<F2>() / mean_xdiff,
-                false => Zero::zero(),
-            };
-
-            let mut intercepts = Vec::<F2>::new();
-
-            for j in 0..indices_for_intercept.len() {
-                let x_value = x_values[indices_for_intercept[j]];
-                let intercept: F2 =
-                    y_values[indices_for_intercept[j]] - (x_value - *target_x_value) * mean_slope;
-                if self._debug {
-                    println!("Calculating intercept for {x_value} => {intercept}");
-                }
-                intercepts.push(intercept);
-            }
-
-            let mean_intercept: F2 = intercepts.iter().map(|v| v.to_owned()).sum::<F2>()
-                / F2::from(intercepts.len()).unwrap();
-
-            new_y_values.push(mean_intercept);
-
-            if self._debug {
-                println!("{mean_slope} * x + {mean_intercept}");
-            }
-        }
-
-        if self._debug {
-            //let targetx = &self.target_x_values;
-            //println!("New X values: {targetx:?}");
-            //println!("New Y values: {new_y_values:?}");
-        }
-
-        Array1::<F2>::from_vec(new_y_values)
+        interpolate_ndarray::<F2>(&x_values.view(), y_values, &target_x_values.view())
     }
-    pub fn resample_convert<F2: Float + std::fmt::Display + std::iter::Sum + Send>(
+    pub fn resample_convert<
+        F2: Float + std::fmt::Display + std::iter::Sum + Send + std::fmt::Debug,
+    >(
         &self,
         y_values: &ArrayView1<F2>,
     ) -> Array1<F2> {
@@ -416,13 +408,12 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
         self._resample(&self.x_values, &self.target_x_values, y_values)
     }
 
-    /*
-    pub fn resample_along_axis(&self, data: &mut Array2<F>, axis: Axis2D) {
+    pub fn resample_along_axis(&self, data: &Array2<F>, axis: Axis2D) -> Array2<F> {
         let nd_axis = match axis {
-            Axis2D::Row => Axis(0),
-            Axis2D::Col => Axis(1),
+            Axis2D::Row => ndarray::Axis(0),
+            Axis2D::Col => ndarray::Axis(1),
         };
-        let slice = Slice::new(0, Some(self.target_x_values.len() as isize), 1);
+        let slice = ndarray::Slice::new(0, Some(self.target_x_values.len() as isize), 1);
 
         let length = match axis {
             Axis2D::Row => data.shape()[0],
@@ -431,21 +422,23 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
 
         let mut buffer = Array1::<F>::zeros(length);
 
+        let mut data2 = data.clone();
+
         let axis_values = match axis {
-            Axis2D::Row => data.columns_mut(),
-            Axis2D::Col => data.rows_mut(),
+            Axis2D::Row => data2.columns_mut(),
+            Axis2D::Col => data2.rows_mut(),
         };
 
         for mut arr in axis_values {
             let resampled = self.resample(&arr.view());
 
-            let mut slice = buffer.slice_axis_mut(Axis(0), slice);
+            let mut slice = buffer.slice_axis_mut(ndarray::Axis(0), slice);
             slice.assign(&resampled);
             arr.assign(&buffer);
         }
-        data.slice_axis_inplace(nd_axis, slice);
+        data2.slice_axis_inplace(nd_axis, slice);
+        data2
     }
-    */
 
     pub fn resample_along_axis_par(&self, data: &Array2<F>, axis: Axis2D) -> Array2<F> {
         let length = match axis {
@@ -584,6 +577,70 @@ mod tests {
     }
     /*
     #[test]
+    fn test_interpolate_single() {
+        let (x_0, y_0) = (1., 1.);
+        let (x_1, y_1) = (2., 2.);
+
+        for test_val in [-0.5, 0., 0.5, 1., 2.] {
+            assert_eq!(super::interpolate(test_val, x_0, x_1, y_0, y_1), test_val);
+        }
+
+        assert_eq!(super::interpolate(1000., x_0, x_1, y_0, std::f64::NAN), y_0);
+        assert_eq!(super::interpolate(1000., x_0, x_1, std::f64::NAN, y_1), y_1);
+        assert!(super::interpolate(1000., x_0, x_1, std::f64::NAN, std::f64::NAN).is_nan());
+    }
+    */
+
+    #[test]
+    fn test_interpolate() {
+        let mut tests = Vec::<[Vec<f64>; 4]>::new();
+
+        let x = vec![1.0, 2.0, 3.0];
+        let y = vec![1.0, 2.0, 3.0];
+        let x_new = vec![1.5, 2.5, 0., 4.0]; // Includes values for extrapolation
+        tests.push([x, y, x_new.clone(), x_new.clone()]);
+
+        let x = vec![1.0, 3.0, 5.0];
+        let y = vec![1.0, 3.0, 5.0];
+        let x_new = vec![2.0, 4.0, 0.0, 6.0]; // Includes values for extrapolation
+
+        tests.push([x, y, x_new.clone(), x_new.clone()]);
+
+        let x = vec![0., 2., 5.];
+        let y = vec![0., 4., 1.];
+        let x_new = vec![-1., 0., 1., 2., 3., 4., 5., 6.];
+        let y_test = vec![-2., 0., 2., 4., 3., 2., 1., 0.];
+
+        tests.push([x, y, x_new, y_test]);
+
+        for test_case in tests {
+            let y_new = super::interpolate_vec(&test_case[0], &test_case[1], &test_case[2])
+                .iter()
+                .map(|v| (v * 10_f64).round() / 10.)
+                .collect::<Vec<f64>>();
+            assert_eq!(y_new, test_case[3]);
+
+            let y_new_arr = super::interpolate_ndarray(
+                &Array1::from_vec(test_case[0].clone()).view(),
+                &Array1::from_vec(test_case[1].clone()).view(),
+                &Array1::from_vec(test_case[2].clone()).view(),
+            )
+            .mapv(|v| (v * 10_f64).round() / 10.);
+
+            assert_eq!(y_new_arr, Array1::from_vec(test_case[3].clone()));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "x_old and y_old must have the same length")]
+    fn test_interpolate_panic() {
+        let x = vec![1.0, 2.0, 3.0];
+        let y = vec![1.0, 2.0];
+        let x_new = vec![1.5, 2.5];
+        let _ = super::interpolate_vec(&x, &y, &x_new);
+    }
+    /*
+    #[test]
     fn test_groupby_average() {
         let test_data = Array1::<f32>::range(0., 25., 1.)
             .into_shape((5, 5))
@@ -653,6 +710,7 @@ mod tests {
         let resolution = 1.;
 
         let mut resampler = super::Resampler::<f32>::_new_debug(x_values, resolution);
+        println!("{:?}", resampler.target_x_values);
 
         let new_ys = resampler.resample(&y_values.view());
         let new_ys_f64 = resampler.resample_convert::<f64>(&y_values.mapv(|v| f64::from(v)).view());
@@ -681,6 +739,8 @@ mod tests {
             [50, resampler.target_x_values.len()]
         );
 
+        assert!(resampled_colwise.iter().all(|v| !v.is_nan()));
+
         let y_matrix_manycols =
             ndarray::Array2::from_shape_fn((y_values.len(), 50), |(i, _)| y_values[i]);
         let resampled_rowwise =
@@ -689,5 +749,6 @@ mod tests {
             resampled_rowwise.shape(),
             [resampler.target_x_values.len(), 50]
         );
+        assert!(resampled_rowwise.iter().all(|v| !v.is_nan()));
     }
 }
