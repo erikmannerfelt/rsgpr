@@ -2,7 +2,7 @@ use core::ops::{Add, Div, Mul, Sub};
 use enterpolation::Generator;
 use ndarray::{Array1, Array2, ArrayView1};
 use ndarray_stats::QuantileExt;
-use num::{Float, Zero};
+use num::Float;
 use rayon::prelude::*;
 /// Miscellaneous functions that are used in other parts of the program
 use std::str::FromStr;
@@ -61,28 +61,6 @@ pub fn interpolate_between_known<
 ) -> T {
     (known_xy0.1 * (known_xy1.0 - x) + known_xy1.1 * (x - known_xy0.0))
         / (known_xy1.0 - known_xy0.0)
-}
-
-fn interpolate<T: Float + Copy + Sub<Output = T> + std::fmt::Display>(
-    x_new: T,
-    x_old_0: T,
-    x_old_1: T,
-    y_old_0: T,
-    y_old_1: T,
-) -> T {
-    let res = if (!y_old_0.is_finite()) & (!y_old_1.is_finite()) {
-        T::nan()
-    } else {
-        if !y_old_0.is_finite() {
-            y_old_1
-        } else if !y_old_1.is_finite() {
-            y_old_0
-        } else {
-            y_old_0 + (x_new - x_old_0) * (y_old_1 - y_old_0) / (x_old_1 - x_old_0)
-        }
-    };
-    println!("x=[{x_old_0}, {x_old_1}], y=[{y_old_0}, {y_old_1}] => [{x_new}, {res}]");
-    res
 }
 
 fn interpolate_vec<T: Float + Copy + Sub<Output = T> + std::fmt::Debug>(
@@ -408,6 +386,7 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
         self._resample(&self.x_values, &self.target_x_values, y_values)
     }
 
+    /*
     pub fn resample_along_axis(&self, data: &Array2<F>, axis: Axis2D) -> Array2<F> {
         let nd_axis = match axis {
             Axis2D::Row => ndarray::Axis(0),
@@ -439,6 +418,7 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
         data2.slice_axis_inplace(nd_axis, slice);
         data2
     }
+    */
 
     pub fn resample_along_axis_par(&self, data: &Array2<F>, axis: Axis2D) -> Array2<F> {
         let length = match axis {
@@ -575,21 +555,6 @@ mod tests {
             "2020-09-13T12:26:40+00:00"
         );
     }
-    /*
-    #[test]
-    fn test_interpolate_single() {
-        let (x_0, y_0) = (1., 1.);
-        let (x_1, y_1) = (2., 2.);
-
-        for test_val in [-0.5, 0., 0.5, 1., 2.] {
-            assert_eq!(super::interpolate(test_val, x_0, x_1, y_0, y_1), test_val);
-        }
-
-        assert_eq!(super::interpolate(1000., x_0, x_1, y_0, std::f64::NAN), y_0);
-        assert_eq!(super::interpolate(1000., x_0, x_1, std::f64::NAN, y_1), y_1);
-        assert!(super::interpolate(1000., x_0, x_1, std::f64::NAN, std::f64::NAN).is_nan());
-    }
-    */
 
     #[test]
     fn test_interpolate() {
