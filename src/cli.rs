@@ -1,4 +1,4 @@
-use crate::gpr;
+use crate::{gpr, tools};
 /// Functions to handle the command line interface (CLI)
 use clap::Parser;
 use std::{path::PathBuf, time::Duration};
@@ -63,7 +63,7 @@ pub struct Args {
     #[clap(long)]
     show_all_steps: bool,
 
-    /// Processing steps to run.
+    /// Processing steps to run, separated by commas. Can be a filepath to a newline separated step file.
     #[clap(long)]
     steps: Option<String>,
 
@@ -150,7 +150,10 @@ impl Args {
                 false => match self.default {
                     true => gpr::default_processing_profile(),
                     false => match &self.steps {
-                        Some(steps) => steps.split(',').map(|s| s.trim().to_string()).collect(),
+                        Some(steps) => match tools::parse_step_list(steps) {
+                            Ok(s) => s,
+                            Err(e) => return ParsedArgs::Error(e),
+                        },
                         None => {
                             println!("No processing steps specified. Saving raw data.");
                             vec![]

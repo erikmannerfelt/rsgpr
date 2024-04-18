@@ -5,7 +5,48 @@ use ndarray_stats::QuantileExt;
 use num::Float;
 use rayon::prelude::*;
 /// Miscellaneous functions that are used in other parts of the program
-use std::str::FromStr;
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+};
+
+/// Parse a provided step list (or filepath to a step list)
+///
+/// # Arguments
+/// - `steps`: An unformatted list of steps, or a filepath
+///
+/// # Returns
+/// Formatted steps either from the string itself or from the parsed file.
+pub fn parse_step_list(steps: &str) -> Result<Vec<String>, String> {
+    let filepath = Path::new(steps);
+    if filepath.is_file() {
+        match crate::tools::read_text(&filepath.to_path_buf()) {
+            Ok(s) => Ok(s),
+            Err(e) => Err(format!("Tried to read step file but failed: {e:?}")),
+        }
+    } else {
+        Ok(steps.split(',').map(|s| s.trim().to_string()).collect())
+    }
+}
+
+/// Read a text file and return all lines as a vec
+///
+/// # Arguments
+/// - `filepath`: The filepath of the text file
+///
+/// # Returns
+/// Each line as a trimmed String
+pub fn read_text(filepath: &PathBuf) -> Result<Vec<String>, std::io::Error> {
+    let content = std::fs::read_to_string(filepath)?;
+
+    let mut lines = Vec::<String>::new();
+
+    for line in content.lines() {
+        lines.push(line.trim().to_owned());
+    }
+
+    Ok(lines)
+}
 
 /// Interpolate an arbitrary amount of independent values between two known points
 ///
