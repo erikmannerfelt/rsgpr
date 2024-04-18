@@ -1558,12 +1558,6 @@ pub fn default_processing_profile() -> Vec<String> {
             "normalize_horizontal_magnitudes({})",
             DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF
         ),
-        "unphase".to_string(),
-        "kirchhoff_migration2d".to_string(),
-        format!(
-            "normalize_horizontal_magnitudes({})",
-            DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF
-        ),
         format!("dewow({})", DEFAULT_DEWOW_WINDOW),
         format!("auto_gain({})", DEFAULT_AUTOGAIN_N_BINS),
     ]

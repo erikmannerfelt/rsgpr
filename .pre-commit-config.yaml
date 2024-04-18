@@ -1,6 +1,6 @@
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v4.4.0
+  rev: v4.6.0
   hooks:
   #- id: check-yaml  # This doesn't work for me (2023-06-06)
   - id: end-of-file-fixer
@@ -12,20 +12,20 @@ repos:
   - id: sort-simple-yaml
         # Fix common spelling mistakes
 - repo: https://github.com/codespell-project/codespell
-  rev: v2.2.4
+  rev: v2.2.6
   hooks:
   - id: codespell
     args: []
     types_or: [rust, markdown]
     #files: ^(src||tests)/
 
-- repo: https://github.com/lovesegfault/beautysh
-  rev: v6.2.1
-  hooks:
-  - id: beautysh
+# - repo: https://github.com/lovesegfault/beautysh
+#   rev: v6.2.1
+#   hooks:
+#   - id: beautysh
 
 - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
-  rev: v2.9.0
+  rev: v2.13.0
   hooks:
   - id: pretty-format-yaml
     args: [--autofix, --indent, '2']
