@@ -301,7 +301,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
         let mut data2 = file.add_variable::<f32>("data_topographically_corrected", &["y2", "x"])?;
         data2.put_values(
             &topo_data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(),
-            [height, gpr.width()],
+            ..,
         )?;
 
         // The default coordinates are distance for x and return time for y
