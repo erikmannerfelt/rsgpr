@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime};
 use ndarray::{Array1, Array2, Axis, Slice};
 use rayon::prelude::*;
 
-use crate::{dem, io, tools};
+use crate::{dem, filters, io, tools};
 
 const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
 const DEFAULT_DEWOW_WINDOW: u32 = 5;
@@ -448,6 +448,8 @@ impl GPR {
             *self = self.subset(min_trace, max_trace, min_sample, max_sample);
         } else if step_name.contains("unphase") {
             self.unphase();
+        } else if step_name.contains("abslog") {
+            self.abslog()
         } else if step_name.contains("correct_topography") {
             self.correct_topography();
         } else if step_name.contains("correct_antenna_separation") {
@@ -685,6 +687,13 @@ impl GPR {
 
         self.horizontal_signal_distance = 0.;
         self.metadata.samples = self.height() as u32;
+    }
+
+    pub fn abslog(&mut self) {
+        let start_time = SystemTime::now();
+
+        filters::abslog(&mut self.data);
+        self.log_event("abslog", "Ran abslog (log10(abs(data))", start_time);
     }
 
     pub fn vertical_resolution_m(&self) -> f32 {
@@ -1543,6 +1552,7 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
         ["auto_gain", "Automatically determine the best gain factor and apply it. The data are binned vertically and the mean absolute deviation of the values is used as a proxy for signal attenuation. The median attenuation in decibel volts is given to the gain filter. The amounts of bins can be given, e.g. 'auto_gain(100). Default: 100"],
         ["gain", "Multiply the magnitude as a function of depth. This is most often used to correct for signal attenuation with time/distance. Gain is applied by: '10 ^(gain * sqrt(sample_index))' where gain is the given gain factor and sample_index is the zero-based index of the sample from the top. Examples: gain(0.1). No default value."],
         ["kirchhoff_migration2d", "Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data. The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the sum of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions."],
+        ["abslog", "Run a log10 operation on the absolute values (log10(abs(data))), converting it to a logarithmic scale. This is useful for visualisation. Before conversion, the data are added with the 1st percentile (absolute) value in the dataset to avoid log10(0) == inf."],
         ["unphase", "Combine the positive and negative phases of the signal into one positive magntiude. The assumption is made that the positive magnitude of the signal comes first, followed by an offset negative component. The distance between the positive and negative peaks are found, and then the negative part is shifted accordingly."],
         ["correct_topography", "Make a copy of the data and topographically correct it. In the output, the data will be called \"topo_data\". Note that the copying means any step run after this will not be reflected in \"topo_data\". This is thus recommended to run last."],
         ["correct_antenna_separation", "Correct for the separation between the antenna transmitter and receiver. The consequence is that depths are slightly over-exaggerated at low return-times before correction. This step averages samples so that each sample represents a consistent depth interval."],
