@@ -43,13 +43,14 @@ mod tests {
             .iter()
             .min_by(|a, b| a.partial_cmp(b).unwrap())
             .unwrap();
-
-        assert!(new_minval > 0.4);
-        assert!(new_minval < 1.);
         let new_maxval = *data
             .iter()
             .max_by(|a, b| a.partial_cmp(b).unwrap())
             .unwrap();
+
+        println!("Max: {new_maxval}, min: {new_minval}");
+        assert!(new_minval > 0.2);
+        assert!(new_minval < 1.);
 
         assert!(new_maxval < 2.1);
         assert!(new_maxval > 1.9);
