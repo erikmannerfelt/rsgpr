@@ -693,11 +693,7 @@ impl GPR {
         let start_time = SystemTime::now();
 
         filters::abslog(&mut self.data);
-        self.log_event(
-            "abslog",
-            &"Ran abslog (log10(abs(data))".to_string(),
-            start_time,
-        );
+        self.log_event("abslog", "Ran abslog (log10(abs(data))", start_time);
     }
 
     pub fn vertical_resolution_m(&self) -> f32 {
