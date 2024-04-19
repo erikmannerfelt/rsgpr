@@ -695,7 +695,7 @@ impl GPR {
         filters::abslog(&mut self.data);
         self.log_event(
             "abslog",
-            &format!("Ran abslog (log10(abs(data))"),
+            &format!("Ran abslog (log10(abs(data))".to_string()),
             start_time,
         );
     }

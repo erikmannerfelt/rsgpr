@@ -1,4 +1,4 @@
-use ndarray::{Array, Array2};
+use ndarray::Array2;
 use num::Float;
 
 use crate::tools;
