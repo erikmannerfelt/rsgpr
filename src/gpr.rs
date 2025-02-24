@@ -1211,6 +1211,14 @@ impl GPR {
                 unique_traces.push(*trace);
             }
         }
+
+        // Make a vec of all traces to keep (faster to subset than to explicitly remove in ndarray)
+        // This is done before the index trick below, because the trick below is only needed for vecs.
+        let traces_to_keep: Vec<usize> = (0..width)
+            .into_iter()
+            .filter(|i| !unique_traces.contains(i))
+            .collect();
+
         // Sort them, and then subtract the amount of removals that are done before this index.
         // For example, if trace 0,1 and 2 should be removed, by the time the loop reaches 2, it's now the zeroth index.
         // Therefore, the true index is index - i, where i is the count of indices before
@@ -1222,12 +1230,11 @@ impl GPR {
         }
 
         // Remove each selected trace from the data, (potentially) topo. corr. data, and the location info.
+        self.data = self.data.select(Axis(1), &traces_to_keep);
+        if let Some(data) = self.topo_data.as_mut() {
+            self.topo_data = Some(data.select(Axis(1), &traces_to_keep));
+        };
         for trace in &unique_traces {
-            self.data.remove_index(Axis(1), *trace);
-
-            if let Some(data) = self.topo_data.as_mut() {
-                data.remove_index(Axis(1), *trace)
-            };
             self.location.cor_points.remove(*trace);
         }
         self.metadata.last_trace = self.width() as u32;
