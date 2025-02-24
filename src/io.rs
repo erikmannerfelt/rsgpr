@@ -1,5 +1,6 @@
 /// Functions to handle input and output (I/O) of GPR data files.
 use ndarray::{Array1, Array2};
+use num::Float;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::error::Error;
@@ -240,6 +241,9 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     file.add_attribute("antenna-separation", gpr.metadata.antenna_separation)?;
     file.add_attribute("frequency-steps", gpr.metadata.frequency_steps)?;
     file.add_attribute("vertical-sampling-frequency", gpr.metadata.frequency)?;
+    if gpr.metadata.time_interval.is_finite() {
+        file.add_attribute("time-interval", gpr.metadata.time_interval)?;
+    }
 
     file.add_attribute("processing-log", gpr.log.join("\n"))?;
     file.add_attribute(
