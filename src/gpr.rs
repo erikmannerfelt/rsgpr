@@ -11,6 +11,7 @@ use rayon::prelude::*;
 use crate::{dem, filters, io, tools};
 
 const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
+const DEFAULT_EMPTY_TRACE_STRENGTH: f32 = 1.0;
 const DEFAULT_DEWOW_WINDOW: u32 = 5;
 const DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF: f32 = 0.3;
 const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
@@ -457,13 +458,41 @@ impl GPR {
         } else if step_name.contains("remove_traces") {
             let mut traces = Vec::<usize>::new();
             for i in 0..self.width() {
-                match tools::parse_option::<usize>(step_name, i) {
-                    Ok(trace_o) => match trace_o {
-                        Some(trace) => traces.push(trace),
-                        None => break,
-                    },
-                    Err(_) => break,
-                };
+                // Try to parse the i:th option as an usize.
+                // If that doesn't work, it's either a range (e.g. 1-3) or it's poorly formatted
+                if let Some(trace) = tools::parse_option::<usize>(step_name, i).ok().flatten() {
+                    traces.push(trace);
+                } else {
+                    // Extract the option as a string. If i is out of bounds, this one will fail (and break the loop)
+                    if let Some(token) = tools::parse_option::<String>(step_name, i).ok().flatten()
+                    {
+                        // Start trying to parse it as a range (e.g. 1-3), or else give helpful messages.
+                        if !token.contains("-") {
+                            return Err(
+                                format!("Error reading 'remove_traces' argument: {token}").into()
+                            );
+                        }
+                        let mut new_traces = Vec::<usize>::new();
+                        let parts: Vec<&str> = token.split('-').collect();
+                        if let (Some(start_str), Some(end_str)) = (parts.first(), parts.get(1)) {
+                            if let (Ok(start), Ok(end)) =
+                                (start_str.parse::<usize>(), end_str.parse::<usize>())
+                            {
+                                for value in start..=end {
+                                    new_traces.push(value);
+                                }
+                            }
+                        }
+                        if new_traces.is_empty() {
+                            return Err(
+                                format!("Error reading 'remove_traces' argument: {token}").into()
+                            );
+                        };
+                        traces.append(&mut new_traces);
+                    } else {
+                        break;
+                    }
+                }
             }
             if traces.is_empty() {
                 return Err(
@@ -471,7 +500,12 @@ impl GPR {
                         .into(),
                 );
             };
-            self.remove_traces(&traces)?;
+            self.remove_traces(&traces, true)?;
+        } else if step_name.contains("remove_empty_traces") {
+            let strength =
+                tools::parse_option::<f32>(step_name, 0)?.unwrap_or(DEFAULT_EMPTY_TRACE_STRENGTH);
+
+            self.remove_empty_traces(strength)?;
         } else {
             return Err(format!("Step name not recognized: {}", step_name).into());
         }
@@ -1188,7 +1222,7 @@ impl GPR {
     }
 
     /// Remove traces based on their integer index
-    pub fn remove_traces(&mut self, traces: &[usize]) -> Result<(), String> {
+    pub fn remove_traces(&mut self, traces: &[usize], log: bool) -> Result<(), String> {
         let start_time = SystemTime::now();
         // The width will be called multiple times, so it's better to assign it statically.
         let width = self.width();
@@ -1205,6 +1239,12 @@ impl GPR {
                 unique_traces.push(*trace);
             }
         }
+
+        // Make a vec of all traces to keep (faster to subset than to explicitly remove in ndarray)
+        // This is done before the index trick below, because the trick below is only needed for vecs.
+        let traces_to_keep: Vec<usize> =
+            (0..width).filter(|i| !unique_traces.contains(i)).collect();
+
         // Sort them, and then subtract the amount of removals that are done before this index.
         // For example, if trace 0,1 and 2 should be removed, by the time the loop reaches 2, it's now the zeroth index.
         // Therefore, the true index is index - i, where i is the count of indices before
@@ -1216,19 +1256,45 @@ impl GPR {
         }
 
         // Remove each selected trace from the data, (potentially) topo. corr. data, and the location info.
+        self.data = self.data.select(Axis(1), &traces_to_keep);
+        if let Some(data) = self.topo_data.as_mut() {
+            self.topo_data = Some(data.select(Axis(1), &traces_to_keep));
+        };
         for trace in &unique_traces {
-            self.data.remove_index(Axis(1), *trace);
-
-            if let Some(data) = self.topo_data.as_mut() {
-                data.remove_index(Axis(1), *trace)
-            };
             self.location.cor_points.remove(*trace);
         }
         self.metadata.last_trace = self.width() as u32;
 
+        if log {
+            self.log_event(
+                "remove_traces",
+                &format!("Removed trace indices {unique_traces:?}"),
+                start_time,
+            );
+        }
+
+        Ok(())
+    }
+    // Remove all traces whose absolute mean is lower than the given "strength"
+    pub fn remove_empty_traces(&mut self, strength: f32) -> Result<(), String> {
+        let start_time = SystemTime::now();
+        let mut traces_to_remove = Vec::<usize>::new();
+
+        for (i, col) in self.data.columns().into_iter().enumerate() {
+            if let Some(mad) = col.mapv(|v| v.abs()).mean() {
+                if mad > strength {
+                    continue;
+                };
+                traces_to_remove.push(i);
+            }
+        }
+
+        let n_removed = traces_to_remove.len();
+        self.remove_traces(&traces_to_remove, false)?;
+
         self.log_event(
-            "remove_traces",
-            &format!("Removed trace indices {unique_traces:?}"),
+            "remove_empty_traces",
+            &format!("Removed {n_removed} empty traces (strength: {strength})."),
             start_time,
         );
 
@@ -1544,6 +1610,7 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
     vec![
         ["subset", "Subset the data in x (traces) and/or y (samples). Examples: Clip to the first 500 samples: subset(0 -1 0 500). Clip to the first 300 traces, subset(0 300)"],
         ["remove_traces", "Manually remove trace indices, for example in case they are visually deemed bad. Example: Remove the first two traces: remove_traces(0 1)"],
+        ["remove_empty_traces", "Remove all traces that appear empty. Recommended to be run as the first filter if required!. The strength threshold (mean absolute trace value) can be tweaked. Example: 'remove_empty_traces(2)'. Default: 1."],
         ["zero_corr_max_peak", "Shift the location of the zero return time by finding the maximum row value. The peak is found for each trace individually."],
         ["zero_corr", "Shift the location of the zero return time by finding the first row where data appear. The correction can be tweaked to allow more or less data, e.g. 'zero_corr(0.9)'. Default: 1.0"],
         ["equidistant_traces", "Make all traces equidistant by averaging them in a fixed horizontal grid. The step size is determined from the median moving velocity. Other step sizes in m can be given, e.g. 'equidistant_traces(2.)' for 2 m. Default: auto"],
@@ -1561,6 +1628,7 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
 
 pub fn default_processing_profile() -> Vec<String> {
     vec![
+        "remove_empty_traces".to_string(),
         format!("zero_corr_max_peak"),
         "equidistant_traces".to_string(),
         "correct_antenna_separation".to_string(),
@@ -1577,7 +1645,7 @@ pub fn default_processing_profile() -> Vec<String> {
 mod tests {
     use std::path::PathBuf;
 
-    use ndarray::{Array1, Axis, Slice};
+    use ndarray::{Array1, AssignElem, Axis, Slice};
 
     use super::{CorPoint, GPRLocation, LocationCorrection};
 
@@ -1822,7 +1890,7 @@ mod tests {
             assert_eq!(topo_data[[0, 19]], 19.);
         };
         // Remove indices 5 and 6, and "accidentally" duplicate one trace
-        gpr.remove_traces(&[5, 5, 6]).unwrap();
+        gpr.remove_traces(&[5, 5, 6], true).unwrap();
 
         // Validate that the dummy GPR is now shorter, and that the values are shifted correctly.
         assert_eq!(gpr.width(), 18);
@@ -1839,8 +1907,26 @@ mod tests {
 
         // Check that the out of bounds error works expectedly
         assert_eq!(
-            gpr.remove_traces(&[18]),
+            gpr.remove_traces(&[18], true),
             Err("Trace index 18 is out of bounds (number of traces: 18)".to_string())
         );
+    }
+
+    #[test]
+    fn test_remove_empty_traces() {
+        let mut gpr = make_dummy_gpr(20, 30, Some(1.));
+
+        let empty_traces: Vec<usize> = vec![0, 10, 19];
+
+        for (i, mut col) in gpr.data.columns_mut().into_iter().enumerate() {
+            if empty_traces.iter().all(|i2| i2 != &i) {
+                col.mapv_inplace(|_| 2.);
+            } else {
+                col.mapv_inplace(|_| 0.);
+            };
+        }
+        gpr.remove_empty_traces(1.).unwrap();
+
+        assert_eq!(gpr.width(), 17);
     }
 }

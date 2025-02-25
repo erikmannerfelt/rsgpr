@@ -213,26 +213,17 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     // Add global attributes to the file
     file.add_attribute(
         "start-datetime",
-        chrono::DateTime::<chrono::Utc>::from_utc(
-            chrono::NaiveDateTime::from_timestamp_opt(
-                gpr.location.cor_points[0].time_seconds as i64,
-                0,
-            )
-            .unwrap(),
-            chrono::Utc,
-        )
-        .to_rfc3339(),
+        chrono::DateTime::from_timestamp(gpr.location.cor_points[0].time_seconds as i64, 0)
+            .unwrap()
+            .to_rfc3339(),
     )?;
     file.add_attribute(
         "stop-datetime",
-        chrono::DateTime::<chrono::Utc>::from_utc(
-            chrono::NaiveDateTime::from_timestamp_opt(
-                gpr.location.cor_points[gpr.location.cor_points.len() - 1].time_seconds as i64,
-                0,
-            )
-            .unwrap(),
-            chrono::Utc,
+        chrono::DateTime::from_timestamp(
+            gpr.location.cor_points[gpr.location.cor_points.len() - 1].time_seconds as i64,
+            0,
         )
+        .unwrap()
         .to_rfc3339(),
     )?;
     file.add_attribute("processing-datetime", chrono::Local::now().to_rfc3339())?;
@@ -240,6 +231,9 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     file.add_attribute("antenna-separation", gpr.metadata.antenna_separation)?;
     file.add_attribute("frequency-steps", gpr.metadata.frequency_steps)?;
     file.add_attribute("vertical-sampling-frequency", gpr.metadata.frequency)?;
+    if gpr.metadata.time_interval.is_finite() {
+        file.add_attribute("time-interval", gpr.metadata.time_interval)?;
+    }
 
     file.add_attribute("processing-log", gpr.log.join("\n"))?;
     file.add_attribute(
@@ -452,8 +446,7 @@ pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>>
 /// # Arguments
 /// - `gpr_locations`: The GPRLocation object to export
 /// - `potential_track_path`: The output path of the track file or a directory (if provided)
-/// - `output_filepath`: The output filepath to derive a track filepath from in case
-/// `potential_track_path` was not provided
+/// - `output_filepath`: The output filepath to derive a track filepath from in case `potential_track_path` was not provided.
 /// - `verbose`: Print progress?
 ///
 /// # Returns
