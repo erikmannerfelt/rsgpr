@@ -474,7 +474,7 @@ impl GPR {
                         }
                         let mut new_traces = Vec::<usize>::new();
                         let parts: Vec<&str> = token.split('-').collect();
-                        if let (Some(start_str), Some(end_str)) = (parts.get(0), parts.get(1)) {
+                        if let (Some(start_str), Some(end_str)) = (parts.first(), parts.get(1)) {
                             if let (Ok(start), Ok(end)) =
                                 (start_str.parse::<usize>(), end_str.parse::<usize>())
                             {
@@ -1242,10 +1242,8 @@ impl GPR {
 
         // Make a vec of all traces to keep (faster to subset than to explicitly remove in ndarray)
         // This is done before the index trick below, because the trick below is only needed for vecs.
-        let traces_to_keep: Vec<usize> = (0..width)
-            .into_iter()
-            .filter(|i| !unique_traces.contains(i))
-            .collect();
+        let traces_to_keep: Vec<usize> =
+            (0..width).filter(|i| !unique_traces.contains(i)).collect();
 
         // Sort them, and then subtract the amount of removals that are done before this index.
         // For example, if trace 0,1 and 2 should be removed, by the time the loop reaches 2, it's now the zeroth index.

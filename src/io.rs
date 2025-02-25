@@ -1,6 +1,5 @@
 /// Functions to handle input and output (I/O) of GPR data files.
 use ndarray::{Array1, Array2};
-use num::Float;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::error::Error;
@@ -214,26 +213,17 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     // Add global attributes to the file
     file.add_attribute(
         "start-datetime",
-        chrono::DateTime::<chrono::Utc>::from_utc(
-            chrono::NaiveDateTime::from_timestamp_opt(
-                gpr.location.cor_points[0].time_seconds as i64,
-                0,
-            )
-            .unwrap(),
-            chrono::Utc,
-        )
-        .to_rfc3339(),
+        chrono::DateTime::from_timestamp(gpr.location.cor_points[0].time_seconds as i64, 0)
+            .unwrap()
+            .to_rfc3339(),
     )?;
     file.add_attribute(
         "stop-datetime",
-        chrono::DateTime::<chrono::Utc>::from_utc(
-            chrono::NaiveDateTime::from_timestamp_opt(
-                gpr.location.cor_points[gpr.location.cor_points.len() - 1].time_seconds as i64,
-                0,
-            )
-            .unwrap(),
-            chrono::Utc,
+        chrono::DateTime::from_timestamp(
+            gpr.location.cor_points[gpr.location.cor_points.len() - 1].time_seconds as i64,
+            0,
         )
+        .unwrap()
         .to_rfc3339(),
     )?;
     file.add_attribute("processing-datetime", chrono::Local::now().to_rfc3339())?;
@@ -456,8 +446,7 @@ pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>>
 /// # Arguments
 /// - `gpr_locations`: The GPRLocation object to export
 /// - `potential_track_path`: The output path of the track file or a directory (if provided)
-/// - `output_filepath`: The output filepath to derive a track filepath from in case
-/// `potential_track_path` was not provided
+/// - `output_filepath`: The output filepath to derive a track filepath from in case `potential_track_path` was not provided.
 /// - `verbose`: Print progress?
 ///
 /// # Returns

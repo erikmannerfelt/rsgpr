@@ -173,12 +173,9 @@ where
 /// # Returns
 /// A string representation of the datetime
 pub fn seconds_to_rfc3339(seconds: f64) -> String {
-    chrono::DateTime::<chrono::Utc>::from_utc(
-        chrono::NaiveDateTime::from_timestamp_opt(seconds as i64, (seconds.fract() * 1e9) as u32)
-            .unwrap(),
-        chrono::Utc,
-    )
-    .to_rfc3339()
+    chrono::DateTime::from_timestamp(seconds as i64, (seconds.fract() * 1e9) as u32)
+        .unwrap()
+        .to_rfc3339()
 }
 
 /// Parse the options (arguments) of a user-supplied step
