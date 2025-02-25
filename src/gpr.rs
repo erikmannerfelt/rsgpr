@@ -458,13 +458,41 @@ impl GPR {
         } else if step_name.contains("remove_traces") {
             let mut traces = Vec::<usize>::new();
             for i in 0..self.width() {
-                match tools::parse_option::<usize>(step_name, i) {
-                    Ok(trace_o) => match trace_o {
-                        Some(trace) => traces.push(trace),
-                        None => break,
-                    },
-                    Err(_) => break,
-                };
+                // Try to parse the i:th option as an usize.
+                // If that doesn't work, it's either a range (e.g. 1-3) or it's poorly formatted
+                if let Some(trace) = tools::parse_option::<usize>(step_name, i).ok().flatten() {
+                    traces.push(trace);
+                } else {
+                    // Extract the option as a string. If i is out of bounds, this one will fail (and break the loop)
+                    if let Some(token) = tools::parse_option::<String>(step_name, i).ok().flatten()
+                    {
+                        // Start trying to parse it as a range (e.g. 1-3), or else give helpful messages.
+                        if !token.contains("-") {
+                            return Err(
+                                format!("Error reading 'remove_traces' argument: {token}").into()
+                            );
+                        }
+                        let mut new_traces = Vec::<usize>::new();
+                        let parts: Vec<&str> = token.split('-').collect();
+                        if let (Some(start_str), Some(end_str)) = (parts.get(0), parts.get(1)) {
+                            if let (Ok(start), Ok(end)) =
+                                (start_str.parse::<usize>(), end_str.parse::<usize>())
+                            {
+                                for value in start..=end {
+                                    new_traces.push(value);
+                                }
+                            }
+                        }
+                        if new_traces.is_empty() {
+                            return Err(
+                                format!("Error reading 'remove_traces' argument: {token}").into()
+                            );
+                        };
+                        traces.append(&mut new_traces);
+                    } else {
+                        break;
+                    }
+                }
             }
             if traces.is_empty() {
                 return Err(
