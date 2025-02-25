@@ -83,12 +83,14 @@ pub fn read_elevations(
 
     // Read the DEM elevations as a 2D array
     let dem = band
-        .read_as_array::<f32>(
+        .read_as::<f32>(
             (upper_left.0 as isize, upper_left.1 as isize),
             window_size,
             upscaled_window_size,
             Some(ResampleAlg::Bilinear),
         )
+        .unwrap()
+        .to_array()
         .unwrap();
 
     // Initialize an output elevation vec, to be filled below
