@@ -1,5 +1,5 @@
 use biquad::Biquad;
-use ndarray::Array2;
+use ndarray::{Array, Array2};
 use num::Float;
 
 use crate::tools;
@@ -25,6 +25,11 @@ pub fn abslog<T: Float>(data: &mut Array2<T>) {
 
     data.mapv_inplace(|v| (v + minval).log10());
 }
+
+pub fn siglog<T: Float, D: ndarray::Dimension>(data: &mut Array<T, D>, minval_log10: T) {
+    data.mapv_inplace(|v| (v.abs().log10() - minval_log10).max(T::zero()) * v.signum());
+}
+
 pub trait ButterworthBandpass<T: Float> {
     fn butter_coef_norm(
         low_cutoff: T,
@@ -67,7 +72,8 @@ pub fn normalized_bandpass<T: Float + ButterworthBandpass<T>>(
 #[cfg(test)]
 mod tests {
     use biquad::Biquad;
-    use ndarray::Array2;
+    use ndarray::{Array2, AssignElem};
+    use ndarray_stats::DeviationExt;
 
     #[test]
     fn test_abslog() {
@@ -133,5 +139,24 @@ mod tests {
                 .unwrap()
                 < &300.
         );
+    }
+
+    #[test]
+    fn test_siglog() {
+        let arr = ndarray::arr1(&[1000_f32, -1000_f32, 0_f32]);
+
+        let mut arr0 = arr.clone();
+        super::siglog(&mut arr0, 0.);
+        assert_eq!(arr0, ndarray::arr1(&[3., -3., 0.]));
+
+        let mut arr1 = arr.clone();
+        arr1[2].assign_elem(0.0001);
+        super::siglog(&mut arr1, 0.);
+        assert_eq!(arr1, ndarray::arr1(&[3., -3., 0.]));
+
+        let mut arr2 = arr.clone();
+        arr2[2].assign_elem(0.1);
+        super::siglog(&mut arr2, -2.);
+        assert_eq!(arr2, ndarray::arr1(&[5., -5., 1.]));
     }
 }
