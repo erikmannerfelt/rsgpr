@@ -99,9 +99,8 @@ pub fn load_rad(filepath: &Path, medium_velocity: f32) -> Result<gpr::GPRMeta, B
 pub fn load_cor(filepath: &Path, projected_crs: &str) -> Result<gpr::GPRLocation, Box<dyn Error>> {
     let content = std::fs::read_to_string(filepath)?;
 
-    let transformer = proj::Proj::new_known_crs("EPSG:4326", projected_crs, None)?;
-
     // Create a new empty points vec
+    let mut coords = Vec::<crate::coords::Coord>::new();
     let mut points: Vec<gpr::CorPoint> = Vec::new();
     // Loop over the lines of the file and parse CorPoints from it
     for line in content.lines() {
@@ -126,21 +125,35 @@ pub fn load_cor(filepath: &Path, projected_crs: &str) -> Result<gpr::GPRLocation
             longitude *= -1.;
         };
 
-        // Project the coordinate to eastings/northings
-        let (easting, northing) = transformer.convert((longitude, latitude))?;
+        coords.push(crate::coords::Coord {
+            x: longitude,
+            y: latitude,
+        });
 
         // Parse the date and time columns into datetime, then convert to seconds after UNIX epoch.
         let datetime =
             chrono::DateTime::parse_from_rfc3339(&format!("{}T{}+00:00", data[1], data[2]))?
                 .timestamp() as f64;
 
+        // Coordinates are 0 right now. That's fixed right below
         points.push(gpr::CorPoint {
             trace_n: (data[0].parse::<i64>()? - 1) as u32, // The ".cor"-files are 1-indexed whereas this is 0-indexed
             time_seconds: datetime,
-            easting,
-            northing,
+            easting: 0.,
+            northing: 0.,
             altitude: data[7].parse()?,
         });
+
+        for (i, coord) in crate::coords::from_wgs84(
+            &coords,
+            &crate::coords::Crs::from_user_input(projected_crs)?,
+        )?
+        .iter()
+        .enumerate()
+        {
+            points[i].easting = coord.x;
+            points[i].northing = coord.y;
+        }
     }
 
     if !points.is_empty() {
