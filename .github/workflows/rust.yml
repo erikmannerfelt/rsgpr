@@ -19,7 +19,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt update -y
-        sudo apt install -y libgdal-dev
+        sudo apt install -y gdal proj
     - name: Formatting
       run: cargo fmt --check
     - name: Build

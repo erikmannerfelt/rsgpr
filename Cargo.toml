@@ -18,12 +18,12 @@ noisy_float = "0.2.0"  # For inputs to ndarray-stats
 rayon = "1.7.0"  # For parallelization of functions
 netcdf = {version = "0.8.1", features = ["ndarray", "static"]}
 clap = { version = "4.3.2", features = ["derive"] }
-geomorph = "2.0.2"
-utm = "*"
+geomorph = "2.0.2" # UTM zone conversion functions
+utm = "0.1.6"  # More UTM zone conversion functions
 glob = "0.3.1"
 parse_duration = "2.1.1"
 num = "0.4.0"
-biquad = "0.5.0"
+biquad = "0.5.0"  # For frequency (e.g bandpass) filters
 enterpolation = "0.2"
 
 [dev-dependencies]
