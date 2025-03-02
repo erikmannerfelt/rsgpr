@@ -16,7 +16,6 @@ image = "0.24.6"  # Write images
 smartcore = "0.3.2"  # (Linear) regression packages
 noisy_float = "0.2.0"  # For inputs to ndarray-stats
 rayon = "1.7.0"  # For parallelization of functions
-gdal = {version = "0.17.0", features = ["ndarray"]}  # For reading DEMs
 netcdf = {version = "0.8.1", features = ["ndarray", "static"]}
 clap = { version = "4.3.2", features = ["derive"] }
 geomorph = "2.0.2"

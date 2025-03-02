@@ -253,17 +253,6 @@ impl GPRLocation {
         }
     }
 
-    fn xy_coords(&self) -> Array2<f64> {
-        let mut data: Vec<f64> = Vec::new();
-
-        for point in &self.cor_points {
-            data.push(point.easting);
-            data.push(point.northing);
-        }
-
-        Array2::<f64>::from_shape_vec((self.cor_points.len(), 2), data).unwrap()
-    }
-
     pub fn get_dem_elevations(&mut self, dem_path: &Path) -> Result<(), String> {
         let coords = self
             .cor_points
@@ -276,7 +265,6 @@ impl GPRLocation {
 
         let coords_wgs84 =
             crate::coords::to_wgs84(&coords, &crate::coords::Crs::from_user_input(&self.crs)?)?;
-        // let elev = dem::read_elevations(dem_path, self.xy_coords()).unwrap();
         let elev = dem::sample_dem(dem_path, &coords_wgs84)?;
 
         for i in 0..self.cor_points.len() {
