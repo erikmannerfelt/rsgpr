@@ -15,6 +15,9 @@ const DEFAULT_EMPTY_TRACE_STRENGTH: f32 = 1.0;
 const DEFAULT_DEWOW_WINDOW: u32 = 5;
 const DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF: f32 = 0.3;
 const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
+const DEFAULT_BANDPASS_LOW_CUTOFF: f32 = 0.1;
+const DEFAULT_BANDPASS_HIGH_CUTOFF: f32 = 0.9;
+const DEFAULT_SIGLOG_MINVAL_LOG10: f32 = -1.;
 
 /// Metadata associated with a GPR dataset
 ///
@@ -451,6 +454,10 @@ impl GPR {
             self.unphase();
         } else if step_name.contains("abslog") {
             self.abslog()
+        } else if step_name.contains("siglog") {
+            let minval =
+                tools::parse_option::<f32>(step_name, 0)?.unwrap_or(DEFAULT_SIGLOG_MINVAL_LOG10);
+            self.siglog(minval);
         } else if step_name.contains("correct_topography") {
             self.correct_topography();
         } else if step_name.contains("correct_antenna_separation") {
@@ -506,10 +513,49 @@ impl GPR {
                 tools::parse_option::<f32>(step_name, 0)?.unwrap_or(DEFAULT_EMPTY_TRACE_STRENGTH);
 
             self.remove_empty_traces(strength)?;
+        } else if step_name.contains("bandpass") {
+            let low_cutoff =
+                tools::parse_option(step_name, 0)?.unwrap_or(DEFAULT_BANDPASS_LOW_CUTOFF);
+            let high_cutoff =
+                tools::parse_option(step_name, 1)?.unwrap_or(DEFAULT_BANDPASS_HIGH_CUTOFF);
+            self.bandpass(low_cutoff, high_cutoff)?;
         } else {
             return Err(format!("Step name not recognized: {}", step_name).into());
         }
 
+        Ok(())
+    }
+
+    pub fn bandpass(&mut self, low_cutoff: f32, high_cutoff: f32) -> Result<(), String> {
+        let start_time = SystemTime::now();
+
+        if !(0. ..=1.).contains(&low_cutoff) {
+            return Err(format!(
+                "Normalized low cutoff needs to be in the range 0-1 (provided: {low_cutoff})"
+            ));
+        }
+        if !(0. ..=1.).contains(&high_cutoff) {
+            return Err(format!(
+                "Normalized high cutoff needs to be in the range 0-1 (provided: {high_cutoff})"
+            ));
+        }
+        if low_cutoff >= high_cutoff {
+            return Err(format!("Normalized low cutoff ({low_cutoff}) needs to be smaller than the high cutoff ({high_cutoff})."));
+        }
+
+        match filters::normalized_bandpass(&mut self.data, low_cutoff, high_cutoff) {
+            Ok(()) => (),
+            Err(e) => return Err(format!("Error in bandpass function: {:?}", e)),
+        }
+
+        self.log_event(
+            "bandpass",
+            &format!(
+                "Applied a normalized bandpass Butterworth filter ({:.3}-{:.3})",
+                low_cutoff, high_cutoff
+            ),
+            start_time,
+        );
         Ok(())
     }
 
@@ -728,6 +774,17 @@ impl GPR {
 
         filters::abslog(&mut self.data);
         self.log_event("abslog", "Ran abslog (log10(abs(data))", start_time);
+    }
+
+    pub fn siglog(&mut self, minval_log10: f32) {
+        let start_time = SystemTime::now();
+
+        filters::siglog(&mut self.data, minval_log10);
+        self.log_event(
+            "siglog",
+            "Ran siglog (sign-corrected log10 of absolute values) (minval: 10e{minval_log10}))",
+            start_time,
+        );
     }
 
     pub fn vertical_resolution_m(&self) -> f32 {
@@ -1613,6 +1670,7 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
         ["remove_empty_traces", "Remove all traces that appear empty. Recommended to be run as the first filter if required!. The strength threshold (mean absolute trace value) can be tweaked. Example: 'remove_empty_traces(2)'. Default: 1."],
         ["zero_corr_max_peak", "Shift the location of the zero return time by finding the maximum row value. The peak is found for each trace individually."],
         ["zero_corr", "Shift the location of the zero return time by finding the first row where data appear. The correction can be tweaked to allow more or less data, e.g. 'zero_corr(0.9)'. Default: 1.0"],
+        ["bandpass", "Apply a bandpass Butterworth filter to each trace individually. The given frequencies are normalized (0: 0Hz, 1: Nyquist). Default: bandpass(0.1 0.9)"],
         ["equidistant_traces", "Make all traces equidistant by averaging them in a fixed horizontal grid. The step size is determined from the median moving velocity. Other step sizes in m can be given, e.g. 'equidistant_traces(2.)' for 2 m. Default: auto"],
         ["normalize_horizontal_magnitudes", "Normalize the magnitudes of the traces in the horizontal axis. This removes or reduces horizontal banding. The uppermost samples of the trace can be excluded, either by sample number (integer; e.g. 'normalize_horizontal_magnitudes(300)') or by a fraction of the trace (float; e.g. 'normalize_horizontal_magnitudes(0.3)'). Default: 0.3"],
         ["dewow", "Subtract the horizontal moving average magnitude for each trace. This reduces artefacts that are consistent among every trace. The averaging window can be set, e.g. 'dewow(10)'. Default: 5"],
@@ -1620,6 +1678,7 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
         ["gain", "Multiply the magnitude as a function of depth. This is most often used to correct for signal attenuation with time/distance. Gain is applied by: '10 ^(gain * sqrt(sample_index))' where gain is the given gain factor and sample_index is the zero-based index of the sample from the top. Examples: gain(0.1). No default value."],
         ["kirchhoff_migration2d", "Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data. The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the sum of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions."],
         ["abslog", "Run a log10 operation on the absolute values (log10(abs(data))), converting it to a logarithmic scale. This is useful for visualisation. Before conversion, the data are added with the 1st percentile (absolute) value in the dataset to avoid log10(0) == inf."],
+        ["siglog", "Run a log10 operation on absolute values and then account for the sign. Values smaller than the set minimum magnitude are truncated to zero. E.g. with an exponent offset of 0: 1000 -> 3, -1000 -> -3, 0.001 -> 0. The argument specifies the exponent offset to apply to allow for values smaller than +-1 (e.g. 10e-1). Default: -1"],
         ["unphase", "Combine the positive and negative phases of the signal into one positive magntiude. The assumption is made that the positive magnitude of the signal comes first, followed by an offset negative component. The distance between the positive and negative peaks are found, and then the negative part is shifted accordingly."],
         ["correct_topography", "Make a copy of the data and topographically correct it. In the output, the data will be called \"topo_data\". Note that the copying means any step run after this will not be reflected in \"topo_data\". This is thus recommended to run last."],
         ["correct_antenna_separation", "Correct for the separation between the antenna transmitter and receiver. The consequence is that depths are slightly over-exaggerated at low return-times before correction. This step averages samples so that each sample represents a consistent depth interval."],
@@ -1645,7 +1704,7 @@ pub fn default_processing_profile() -> Vec<String> {
 mod tests {
     use std::path::PathBuf;
 
-    use ndarray::{Array1, AssignElem, Axis, Slice};
+    use ndarray::{Array1, Axis, Slice};
 
     use super::{CorPoint, GPRLocation, LocationCorrection};
 
