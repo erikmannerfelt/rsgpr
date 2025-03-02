@@ -264,14 +264,27 @@ impl GPRLocation {
         Array2::<f64>::from_shape_vec((self.cor_points.len(), 2), data).unwrap()
     }
 
-    pub fn get_dem_elevations(&mut self, dem_path: &Path) {
-        let elev = dem::read_elevations(dem_path, self.xy_coords()).unwrap();
+    pub fn get_dem_elevations(&mut self, dem_path: &Path) -> Result<(), String> {
+        let coords = self
+            .cor_points
+            .iter()
+            .map(|cor| crate::coords::Coord {
+                x: cor.easting,
+                y: cor.northing,
+            })
+            .collect::<Vec<crate::coords::Coord>>();
+
+        let coords_wgs84 =
+            crate::coords::to_wgs84(&coords, &crate::coords::Crs::from_user_input(&self.crs)?)?;
+        // let elev = dem::read_elevations(dem_path, self.xy_coords()).unwrap();
+        let elev = dem::sample_dem(dem_path, &coords_wgs84)?;
 
         for i in 0..self.cor_points.len() {
             self.cor_points[i].altitude = elev[i] as f64;
         }
 
         self.correction = LocationCorrection::Dem(dem_path.to_path_buf());
+        Ok(())
     }
 
     pub fn to_csv(&self, filepath: &Path) -> Result<(), std::io::Error> {
@@ -1477,7 +1490,7 @@ pub fn run(params: RunParams) -> Result<Vec<GPR>, Box<dyn Error>> {
 
         // If a "--dem" was given, substitute elevations using said DEM
         if let Some(dem_path) = &params.dem_path {
-            gpr_locations.get_dem_elevations(dem_path);
+            gpr_locations.get_dem_elevations(dem_path)?;
         };
 
         // Construct the output filepath. If one was given, use that.
