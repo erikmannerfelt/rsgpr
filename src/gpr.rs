@@ -529,12 +529,12 @@ impl GPR {
     pub fn bandpass(&mut self, low_cutoff: f32, high_cutoff: f32) -> Result<(), String> {
         let start_time = SystemTime::now();
 
-        if (low_cutoff < 0.) | (low_cutoff > 1.) {
+        if !(0. ..=1.).contains(&low_cutoff) {
             return Err(format!(
                 "Normalized low cutoff needs to be in the range 0-1 (provided: {low_cutoff})"
             ));
         }
-        if (high_cutoff < 0.) | (high_cutoff > 1.) {
+        if !(0. ..=1.).contains(&high_cutoff) {
             return Err(format!(
                 "Normalized high cutoff needs to be in the range 0-1 (provided: {high_cutoff})"
             ));
