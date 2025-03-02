@@ -13,6 +13,7 @@
 use clap::Parser;
 
 mod cli;
+mod coords;
 mod dem;
 mod filters;
 mod gpr;

@@ -12,6 +12,8 @@ pkgs.mkShell {
     cargo-tarpaulin # Get test coverage statistics
     rustfmt
     clippy
+    proj
+    gdal
   ];
   LIBCLANG_PATH = package.LIBCLANG_PATH;
   PKG_CONFIG_PATH = package.PKG_CONFIG_PATH;

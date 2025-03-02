@@ -20,6 +20,8 @@ gdal = {version = "0.17.0", features = ["ndarray"]}  # For reading DEMs
 netcdf = {version = "0.8.1", features = ["ndarray", "static"]}
 proj = {version="0.27.0", features =  []}  # Has C dynamic dependencies
 clap = { version = "4.3.2", features = ["derive"] }
+geomorph = "2.0.2"
+utm = "*"
 glob = "0.3.1"
 parse_duration = "2.1.1"
 num = "0.4.0"

@@ -566,6 +566,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "geomorph"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e1b7b06f049cbd71719f8fae8c4aad5467336be9df6f69289bf2360285b287c"
+dependencies = [
+ "num-complex 0.4.3",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1369,6 +1378,7 @@ dependencies = [
  "clap 4.3.2",
  "enterpolation",
  "gdal",
+ "geomorph",
  "glob",
  "image",
  "ndarray",
@@ -1381,6 +1391,7 @@ dependencies = [
  "rayon",
  "smartcore",
  "tempfile",
+ "utm",
 ]
 
 [[package]]
@@ -1597,6 +1608,12 @@ name = "utf8parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "711b9620af191e0cdc7468a8d14e709c3dcdb115b36f838e601583af800a370a"
+
+[[package]]
+name = "utm"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95b09e3b3a0abd1ccb77673a6b7b8875d9d1c80626154add451cf18392dc4c3c"
 
 [[package]]
 name = "vcpkg"
