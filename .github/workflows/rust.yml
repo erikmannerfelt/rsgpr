@@ -19,7 +19,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt update -y
-        sudo apt install -y gdal proj
+        sudo apt install -y gdal-bin proj-bin
     - name: Formatting
       run: cargo fmt --check
     - name: Build
