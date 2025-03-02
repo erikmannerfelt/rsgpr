@@ -96,7 +96,10 @@ pub fn load_rad(filepath: &Path, medium_velocity: f32) -> Result<gpr::GPRMeta, B
 /// - The file could not be found/read
 /// - `projected_crs` is not understood by PROJ
 /// - The contents of the file could not be parsed.
-pub fn load_cor(filepath: &Path, projected_crs: &str) -> Result<gpr::GPRLocation, Box<dyn Error>> {
+pub fn load_cor(
+    filepath: &Path,
+    projected_crs: Option<&String>,
+) -> Result<gpr::GPRLocation, Box<dyn Error>> {
     let content = std::fs::read_to_string(filepath)?;
 
     // Create a new empty points vec
@@ -143,17 +146,25 @@ pub fn load_cor(filepath: &Path, projected_crs: &str) -> Result<gpr::GPRLocation
             northing: 0.,
             altitude: data[7].parse()?,
         });
+    }
 
-        for (i, coord) in crate::coords::from_wgs84(
-            &coords,
-            &crate::coords::Crs::from_user_input(projected_crs)?,
-        )?
-        .iter()
-        .enumerate()
-        {
-            points[i].easting = coord.x;
-            points[i].northing = coord.y;
-        }
+    if points.is_empty() {
+        return Err(format!("Could not parse location data from: {:?}", filepath).into());
+    }
+
+    let projected_crs = match projected_crs {
+        Some(s) => s.to_string(),
+        None => crate::coords::UtmCrs::optimal_crs(&coords[0]).to_epsg_str(),
+    };
+    for (i, coord) in crate::coords::from_wgs84(
+        &coords,
+        &crate::coords::Crs::from_user_input(&projected_crs)?,
+    )?
+    .iter()
+    .enumerate()
+    {
+        points[i].easting = coord.x;
+        points[i].northing = coord.y;
     }
 
     if !points.is_empty() {

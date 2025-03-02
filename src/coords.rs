@@ -50,18 +50,34 @@ impl Coord {
             y: northing,
         }
     }
-
-    fn approx_eq(&self, other: &Self, precision: f64) -> bool {
-        let xdiff = self.x - other.x;
-        let ydiff = self.y - other.y;
-        (xdiff.powi(2) + ydiff.powi(2)).sqrt() < precision
-    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct UtmCrs {
     pub zone: usize,
     pub north: bool,
+}
+
+impl UtmCrs {
+    pub fn optimal_crs(coord: &Coord) -> Self {
+        let utm: geomorph::Utm = coord.to_geomorph_coord().into();
+        Self {
+            zone: utm.zone as usize,
+            north: utm.north,
+        }
+    }
+
+    pub fn to_epsg_str(&self) -> String {
+        let mut epsg = "EPSG:32".to_string();
+
+        if self.north {
+            epsg += "6";
+        } else {
+            epsg += "8";
+        }
+        epsg += &format!("{}", self.zone);
+        epsg
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -72,6 +88,10 @@ pub enum Crs {
 
 impl Crs {
     pub fn from_user_input(text: &str) -> Result<Self, String> {
+        let utm_result = parse_crs_utm(text);
+        if let Ok(utm) = utm_result {
+            return Ok(Self::Utm(utm));
+        }
         let proj_result = proj_parse_crs(text);
 
         if let Ok(proj_str) = proj_result {
@@ -97,15 +117,11 @@ impl Crs {
             return Ok(Crs::Proj(proj_str.to_string()));
         }
 
-        Err("Could not read CRS.".into())
-    }
-
-    pub fn optimal_utm(coord: &Coord) -> Self {
-        let utm: geomorph::Utm = coord.to_geomorph_coord().into();
-        Self::Utm(UtmCrs {
-            zone: utm.zone as usize,
-            north: utm.north,
-        })
+        Err(format!(
+            "Could not read CRS.\nInternal error: {}.\nProj error: {}",
+            utm_result.err().unwrap(),
+            proj_result.err().unwrap()
+        ))
     }
 }
 
@@ -332,6 +348,12 @@ mod tests {
 
     use super::{Coord, Crs, UtmCrs};
 
+    fn coords_approx_eq(first: &Coord, second: &Coord, precision: f64) -> bool {
+        let xdiff = first.x - second.x;
+        let ydiff = first.y - second.y;
+        (xdiff.powi(2) + ydiff.powi(2)).sqrt() < precision
+    }
+
     fn make_test_cases() -> Vec<(String, Crs)> {
         vec![
             (
@@ -403,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_optimal_crs() {
-        let crs = Crs::optimal_utm(&Coord { y: 78., x: 15. });
+        let crs = Crs::Utm(UtmCrs::optimal_crs(&Coord { y: 78., x: 15. }));
 
         match crs {
             Crs::Utm(utm) => {
@@ -430,7 +452,7 @@ mod tests {
             for i in 0..conv_back.len() {
                 println!("{:?} -> {:?} -> {:?}", coords[i], conv[i], conv_back[i]);
 
-                assert!(coords[i].approx_eq(&conv_back[i], 0.01));
+                assert!(coords_approx_eq(&coords[i], &conv_back[i], 0.01));
             }
         }
     }

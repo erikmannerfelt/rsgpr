@@ -52,7 +52,7 @@ impl GPRMeta {
     ///
     /// # Arguments
     /// - `projected_crs`: The CRS to project coordinates into
-    pub fn find_cor(&self, projected_crs: &str) -> Result<GPRLocation, Box<dyn Error>> {
+    pub fn find_cor(&self, projected_crs: Option<&String>) -> Result<GPRLocation, Box<dyn Error>> {
         io::load_cor(&self.rd3_filepath.with_extension("cor"), projected_crs)
     }
 }
@@ -1431,7 +1431,7 @@ pub struct RunParams {
     pub dem_path: Option<PathBuf>,
     pub cor_path: Option<PathBuf>,
     pub medium_velocity: f32,
-    pub crs: String,
+    pub crs: Option<String>,
     pub quiet: bool,
     pub track_path: Option<Option<PathBuf>>,
     pub steps: Vec<String>,
@@ -1463,8 +1463,8 @@ pub fn run(params: RunParams) -> Result<Vec<GPR>, Box<dyn Error>> {
         // Load the GPR location data
         // If the "--cor" argument was used, load from there. Otherwise, try to find a ".cor" file
         let mut gpr_locations = match &params.cor_path {
-            Some(fp) => io::load_cor(fp, &params.crs)?,
-            None => match gpr_meta.find_cor(&params.crs) {
+            Some(fp) => io::load_cor(fp, params.crs.as_ref())?,
+            None => match gpr_meta.find_cor(params.crs.as_ref()) {
                 Ok(v) => Ok(v),
                 Err(e) => match params.filepaths.len() > 1 {
                     true => {
@@ -1736,10 +1736,21 @@ mod tests {
         crs: Option<String>,
         correction: Option<LocationCorrection>,
     ) -> GPRLocation {
+        let cor_points = make_cor_points(n_points, spacing.unwrap_or(1.));
+        let crs = match crs {
+            Some(c) => c,
+            None => {
+                let first_coord = crate::coords::Coord {
+                    x: cor_points[0].easting,
+                    y: cor_points[0].northing,
+                };
+                crate::coords::UtmCrs::optimal_crs(&first_coord).to_epsg_str()
+            }
+        };
         GPRLocation {
-            cor_points: make_cor_points(n_points, spacing.unwrap_or(1.)),
+            cor_points,
             correction: correction.unwrap_or(LocationCorrection::None),
-            crs: crs.unwrap_or("EPSG:32633".to_string()),
+            crs,
         }
     }
 
