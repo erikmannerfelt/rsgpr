@@ -15,12 +15,10 @@ pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>
         "-b",
         "1",
         "-wgs84",
-        "-r",
-        "bilinear",
+        // "-r",
+        // "bilinear",
         dem_path.to_str().ok_or("Empty DEM path given")?,
     ];
-
-    println!("Running gdallocationinfo with args: {args:?}");
     let mut child = std::process::Command::new("gdallocationinfo")
         .args(args)
         .stdin(std::process::Stdio::piped())
@@ -33,7 +31,6 @@ pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>
     for coord in coords_wgs84 {
         values.push(format!("{} {}", coord.x, coord.y));
     }
-    println!("Querying values in stdin: {values:?}");
     child
         .stdin
         .take()
