@@ -6,6 +6,10 @@ use crate::coords::Coord;
 pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>, String> {
     use std::io::Write;
 
+    if coords_wgs84.is_empty() {
+        return Err("Coords vec is empty.".into());
+    }
+
     let args = vec![
         "-xml",
         "-b",
@@ -13,7 +17,7 @@ pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>
         "-wgs84",
         "-r",
         "bilinear",
-        dem_path.to_str().unwrap(),
+        dem_path.to_str().ok_or("Empty DEM path given")?,
     ];
     let mut child = std::process::Command::new("gdallocationinfo")
         .args(args)
