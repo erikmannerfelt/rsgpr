@@ -267,8 +267,10 @@ impl GPRLocation {
             crate::coords::to_wgs84(&coords, &crate::coords::Crs::from_user_input(&self.crs)?)?;
         let elev = dem::sample_dem(dem_path, &coords_wgs84)?;
 
-        for i in 0..self.cor_points.len() {
-            self.cor_points[i].altitude = elev[i] as f64;
+        for (i, point) in self.cor_points.iter_mut().enumerate() {
+            if let Some(e) = elev.get(i) {
+                point.altitude = *e as f64;
+            }
         }
 
         self.correction = LocationCorrection::Dem(dem_path.to_path_buf());

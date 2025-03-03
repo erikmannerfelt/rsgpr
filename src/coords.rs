@@ -5,14 +5,14 @@ pub struct Coord {
 }
 
 impl Coord {
-    fn to_geomorph_coord(&self) -> geomorph::Coord {
+    fn to_geomorph_coord(self) -> geomorph::Coord {
         geomorph::Coord {
             lat: self.y,
             lon: self.x,
         }
     }
 
-    fn to_geomorph_utm(&self, crs: &UtmCrs) -> geomorph::Utm {
+    fn to_geomorph_utm(self, crs: &UtmCrs) -> geomorph::Utm {
         let band = match crs.north {
             true => 'N',
             false => 'S',
@@ -27,7 +27,7 @@ impl Coord {
         }
     }
 
-    fn to_wgs84(&self, crs: &UtmCrs) -> Self {
+    fn to_wgs84(self, crs: &UtmCrs) -> Self {
         let crd: geomorph::Coord = self.to_geomorph_utm(crs).into();
         Self {
             x: crd.lon,
@@ -35,7 +35,7 @@ impl Coord {
         }
     }
 
-    fn from_wgs84(&self, crs: &UtmCrs) -> Self {
+    fn from_wgs84(self, crs: &UtmCrs) -> Self {
         let (mut northing, easting, _) = utm::to_utm_wgs84(self.y, self.x, crs.zone as u8);
 
         // Edge case exceptions since the utm crate doesn't care about N/S
@@ -128,7 +128,6 @@ impl Crs {
 fn parse_crs_utm(text: &str) -> Result<UtmCrs, String> {
     let parts = text
         .to_lowercase()
-        .trim()
         .split_whitespace()
         .map(|s| s.to_string())
         .collect::<Vec<String>>();
@@ -290,7 +289,7 @@ fn proj_convert_crs(
         };
     }
 
-    child.kill().unwrap();
+    child.wait().unwrap();
     Ok(new_coords)
 }
 
@@ -299,7 +298,7 @@ pub fn to_wgs84(coords: &[Coord], crs: &Crs) -> Result<Vec<Coord>, String> {
     match crs {
         Crs::Utm(utm) => {
             for coord in coords {
-                new_coords.push(coord.to_wgs84(&utm));
+                new_coords.push(coord.to_wgs84(utm));
             }
         }
         Crs::Proj(proj_str) => {
