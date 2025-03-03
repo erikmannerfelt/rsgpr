@@ -194,21 +194,19 @@ fn parse_crs_utm(text: &str) -> Result<UtmCrs, String> {
 }
 
 fn proj_parse_crs(text: &str) -> Result<String, String> {
-    use std::io::BufRead;
-    let mut child = std::process::Command::new("projinfo")
+    let child = std::process::Command::new("projinfo")
         .arg(text)
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
 
-    let stdout = child.stdout.take().expect("Failed to open stdout");
-    let reader = std::io::BufReader::new(stdout);
+    let result = child.wait_with_output().unwrap();
+    let parsed = String::from_utf8_lossy(&result.stdout);
 
     let mut output = String::new();
     // Read output line by line
     let mut next = false;
-    for line in reader.lines() {
-        let line = line.unwrap();
+    for line in parsed.lines() {
         // Check if the line contains a PROJ.4 definition
         if next {
             output.push_str(line.trim());
@@ -219,9 +217,6 @@ fn proj_parse_crs(text: &str) -> Result<String, String> {
             next = true;
         }
     }
-
-    // Ensure the command completes successfully
-    let _ = child.wait().unwrap();
 
     match next {
         false => Err("Could not find proj string for given CRS.".into()),
@@ -246,12 +241,16 @@ fn proj_convert_crs(
 ) -> Result<Vec<Coord>, String> {
     let mut new_coords = Vec::<Coord>::new();
 
-    use std::io::BufRead;
     use std::io::Write;
     let proj_conv_str = format!("{src_crs} +to {dst_crs} -f %.4f")
         .split(" ")
         .map(|s| s.to_string())
         .collect::<Vec<String>>();
+
+    let mut values = Vec::<String>::new();
+    for i in 0..x.len() {
+        values.push(format!("{} {}", x[i], y[i]));
+    }
     let mut child = std::process::Command::new("cs2cs")
         .args(proj_conv_str)
         .stdout(std::process::Stdio::piped())
@@ -259,21 +258,15 @@ fn proj_convert_crs(
         .spawn()
         .unwrap();
 
-    let mut stdin = child.stdin.take().unwrap();
-
-    let mut values = Vec::<String>::new();
-    for i in 0..x.len() {
-        values.push(format!("{} {}", x[i], y[i]));
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all((values.join("\n") + "\n").as_bytes())
+            .unwrap();
     }
+    let output = child.wait_with_output().unwrap();
+    let parsed = String::from_utf8_lossy(&output.stdout);
 
-    stdin
-        .write_all((values.join("\n") + "\n").as_bytes())
-        .unwrap();
-    let stdout = child.stdout.take().expect("Failed to open stdout");
-    let reader = std::io::BufReader::new(stdout);
-    for line in reader.lines() {
-        let line = line.unwrap();
-
+    for line in parsed.lines() {
         let values: Vec<f64> = line
             .split_whitespace()
             .filter_map(|s| s.trim().parse::<f64>().ok())
@@ -289,7 +282,6 @@ fn proj_convert_crs(
         };
     }
 
-    child.wait().unwrap();
     Ok(new_coords)
 }
 
