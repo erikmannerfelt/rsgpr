@@ -35,7 +35,7 @@ impl Coord {
         }
     }
 
-    fn from_wgs84(self, crs: &UtmCrs) -> Self {
+    fn conv_from_wgs84(self, crs: &UtmCrs) -> Self {
         let (mut northing, easting, _) = utm::to_utm_wgs84(self.y, self.x, crs.zone as u8);
 
         // Edge case exceptions since the utm crate doesn't care about N/S
@@ -321,7 +321,7 @@ pub fn from_wgs84(coords: &[Coord], crs: &Crs) -> Result<Vec<Coord>, String> {
     match crs {
         Crs::Utm(utm) => {
             for coord in coords {
-                new_coords.push(coord.from_wgs84(utm));
+                new_coords.push(coord.conv_from_wgs84(utm));
             }
         }
         Crs::Proj(proj_str) => {
