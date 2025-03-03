@@ -545,7 +545,7 @@ mod tests {
         std::fs::write(&cor_path, fake_cor_text()).unwrap();
 
         // Load it and "convert" (or rather don't convert) the CRS to WGS84
-        let locations = load_cor(&cor_path, "EPSG:4326").unwrap();
+        let locations = load_cor(&cor_path, Some(&"EPSG:4326".to_string())).unwrap();
 
         // Check that the trace number is now zero based, and that the other fields were read
         // correctly
@@ -565,7 +565,7 @@ mod tests {
         assert_eq!(locations.cor_points[1].northing, -78.0);
 
         // Load the data again but convert it to WGS84 UTM Zone 33N
-        let locations = load_cor(&cor_path, "EPSG:32633").unwrap();
+        let locations = load_cor(&cor_path, Some(&"EPSG:32633".to_string())).unwrap();
 
         // Check that the coordinates are within reason
         assert!(
@@ -628,7 +628,7 @@ mod tests {
         std::fs::write(&cor_path, fake_cor_text()).unwrap();
 
         // Load it and "convert" (or rather don't convert) the CRS to WGS84
-        let locations = load_cor(&cor_path, "EPSG:4326").unwrap();
+        let locations = load_cor(&cor_path, Some(&"EPSG:4326".to_string())).unwrap();
 
         let out_dir = temp_dir.path().to_path_buf();
         let out_path = out_dir.join("track.csv");
