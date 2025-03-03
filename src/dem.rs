@@ -21,17 +21,18 @@ pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .unwrap();
+        .map_err(|e| format!("Call error when spawning process: {e}"))?;
 
     let mut values = Vec::<String>::new();
     for coord in coords_wgs84 {
         values.push(format!("{} {}", coord.x, coord.y));
     }
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all((values.join("\n") + "\n").as_bytes())
-            .unwrap();
-    }
+    child
+        .stdin
+        .take()
+        .ok_or("Call error: stdin could not be bound".to_string())?
+        .write_all((values.join("\n") + "\n").as_bytes())
+        .map_err(|e| format!("Call error writing to stdin: {e}"))?;
 
     let output = child.wait_with_output().unwrap();
     let parsed = String::from_utf8_lossy(&output.stdout);
