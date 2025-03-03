@@ -38,7 +38,9 @@ pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>
         .write_all((values.join("\n") + "\n").as_bytes())
         .map_err(|e| format!("Call error writing to stdin: {e}"))?;
 
-    let output = child.wait_with_output().unwrap();
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Call process error: {e}"))?;
     let parsed = String::from_utf8_lossy(&output.stdout);
 
     let mut elevations = Vec::<f32>::new();
@@ -48,7 +50,7 @@ pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>
                 line.replace("<Value>", "")
                     .replace("</Value>", "")
                     .parse()
-                    .unwrap(), // .map_err(|e| Err(format!("Error parsing <Value>: {e:?}").to_string()))?,
+                    .map_err(|e| format!("Error parsing <Value>: {e}"))?,
             );
         } else if line.contains("<Alert>") {
             let error = line.replace("<Alert>", "").replace("</Alert>", "");
