@@ -98,6 +98,13 @@ mod tests {
                 Ok(422.0352_f32),
             ),
             (
+                Coord {
+                    x: 553820.,
+                    y: 8639550.,
+                },
+                Ok(423.3629_f32),
+            ),
+            (
                 Coord { x: 0., y: 8639550. },
                 Err("Location is off this file".to_string()),
             ),
