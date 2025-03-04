@@ -52,7 +52,7 @@ impl GPRMeta {
     ///
     /// # Arguments
     /// - `projected_crs`: The CRS to project coordinates into
-    pub fn find_cor(&self, projected_crs: &str) -> Result<GPRLocation, Box<dyn Error>> {
+    pub fn find_cor(&self, projected_crs: Option<&String>) -> Result<GPRLocation, Box<dyn Error>> {
         io::load_cor(&self.rd3_filepath.with_extension("cor"), projected_crs)
     }
 }
@@ -253,25 +253,28 @@ impl GPRLocation {
         }
     }
 
-    fn xy_coords(&self) -> Array2<f64> {
-        let mut data: Vec<f64> = Vec::new();
+    pub fn get_dem_elevations(&mut self, dem_path: &Path) -> Result<(), String> {
+        let coords = self
+            .cor_points
+            .iter()
+            .map(|cor| crate::coords::Coord {
+                x: cor.easting,
+                y: cor.northing,
+            })
+            .collect::<Vec<crate::coords::Coord>>();
 
-        for point in &self.cor_points {
-            data.push(point.easting);
-            data.push(point.northing);
-        }
+        let coords_wgs84 =
+            crate::coords::to_wgs84(&coords, &crate::coords::Crs::from_user_input(&self.crs)?)?;
+        let elev = dem::sample_dem(dem_path, &coords_wgs84)?;
 
-        Array2::<f64>::from_shape_vec((self.cor_points.len(), 2), data).unwrap()
-    }
-
-    pub fn get_dem_elevations(&mut self, dem_path: &Path) {
-        let elev = dem::read_elevations(dem_path, self.xy_coords()).unwrap();
-
-        for i in 0..self.cor_points.len() {
-            self.cor_points[i].altitude = elev[i] as f64;
+        for (i, point) in self.cor_points.iter_mut().enumerate() {
+            if let Some(e) = elev.get(i) {
+                point.altitude = *e as f64;
+            }
         }
 
         self.correction = LocationCorrection::Dem(dem_path.to_path_buf());
+        Ok(())
     }
 
     pub fn to_csv(&self, filepath: &Path) -> Result<(), std::io::Error> {
@@ -1430,7 +1433,7 @@ pub struct RunParams {
     pub dem_path: Option<PathBuf>,
     pub cor_path: Option<PathBuf>,
     pub medium_velocity: f32,
-    pub crs: String,
+    pub crs: Option<String>,
     pub quiet: bool,
     pub track_path: Option<Option<PathBuf>>,
     pub steps: Vec<String>,
@@ -1462,8 +1465,8 @@ pub fn run(params: RunParams) -> Result<Vec<GPR>, Box<dyn Error>> {
         // Load the GPR location data
         // If the "--cor" argument was used, load from there. Otherwise, try to find a ".cor" file
         let mut gpr_locations = match &params.cor_path {
-            Some(fp) => io::load_cor(fp, &params.crs)?,
-            None => match gpr_meta.find_cor(&params.crs) {
+            Some(fp) => io::load_cor(fp, params.crs.as_ref())?,
+            None => match gpr_meta.find_cor(params.crs.as_ref()) {
                 Ok(v) => Ok(v),
                 Err(e) => match params.filepaths.len() > 1 {
                     true => {
@@ -1477,7 +1480,7 @@ pub fn run(params: RunParams) -> Result<Vec<GPR>, Box<dyn Error>> {
 
         // If a "--dem" was given, substitute elevations using said DEM
         if let Some(dem_path) = &params.dem_path {
-            gpr_locations.get_dem_elevations(dem_path);
+            gpr_locations.get_dem_elevations(dem_path)?;
         };
 
         // Construct the output filepath. If one was given, use that.
@@ -1735,10 +1738,21 @@ mod tests {
         crs: Option<String>,
         correction: Option<LocationCorrection>,
     ) -> GPRLocation {
+        let cor_points = make_cor_points(n_points, spacing.unwrap_or(1.));
+        let crs = match crs {
+            Some(c) => c,
+            None => {
+                let first_coord = crate::coords::Coord {
+                    x: cor_points[0].easting,
+                    y: cor_points[0].northing,
+                };
+                crate::coords::UtmCrs::optimal_crs(&first_coord).to_epsg_str()
+            }
+        };
         GPRLocation {
-            cor_points: make_cor_points(n_points, spacing.unwrap_or(1.)),
+            cor_points,
             correction: correction.unwrap_or(LocationCorrection::None),
-            crs: crs.unwrap_or("EPSG:32633".to_string()),
+            crs,
         }
     }
 

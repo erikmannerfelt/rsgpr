@@ -96,12 +96,14 @@ pub fn load_rad(filepath: &Path, medium_velocity: f32) -> Result<gpr::GPRMeta, B
 /// - The file could not be found/read
 /// - `projected_crs` is not understood by PROJ
 /// - The contents of the file could not be parsed.
-pub fn load_cor(filepath: &Path, projected_crs: &str) -> Result<gpr::GPRLocation, Box<dyn Error>> {
+pub fn load_cor(
+    filepath: &Path,
+    projected_crs: Option<&String>,
+) -> Result<gpr::GPRLocation, Box<dyn Error>> {
     let content = std::fs::read_to_string(filepath)?;
 
-    let transformer = proj::Proj::new_known_crs("EPSG:4326", projected_crs, None)?;
-
     // Create a new empty points vec
+    let mut coords = Vec::<crate::coords::Coord>::new();
     let mut points: Vec<gpr::CorPoint> = Vec::new();
     // Loop over the lines of the file and parse CorPoints from it
     for line in content.lines() {
@@ -126,21 +128,43 @@ pub fn load_cor(filepath: &Path, projected_crs: &str) -> Result<gpr::GPRLocation
             longitude *= -1.;
         };
 
-        // Project the coordinate to eastings/northings
-        let (easting, northing) = transformer.convert((longitude, latitude))?;
+        coords.push(crate::coords::Coord {
+            x: longitude,
+            y: latitude,
+        });
 
         // Parse the date and time columns into datetime, then convert to seconds after UNIX epoch.
         let datetime =
             chrono::DateTime::parse_from_rfc3339(&format!("{}T{}+00:00", data[1], data[2]))?
                 .timestamp() as f64;
 
+        // Coordinates are 0 right now. That's fixed right below
         points.push(gpr::CorPoint {
             trace_n: (data[0].parse::<i64>()? - 1) as u32, // The ".cor"-files are 1-indexed whereas this is 0-indexed
             time_seconds: datetime,
-            easting,
-            northing,
+            easting: 0.,
+            northing: 0.,
             altitude: data[7].parse()?,
         });
+    }
+
+    if points.is_empty() {
+        return Err(format!("Could not parse location data from: {:?}", filepath).into());
+    }
+
+    let projected_crs = match projected_crs {
+        Some(s) => s.to_string(),
+        None => crate::coords::UtmCrs::optimal_crs(&coords[0]).to_epsg_str(),
+    };
+    for (i, coord) in crate::coords::from_wgs84(
+        &coords,
+        &crate::coords::Crs::from_user_input(&projected_crs)?,
+    )?
+    .iter()
+    .enumerate()
+    {
+        points[i].easting = coord.x;
+        points[i].northing = coord.y;
     }
 
     if !points.is_empty() {
@@ -521,7 +545,7 @@ mod tests {
         std::fs::write(&cor_path, fake_cor_text()).unwrap();
 
         // Load it and "convert" (or rather don't convert) the CRS to WGS84
-        let locations = load_cor(&cor_path, "EPSG:4326").unwrap();
+        let locations = load_cor(&cor_path, Some(&"EPSG:4326".to_string())).unwrap();
 
         // Check that the trace number is now zero based, and that the other fields were read
         // correctly
@@ -541,7 +565,7 @@ mod tests {
         assert_eq!(locations.cor_points[1].northing, -78.0);
 
         // Load the data again but convert it to WGS84 UTM Zone 33N
-        let locations = load_cor(&cor_path, "EPSG:32633").unwrap();
+        let locations = load_cor(&cor_path, Some(&"EPSG:32633".to_string())).unwrap();
 
         // Check that the coordinates are within reason
         assert!(
@@ -604,7 +628,7 @@ mod tests {
         std::fs::write(&cor_path, fake_cor_text()).unwrap();
 
         // Load it and "convert" (or rather don't convert) the CRS to WGS84
-        let locations = load_cor(&cor_path, "EPSG:4326").unwrap();
+        let locations = load_cor(&cor_path, Some(&"EPSG:4326".to_string())).unwrap();
 
         let out_dir = temp_dir.path().to_path_buf();
         let out_path = out_dir.join("track.csv");
