@@ -102,12 +102,12 @@ impl Crs {
                 let utm_zone: usize = proj_str
                     .split("+zone=")
                     .last()
-                    .unwrap()
+                    .ok_or("Expected '+zone=' in proj4 string")?
                     .split(" ")
                     .next()
-                    .unwrap()
+                    .ok_or("Expected whitespace after '+zone=<..>' in proj4 string")?
                     .parse()
-                    .unwrap();
+                    .map_err(|e| format!("Could not parse '+zone=' value in proj4 string: {e}"))?;
                 return Ok(Crs::Utm(UtmCrs {
                     zone: utm_zone,
                     north: !proj_str.contains("+south"),
@@ -119,8 +119,8 @@ impl Crs {
 
         Err(format!(
             "Could not read CRS.\nInternal error: {}.\nProj error: {}",
-            utm_result.err().unwrap(),
-            proj_result.err().unwrap()
+            utm_result.err().unwrap_or("None".into()),
+            proj_result.err().unwrap_or("None".into())
         ))
     }
 }
@@ -198,9 +198,11 @@ fn proj_parse_crs(text: &str) -> Result<String, String> {
         .arg(text)
         .stdout(std::process::Stdio::piped())
         .spawn()
-        .unwrap();
+        .map_err(|e| format!("Call error when spawning process: {e}"))?;
 
-    let result = child.wait_with_output().unwrap();
+    let result = child
+        .wait_with_output()
+        .map_err(|e| format!("Call process error: {e}"))?;
     let parsed = String::from_utf8_lossy(&result.stdout);
 
     let mut output = String::new();
@@ -256,14 +258,18 @@ fn proj_convert_crs(
         .stdout(std::process::Stdio::piped())
         .stdin(std::process::Stdio::piped())
         .spawn()
-        .unwrap();
+        .map_err(|e| format!("Call error when spawning process: {e}"))?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all((values.join("\n") + "\n").as_bytes())
-            .unwrap();
-    }
-    let output = child.wait_with_output().unwrap();
+    child
+        .stdin
+        .take()
+        .ok_or("Call error: stdin could not be bound".to_string())?
+        .write_all((values.join("\n") + "\n").as_bytes())
+        .map_err(|e| format!("Call error writing to stdin: {e}"))?;
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Call process error: {e}"))?;
     let parsed = String::from_utf8_lossy(&output.stdout);
 
     for line in parsed.lines() {
