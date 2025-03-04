@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::coords::Coord;
 
 fn get_gdal_version() -> Result<String, String> {
-    let child = std::process::Command::new("gdal-config")
+    let child = std::process::Command::new("gdalinfo")
         .arg("--version")
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -16,7 +16,15 @@ fn get_gdal_version() -> Result<String, String> {
         .map_err(|e| format!("Call failed: {e}"))?;
 
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        let mut version = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .to_string()
+            .replace("GDAL ", "");
+
+        if let Some((first, _)) = version.split_once(",") {
+            version = first.trim().to_string();
+        }
+        Ok(version)
     } else if output.stderr.is_empty() {
         Err("Unknown error getting GDAL version.".to_string())
     } else {
