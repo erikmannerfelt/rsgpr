@@ -17,15 +17,13 @@ fn get_gdal_version() -> Result<String, String> {
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else if output.stderr.is_empty() {
+        Err("Unknown error getting GDAL version.".to_string())
     } else {
-        if output.stderr.is_empty() {
-            Err("Unknown error getting GDAL version.".to_string())
-        } else {
-            Err(format!(
-                "Error getting GDAL version: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ))
-        }
+        Err(format!(
+            "Error getting GDAL version: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
@@ -47,7 +45,7 @@ fn supports_interpolation() -> Result<bool, String> {
         return Ok(minor >= 10);
     }
 
-    return Err(error_msg);
+    Err(error_msg)
 }
 
 pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>, String> {
