@@ -9,7 +9,13 @@ fn get_gdal_version() -> Result<String, String> {
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Call error when spawning process: {e}"))?;
+        .map_err(|e| {
+            if e.to_string().contains("No such file or directory") {
+                format!("GDAL (gdalinfo) cannot be found / is not installed: {e}")
+            } else {
+                format!("Call error when spawning process: {e}")
+            }
+        })?;
 
     let output = child
         .wait_with_output()
@@ -137,13 +143,16 @@ pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>
 #[cfg(test)]
 mod tests {
 
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use crate::coords::{Coord, Crs, UtmCrs};
 
-    #[test]
-    fn test_read_elevations() {
-        let coords_elevs = vec![
+    fn get_dem_path() -> PathBuf {
+        Path::new("assets/test_dem_dtm20_mettebreen.tif").to_path_buf()
+    }
+
+    fn make_test_coords() -> Vec<(Coord, Result<f32, String>)> {
+        vec![
             (
                 Coord {
                     x: 553802.,
@@ -162,7 +171,13 @@ mod tests {
                 Coord { x: 0., y: 8639550. },
                 Err("Location is off this file".to_string()),
             ),
-        ];
+        ]
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_read_elevations() {
+        let coords_elevs = make_test_coords();
         let working_coords = coords_elevs
             .iter()
             .filter(|(_c, e)| e.is_ok())
@@ -177,19 +192,19 @@ mod tests {
             north: true,
         });
 
-        let dem_path = Path::new("assets/test_dem_dtm20_mettebreen.tif");
+        let dem_path = get_dem_path();
 
         println!("Sampling DEM");
         let coords_wgs84 = crate::coords::to_wgs84(&working_coords, &crs).unwrap();
-        super::sample_dem(dem_path, &coords_wgs84).unwrap();
+        super::sample_dem(&dem_path, &coords_wgs84).unwrap();
 
         let coords_wgs84 = crate::coords::to_wgs84(&all_coords, &crs).unwrap();
-        super::sample_dem(dem_path, &coords_wgs84).err().unwrap();
+        super::sample_dem(&dem_path, &coords_wgs84).err().unwrap();
 
         for (coord, expected) in coords_elevs {
             let coord_wgs84 = crate::coords::to_wgs84(&[coord], &crs).unwrap();
 
-            let result = super::sample_dem(dem_path, &coord_wgs84);
+            let result = super::sample_dem(&dem_path, &coord_wgs84);
 
             if let Ok(expected_elevation) = expected {
                 if !super::supports_interpolation().unwrap() {
@@ -212,10 +227,41 @@ mod tests {
                 }
             }
         }
-        let wrong_path = Path::new("assets/test_dem_dtm20_mettebreen.tiffffff");
-        assert!(super::sample_dem(wrong_path, &coords_wgs84)
+        let wrong_path = dem_path.with_extension("tiffffff");
+        assert!(super::sample_dem(&wrong_path, &coords_wgs84)
             .err()
             .unwrap()
             .contains("No such file or directory"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_no_gdal_failure() {
+        let crs = Crs::Utm(UtmCrs {
+            zone: 33,
+            north: true,
+        });
+
+        let working_coords: Vec<Coord> = make_test_coords().iter().map(|(c, _)| *c).collect();
+
+        let dem_path = get_dem_path();
+
+        println!("Sampling DEM");
+        let coords_wgs84 = crate::coords::to_wgs84(&working_coords, &crs).unwrap();
+        // super::sample_dem(&dem_path, &coords_wgs84, None).unwrap();
+        // let original_path = std::env::var("PATH").unwrap();
+        // let temp_path = "/some/empty/directory";
+        // std::env::set_var("PATH", temp_path);
+
+        temp_env::with_vars(vec![("PATH", Option::<&str>::None)], || {
+            let res = super::sample_dem(&dem_path, &coords_wgs84);
+            assert!(res
+                .err()
+                .unwrap()
+                .contains("GDAL (gdalinfo) cannot be found / is not installed"));
+        });
+
+        // Restore the original PATH
+        // std::env::set_var("PATH", original_path);
     }
 }

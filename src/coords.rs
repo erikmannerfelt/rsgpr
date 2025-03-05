@@ -198,7 +198,13 @@ fn proj_parse_crs(text: &str) -> Result<String, String> {
         .arg(text)
         .stdout(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Call error when spawning process: {e}"))?;
+        .map_err(|e| {
+            if e.to_string().contains("No such file or directory") {
+                format!("PROJ (projinfo) cannot be found / is not installed: {e}")
+            } else {
+                format!("Call error when spawning process: {e}")
+            }
+        })?;
 
     let result = child
         .wait_with_output()
@@ -376,6 +382,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_crs_from_user() {
         for (crs_str, expected) in make_test_cases() {
             let _parsed_proj = super::proj_parse_crs(&crs_str).unwrap();
@@ -388,6 +395,43 @@ mod tests {
             assert_eq!(parsed.type_id(), expected.type_id());
             assert_eq!(parsed, expected);
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_crs_noproj() {
+        // This test simulates machines without PROJ installed. UTM CRSes should work but not others.
+        temp_env::with_vars(vec![("PATH", Option::<&str>::None)], || {
+            // This "complex" CRS should fail
+            let res = super::Crs::from_user_input("EPSG:3006");
+            assert!(res
+                .err()
+                .unwrap()
+                .contains("PROJ (projinfo) cannot be found / is not installed"));
+
+            // A UTM CRS should still work.
+            let parsed = super::Crs::from_user_input("EPSG:32633").unwrap();
+
+            if let Crs::Utm(crs) = &parsed {
+                assert_eq!(crs.zone, 33);
+                assert_eq!(crs.north, true);
+            } else {
+                panic!("Wrong type of parsed CRS: {parsed:?}");
+            }
+            let coords = vec![
+                Coord { x: 15., y: 78. },
+                Coord { x: 0., y: 1. },
+                Coord { x: 15., y: -78. },
+            ];
+            let conv = super::from_wgs84(&coords, &parsed).unwrap();
+            let conv_back = super::to_wgs84(&conv, &parsed).unwrap();
+
+            for i in 0..conv_back.len() {
+                println!("{:?} -> {:?} -> {:?}", coords[i], conv[i], conv_back[i]);
+
+                assert!(coords_approx_eq(&coords[i], &conv_back[i], 0.01));
+            }
+        });
     }
 
     #[test]
@@ -434,6 +478,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_crs_convert() {
         let coords = vec![
             Coord { x: 15., y: 78. },
