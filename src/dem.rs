@@ -254,6 +254,10 @@ mod tests {
         // std::env::set_var("PATH", temp_path);
 
         temp_env::with_vars(vec![("PATH", Option::<&str>::None)], || {
+            if super::get_gdal_version().is_ok() {
+                eprintln!("WARNING: Could not properly unset the GDAL location. Skipping test.");
+                return;
+            };
             let res = super::sample_dem(&dem_path, &coords_wgs84);
             assert!(res
                 .err()
