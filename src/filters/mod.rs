@@ -73,7 +73,6 @@ pub fn normalized_bandpass<T: Float + ButterworthBandpass<T>>(
 mod tests {
     use biquad::Biquad;
     use ndarray::{Array2, AssignElem};
-    use ndarray_stats::DeviationExt;
 
     #[test]
     fn test_abslog() {

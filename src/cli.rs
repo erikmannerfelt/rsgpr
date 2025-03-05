@@ -39,8 +39,8 @@ pub struct Args {
     dem: Option<PathBuf>,
 
     /// Which coordinate reference system to project coordinates in.
-    #[clap(long, default_value = "EPSG:32633")]
-    crs: String,
+    #[clap(long)]
+    crs: Option<String>,
 
     /// Export the location track to a comma separated values (CSV) file. Defaults to the output filename location and stem +
     /// "_track.csv"

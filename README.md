@@ -16,8 +16,8 @@ This is still an early WIP, and currently only works with Malå (.rd3) radar for
 
 #### Requirements
 - `cargo` for installing rust projects
-- `gdal` bindings. For Debian or derivatives thereof, this means `libgdal-dev`.
-- `proj` bindings.
+- `gdal` (optional, for sampling heights from DEMs). For Debian or derivatives, this means `gdal-bin`.
+- `proj` (optional, for CRS support other than WGS84 UTM Zones). For Debian or derivatives, this means `proj-bin`.
 
 Using cargo, `rsgpr` can be installed from the repo (after installing the requirements):
 ```bash
