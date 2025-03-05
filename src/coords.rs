@@ -404,15 +404,13 @@ mod tests {
         temp_env::with_vars(vec![("PATH", Option::<&str>::None)], || {
             // This "complex" CRS should fail
             let res = super::Crs::from_user_input("EPSG:3006");
-            if !res
-                .err()
-                .unwrap()
-                .contains("PROJ (projinfo) cannot be found / is not installed")
-            {
+
+            if let Err(msg) = res {
+                assert!(msg.contains("PROJ (projinfo) cannot be found / is not installed"))
+            } else {
                 eprintln!("WARNING: Could not properly unset the PROJ location. Skipping test.");
                 return;
             }
-
             // A UTM CRS should still work.
             let parsed = super::Crs::from_user_input("EPSG:32633").unwrap();
 
