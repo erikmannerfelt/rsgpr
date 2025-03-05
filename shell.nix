@@ -14,6 +14,7 @@ pkgs.mkShell {
     clippy
     proj
     gdal
+    netcdf
   ];
 
   shellHook = ''
