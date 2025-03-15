@@ -967,7 +967,7 @@ impl GPR {
                 .data
                 .slice_axis(Axis(0), Slice::new(i, Some(i + step), step));
 
-            let new_att = slice.mapv(|a| a.abs().log10()).mean().unwrap();
+            let new_att = slice.mapv(|a| a.abs().log10()).mean().unwrap() * 20.;
             if let Some(old) = old_att {
                 attenuations.push(old - new_att);
             }
@@ -976,7 +976,8 @@ impl GPR {
 
         let median_att = tools::quantiles(&attenuations, &[0.5], None)[0];
 
-        let slope = (median_att.abs() / ((self.height() as f32) / (n_bins as f32))).sqrt()
+        let slope = (median_att.abs()
+            / (self.vertical_resolution_ns() * (self.height() as f32) / (n_bins as f32)))
             * median_att.signum();
 
         self.log_event(
@@ -990,16 +991,17 @@ impl GPR {
     pub fn gain(&mut self, factor: f32) {
         let start_time = SystemTime::now();
 
+        let ns_per_trace = self.vertical_resolution_ns();
         for i in 0..self.height() as isize {
             let mut view = self
                 .data
                 .slice_axis_mut(Axis(0), Slice::new(i, Some(i + 1), 1_isize));
 
-            view *= 10_f32.powf(factor * (i as f32).sqrt());
+            view *= 10_f32.powf(factor * (i as f32) * ns_per_trace / 20.);
         }
         self.log_event(
             "gain",
-            &format!("Applied gain of *= 10^({factor} * sqrt(index))",),
+            &format!("Applied gain of {factor} dB / ns (TWT)",),
             start_time,
         );
     }
@@ -1678,7 +1680,7 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
         ["normalize_horizontal_magnitudes", "Normalize the magnitudes of the traces in the horizontal axis. This removes or reduces horizontal banding. The uppermost samples of the trace can be excluded, either by sample number (integer; e.g. 'normalize_horizontal_magnitudes(300)') or by a fraction of the trace (float; e.g. 'normalize_horizontal_magnitudes(0.3)'). Default: 0.3"],
         ["dewow", "Subtract the horizontal moving average magnitude for each trace. This reduces artefacts that are consistent among every trace. The averaging window can be set, e.g. 'dewow(10)'. Default: 5"],
         ["auto_gain", "Automatically determine the best gain factor and apply it. The data are binned vertically and the mean absolute deviation of the values is used as a proxy for signal attenuation. The median attenuation in decibel volts is given to the gain filter. The amounts of bins can be given, e.g. 'auto_gain(100). Default: 100"],
-        ["gain", "Multiply the magnitude as a function of depth. This is most often used to correct for signal attenuation with time/distance. Gain is applied by: '10 ^(gain * sqrt(sample_index))' where gain is the given gain factor and sample_index is the zero-based index of the sample from the top. Examples: gain(0.1). No default value."],
+        ["gain", "Multiply the magnitude as a function of depth. This is most often used to correct for signal attenuation with time/distance. Gain is applied as: '10 ^(gain * twt / 20)' (dB / ns) where gain is the given gain factor and twt is the two-way travel time of the signal. Examples: gain(0.002). No default value."],
         ["kirchhoff_migration2d", "Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data. The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the sum of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions."],
         ["abslog", "Run a log10 operation on the absolute values (log10(abs(data))), converting it to a logarithmic scale. This is useful for visualisation. Before conversion, the data are added with the 1st percentile (absolute) value in the dataset to avoid log10(0) == inf."],
         ["siglog", "Run a log10 operation on absolute values and then account for the sign. Values smaller than the set minimum magnitude are truncated to zero. E.g. with an exponent offset of 0: 1000 -> 3, -1000 -> -3, 0.001 -> 0. The argument specifies the exponent offset to apply to allow for values smaller than +-1 (e.g. 10e-1). Default: -1"],
