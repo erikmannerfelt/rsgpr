@@ -302,6 +302,9 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     // Add the data to the file
     {
         let mut data = file.add_variable::<f32>("data", &["y", "x"])?;
+        data.set_compression(5, true)?;
+        data.set_chunking(&[1024, 1024])?;
+
         data.put_values(
             &gpr.data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(),
             ..,
@@ -317,6 +320,9 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
         let height = topo_data.shape()[0];
         file.add_dimension("y2", height)?;
         let mut data2 = file.add_variable::<f32>("data_topographically_corrected", &["y2", "x"])?;
+        data2.set_compression(5, true)?;
+        data2.set_chunking(&[1024, 1024])?;
+
         data2.put_values(
             &topo_data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(),
             ..,
