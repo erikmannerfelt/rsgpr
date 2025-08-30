@@ -36,11 +36,8 @@ pub fn normalized_bandpass<T: Float>(
     high_cutoff: T,
 ) -> Result<(), String> {
     for mut col in data.columns_mut() {
-        // Work on an owned 1D array, apply the new filter, then write back.
-        let mut tmp = col.to_owned();
-        bandpass::bandpass_constant_peak(&mut tmp, low_cutoff, high_cutoff, None, None)
+        bandpass::bandpass_constant_peak(&mut col, low_cutoff, high_cutoff, None, None)
             .map_err(|e| e.to_string())?;
-        col.assign(&tmp);
     }
     Ok(())
 }

@@ -1,4 +1,4 @@
-use ndarray::Array1;
+use ndarray::{ArrayBase, DataMut, Ix1};
 use num::Float;
 
 /// Design and run a constant‑peak (0 dB at center) band‑pass biquad using RBJ/W3C formulas,
@@ -27,8 +27,8 @@ use num::Float;
 /// - Filter is applied in **Direct‑Form II Transposed** for good numerical behavior.
 ///
 /// (RBJ/W3C “Audio EQ Cookbook”)
-pub fn bandpass_constant_peak<T: Float>(
-    data: &mut Array1<T>,
+pub fn bandpass_constant_peak<T: Float, S: DataMut<Elem = T>>(
+    data: &mut ArrayBase<S, Ix1>,
     low_cutoff: T,
     high_cutoff: T,
     center_frequency: Option<T>,
