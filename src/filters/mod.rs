@@ -4,6 +4,8 @@ use num::Float;
 
 use crate::tools;
 
+pub mod bandpass;
+
 pub fn abslog<T: Float>(data: &mut Array2<T>) {
     data.mapv_inplace(|v| v.abs());
 
