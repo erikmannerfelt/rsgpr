@@ -23,7 +23,6 @@ utm = "0.1.6"  # More UTM zone conversion functions
 glob = "0.3.1"
 parse_duration = "2.1.1"
 num = "0.4.0"
-biquad = "0.5.0"  # For frequency (e.g bandpass) filters
 enterpolation = "0.2"
 
 [dev-dependencies]

@@ -531,7 +531,6 @@ impl GPR {
 
     pub fn bandpass(&mut self, low_cutoff: f32, high_cutoff: f32) -> Result<(), String> {
         let start_time = SystemTime::now();
-
         if !(0. ..=1.).contains(&low_cutoff) {
             return Err(format!(
                 "Normalized low cutoff needs to be in the range 0-1 (provided: {low_cutoff})"
@@ -543,13 +542,13 @@ impl GPR {
             ));
         }
         if low_cutoff >= high_cutoff {
-            return Err(format!("Normalized low cutoff ({low_cutoff}) needs to be smaller than the high cutoff ({high_cutoff})."));
+            return Err(format!(
+            "Normalized low cutoff ({low_cutoff}) needs to be smaller than the high cutoff ({high_cutoff})."
+        ));
         }
 
-        match filters::normalized_bandpass(&mut self.data, low_cutoff, high_cutoff) {
-            Ok(()) => (),
-            Err(e) => return Err(format!("Error in bandpass function: {:?}", e)),
-        }
+        filters::normalized_bandpass(&mut self.data, low_cutoff, high_cutoff)
+            .map_err(|e| format!("Error in bandpass function: {e}"))?;
 
         self.log_event(
             "bandpass",
