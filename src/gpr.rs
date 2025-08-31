@@ -916,7 +916,7 @@ impl GPR {
 
         self.data
             .slice_axis(Axis(0), Slice::new(mean_peak_spacing, None, 1))
-            .mapv(|v| v.min(0.) * -1.)
+            .mapv(|v| -v.min(0.))
             .assign_to(new_data.slice_axis_mut(
                 Axis(0),
                 Slice::new(0, Some(self.height() as isize - mean_peak_spacing), 1),
