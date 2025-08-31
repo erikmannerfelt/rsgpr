@@ -17,6 +17,7 @@ const DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF: f32 = 0.3;
 const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
 const DEFAULT_BANDPASS_LOW_CUTOFF: f32 = 0.1;
 const DEFAULT_BANDPASS_HIGH_CUTOFF: f32 = 0.9;
+const DEFAULT_BANDPASS_Q: f32 = 0.707;
 const DEFAULT_SIGLOG_MINVAL_LOG10: f32 = -1.;
 
 /// Metadata associated with a GPR dataset
@@ -516,12 +517,26 @@ impl GPR {
                 tools::parse_option::<f32>(step_name, 0)?.unwrap_or(DEFAULT_EMPTY_TRACE_STRENGTH);
 
             self.remove_empty_traces(strength)?;
+        } else if step_name.contains("bandpass_mhz") {
+            let error_msg =
+                "Must provide lower and upper cutoff frequencies (e.g. bandpass_mhz(50 150)";
+            let low_cutoff = tools::parse_option(step_name, 0)?.ok_or(error_msg)?;
+            let high_cutoff = tools::parse_option(step_name, 1)?.ok_or(error_msg)?;
+            let q: f32 = tools::parse_option(step_name, 2)
+                .ok()
+                .flatten()
+                .unwrap_or(DEFAULT_BANDPASS_Q);
+            self.bandpass(low_cutoff, high_cutoff, q, false)?;
         } else if step_name.contains("bandpass") {
             let low_cutoff =
                 tools::parse_option(step_name, 0)?.unwrap_or(DEFAULT_BANDPASS_LOW_CUTOFF);
             let high_cutoff =
                 tools::parse_option(step_name, 1)?.unwrap_or(DEFAULT_BANDPASS_HIGH_CUTOFF);
-            self.bandpass(low_cutoff, high_cutoff)?;
+            let q: f32 = tools::parse_option(step_name, 2)
+                .ok()
+                .flatten()
+                .unwrap_or(DEFAULT_BANDPASS_Q);
+            self.bandpass(low_cutoff, high_cutoff, q, true)?;
         } else {
             return Err(format!("Step name not recognized: {}", step_name).into());
         }
@@ -529,36 +544,71 @@ impl GPR {
         Ok(())
     }
 
-    pub fn bandpass(&mut self, low_cutoff: f32, high_cutoff: f32) -> Result<(), String> {
+    pub fn bandpass(
+        &mut self,
+        low_cutoff: f32,
+        high_cutoff: f32,
+        q: f32,
+        normalized: bool,
+    ) -> Result<(), String> {
         let start_time = SystemTime::now();
 
-        if !(0. ..=1.).contains(&low_cutoff) {
+        if q <= 0. {
+            return Err(format!("Bandpass q needs to be above 0 (provided: {q})"));
+        }
+        if normalized {
+            if !(0. ..=1.).contains(&low_cutoff) {
+                return Err(format!(
+                    "Normalized low cutoff needs to be in the range 0-1 (provided: {low_cutoff})"
+                ));
+            }
+            if !(0. ..=1.).contains(&high_cutoff) {
+                return Err(format!(
+                    "Normalized high cutoff needs to be in the range 0-1 (provided: {high_cutoff})"
+                ));
+            }
+            if low_cutoff >= high_cutoff {
+                return Err(format!(
+                "Normalized low cutoff ({low_cutoff}) needs to be smaller than the high cutoff ({high_cutoff})."
+            ));
+            }
+        } else if low_cutoff >= high_cutoff {
             return Err(format!(
-                "Normalized low cutoff needs to be in the range 0-1 (provided: {low_cutoff})"
+                "Low cutoff ({low_cutoff}) needs to be smaller than the high cutoff ({high_cutoff})."
             ));
         }
-        if !(0. ..=1.).contains(&high_cutoff) {
-            return Err(format!(
-                "Normalized high cutoff needs to be in the range 0-1 (provided: {high_cutoff})"
-            ));
-        }
-        if low_cutoff >= high_cutoff {
-            return Err(format!("Normalized low cutoff ({low_cutoff}) needs to be smaller than the high cutoff ({high_cutoff})."));
+
+        for mut col in self.data.columns_mut() {
+            filters::bandpass::bandpass_hpf_then_lpf(
+                &mut col,
+                low_cutoff,
+                high_cutoff,
+                (!normalized).then_some(self.metadata.frequency),
+                Some(q),
+                true,
+            )?;
         }
 
-        match filters::normalized_bandpass(&mut self.data, low_cutoff, high_cutoff) {
-            Ok(()) => (),
-            Err(e) => return Err(format!("Error in bandpass function: {:?}", e)),
+        if normalized {
+            self.log_event(
+                "bandpass",
+                &format!(
+                    "Applied a normalized bandpass Butterworth filter ({:.3}-{:.3}, q={:.3})",
+                    low_cutoff, high_cutoff, q,
+                ),
+                start_time,
+            );
+        } else {
+            self.log_event(
+                "bandpass_mhz",
+                &format!(
+                    "Applied a bandpass Butterworth filter ({:.3}-{:.3} MHz, q={:.3})",
+                    low_cutoff, high_cutoff, q
+                ),
+                start_time,
+            );
         }
 
-        self.log_event(
-            "bandpass",
-            &format!(
-                "Applied a normalized bandpass Butterworth filter ({:.3}-{:.3})",
-                low_cutoff, high_cutoff
-            ),
-            start_time,
-        );
         Ok(())
     }
 
@@ -866,7 +916,7 @@ impl GPR {
 
         self.data
             .slice_axis(Axis(0), Slice::new(mean_peak_spacing, None, 1))
-            .mapv(|v| v.min(0.) * -1.)
+            .mapv(|v| -v.min(0.))
             .assign_to(new_data.slice_axis_mut(
                 Axis(0),
                 Slice::new(0, Some(self.height() as isize - mean_peak_spacing), 1),
@@ -1675,7 +1725,8 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
         ["remove_empty_traces", "Remove all traces that appear empty. Recommended to be run as the first filter if required!. The strength threshold (mean absolute trace value) can be tweaked. Example: 'remove_empty_traces(2)'. Default: 1."],
         ["zero_corr_max_peak", "Shift the location of the zero return time by finding the maximum row value. The peak is found for each trace individually."],
         ["zero_corr", "Shift the location of the zero return time by finding the first row where data appear. The correction can be tweaked to allow more or less data, e.g. 'zero_corr(0.9)'. Default: 1.0"],
-        ["bandpass", "Apply a bandpass Butterworth filter to each trace individually. The given frequencies are normalized (0: 0Hz, 1: Nyquist). Default: bandpass(0.1 0.9)"],
+        ["bandpass", "Apply a bandpass Butterworth filter to each trace individually. The given frequencies are normalized (0: 0Hz, 1: Nyquist). An optional strength (q) can be provided as a third argument (default 0.707). Default: bandpass(0.1 0.9)"],
+        ["bandpass_mhz", "Apply a bandpass Butterworth filter to each trace individually. An optional strength (q) can be provided as a third argument (default 0.707). The given frequencies are assumed to be in MHz."],
         ["equidistant_traces", "Make all traces equidistant by averaging them in a fixed horizontal grid. The step size is determined from the median moving velocity. Other step sizes in m can be given, e.g. 'equidistant_traces(2.)' for 2 m. Default: auto"],
         ["normalize_horizontal_magnitudes", "Normalize the magnitudes of the traces in the horizontal axis. This removes or reduces horizontal banding. The uppermost samples of the trace can be excluded, either by sample number (integer; e.g. 'normalize_horizontal_magnitudes(300)') or by a fraction of the trace (float; e.g. 'normalize_horizontal_magnitudes(0.3)'). Default: 0.3"],
         ["dewow", "Subtract the horizontal moving average magnitude for each trace. This reduces artefacts that are consistent among every trace. The averaging window can be set, e.g. 'dewow(10)'. Default: 5"],
