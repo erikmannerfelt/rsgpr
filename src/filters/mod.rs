@@ -26,7 +26,7 @@ pub fn siglog<T: Float, D: ndarray::Dimension>(data: &mut Array<T, D>, minval_lo
     data.mapv_inplace(|v| (v.abs().log10() - minval_log10).max(T::zero()) * v.signum());
 }
 
-/// Normalized band‑pass wrapper that applies the **new** RBJ/W3C constant‑peak
+/// Normalized band‑pass wrapper that applies the RBJ/W3C constant‑peak
 /// biquad per trace (column).
 ///
 /// `low_cutoff` and `high_cutoff` are normalized to Nyquist in (0,1).
