@@ -572,12 +572,10 @@ impl GPR {
                 "Normalized low cutoff ({low_cutoff}) needs to be smaller than the high cutoff ({high_cutoff})."
             ));
             }
-        } else {
-            if low_cutoff >= high_cutoff {
-                return Err(format!(
+        } else if low_cutoff >= high_cutoff {
+            return Err(format!(
                 "Low cutoff ({low_cutoff}) needs to be smaller than the high cutoff ({high_cutoff})."
             ));
-            }
         }
 
         for mut col in self.data.columns_mut() {

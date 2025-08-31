@@ -30,7 +30,7 @@ pub fn bandpass_hpf_then_lpf<T: Float, S: DataMut<Elem = T>>(
     if low_cutoff <= zero || high_cutoff <= zero {
         return Err("cutoffs must be positive");
     }
-    if !(low_cutoff < high_cutoff) {
+    if low_cutoff >= high_cutoff {
         return Err("low_cutoff must be < high_cutoff");
     }
 
@@ -52,7 +52,7 @@ pub fn bandpass_hpf_then_lpf<T: Float, S: DataMut<Elem = T>>(
             fs
         }
         None => {
-            if !(high_cutoff < one) {
+            if high_cutoff >= one {
                 return Err("in normalized mode, high_cutoff must be < 1.0 (Nyquist)");
             }
             two // Fs = 2 => Nyquist = 1
