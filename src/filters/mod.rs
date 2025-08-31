@@ -26,22 +26,6 @@ pub fn siglog<T: Float, D: ndarray::Dimension>(data: &mut Array<T, D>, minval_lo
     data.mapv_inplace(|v| (v.abs().log10() - minval_log10).max(T::zero()) * v.signum());
 }
 
-/// Normalized band‑pass wrapper that applies the RBJ/W3C constant‑peak
-/// biquad per trace (column).
-///
-/// `low_cutoff` and `high_cutoff` are normalized to Nyquist in (0,1).
-pub fn normalized_bandpass<T: Float>(
-    data: &mut Array2<T>,
-    low_cutoff: T,
-    high_cutoff: T,
-) -> Result<(), String> {
-    for mut col in data.columns_mut() {
-        bandpass::bandpass_constant_peak(&mut col, low_cutoff, high_cutoff, None, None)
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use ndarray::{Array2, AssignElem};

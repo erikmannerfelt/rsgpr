@@ -1273,6 +1273,7 @@ dependencies = [
  "netcdf",
  "noisy_float",
  "num 0.4.0",
+ "num-complex 0.2.4",
  "parse_duration",
  "rayon",
  "serial_test",

@@ -1,5 +1,187 @@
 use ndarray::{ArrayBase, DataMut, Ix1};
 use num::Float;
+use num_complex::Complex;
+
+/// Apply a band‑pass by running a **high‑pass at low_cutoff** then a **low‑pass at high_cutoff**.
+/// Two biquads total (4th‑order overall), much steeper skirts than a single RBJ band‑pass,
+/// with only two passes over the buffer.
+///
+/// Modes:
+/// - Absolute units: pass `Some(fs)`; cutoffs in same unit; require 0 < low < high < fs/2.
+/// - Normalized: pass `None` for `sample_rate`, and treat cutoffs in (0, 1) where 1 = Nyquist.
+///
+/// `q`: section damping (default ~0.707). `normalize_at_center`: if true, apply one constant gain so
+/// the response is ~0 dB at f0 = sqrt(low*high).
+///
+/// Coefficients follow RBJ/W3C cookbook HPF/LPF; filter is DF‑II‑Transposed for good numerics.
+/// See: W3C Audio EQ Cookbook; DF‑II‑T background.¹ ²
+pub fn bandpass_hpf_then_lpf<T: Float, S: DataMut<Elem = T>>(
+    data: &mut ArrayBase<S, Ix1>,
+    low_cutoff: T,
+    high_cutoff: T,
+    sample_rate: Option<T>,
+    q: Option<T>,
+    normalize_at_center: bool,
+) -> Result<(), &'static str> {
+    // ----- Validate -----
+    if !(low_cutoff.is_finite() && high_cutoff.is_finite()) {
+        return Err("cutoffs must be finite");
+    }
+    let zero = T::zero();
+    if low_cutoff <= zero || high_cutoff <= zero {
+        return Err("cutoffs must be positive");
+    }
+    if !(low_cutoff < high_cutoff) {
+        return Err("low_cutoff must be < high_cutoff");
+    }
+
+    let one = T::one();
+    let two = T::from(2.0).unwrap();
+    let pi = T::from(core::f64::consts::PI).unwrap();
+    let q = q.unwrap_or_else(|| T::from(1.0 / 2f64.sqrt()).unwrap()); // ~0.7071
+
+    // Normalized vs absolute
+    let fs = match sample_rate {
+        Some(fs) => {
+            if fs <= zero {
+                return Err("sample_rate must be positive");
+            }
+            let nyq = fs * T::from(0.5).unwrap();
+            if high_cutoff >= nyq {
+                return Err("high_cutoff must be < Nyquist");
+            }
+            fs
+        }
+        None => {
+            if !(high_cutoff < one) {
+                return Err("in normalized mode, high_cutoff must be < 1.0 (Nyquist)");
+            }
+            two // Fs = 2 => Nyquist = 1
+        }
+    };
+
+    // ----- Design HPF(low) and LPF(high) -----
+    let (b0_h, b1_h, b2_h, a1_h, a2_h) = design_hpf_rbj::<T>(low_cutoff, fs, q)?;
+    let (b0_l, b1_l, b2_l, a1_l, a2_l) = design_lpf_rbj::<T>(high_cutoff, fs, q)?;
+
+    // Optional: normalize ~0 dB at geometric center
+    let gain = if normalize_at_center {
+        let f0 = (low_cutoff * high_cutoff).sqrt();
+        let w = two * pi * (f0 / fs);
+        let h_hpf = biquad_h_ejw::<T>(w, b0_h, b1_h, b2_h, a1_h, a2_h);
+        let h_lpf = biquad_h_ejw::<T>(w, b0_l, b1_l, b2_l, a1_l, a2_l);
+        let mag = complex_abs(h_hpf * h_lpf);
+        if mag > T::from(1e-12).unwrap() {
+            one / mag
+        } else {
+            one
+        }
+    } else {
+        one
+    };
+
+    // ----- Run HPF then LPF (DF2‑T) -----
+    apply_biquad_df2t_in_place(data, b0_h, b1_h, b2_h, a1_h, a2_h);
+    apply_biquad_df2t_in_place(data, b0_l, b1_l, b2_l, a1_l, a2_l);
+
+    if gain != one {
+        for i in 0..data.len() {
+            data[i] = data[i] * gain;
+        }
+    }
+    Ok(())
+}
+
+/// RBJ/W3C HPF biquad with a0 normalized to 1 (case: Q).
+/// Returns (b0, b1, b2, a1, a2).
+fn design_hpf_rbj<T: Float>(f_c: T, fs: T, q: T) -> Result<(T, T, T, T, T), &'static str> {
+    let zero = T::zero();
+    if !(f_c > zero && fs > zero && q > zero) {
+        return Err("invalid params");
+    }
+    let one = T::one();
+    let two = T::from(2.0).unwrap();
+    let pi = T::from(core::f64::consts::PI).unwrap();
+
+    let w0 = two * pi * (f_c / fs);
+    let sw = w0.sin();
+    let cw = w0.cos();
+    let alpha = sw / (two * q);
+
+    let b0 = (one + cw) / two;
+    let b1 = -(one + cw);
+    let b2 = (one + cw) / two;
+    let a0 = one + alpha;
+    let a1 = -two * cw;
+    let a2 = one - alpha;
+
+    Ok((b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0))
+}
+
+/// RBJ/W3C LPF biquad with a0 normalized to 1 (case: Q).
+/// Returns (b0, b1, b2, a1, a2).
+fn design_lpf_rbj<T: Float>(f_c: T, fs: T, q: T) -> Result<(T, T, T, T, T), &'static str> {
+    let zero = T::zero();
+    if !(f_c > zero && fs > zero && q > zero) {
+        return Err("invalid params");
+    }
+    let one = T::one();
+    let two = T::from(2.0).unwrap();
+    let pi = T::from(core::f64::consts::PI).unwrap();
+
+    let w0 = two * pi * (f_c / fs);
+    let sw = w0.sin();
+    let cw = w0.cos();
+    let alpha = sw / (two * q);
+
+    let b0 = (one - cw) / two;
+    let b1 = one - cw;
+    let b2 = (one - cw) / two;
+    let a0 = one + alpha;
+    let a1 = -two * cw;
+    let a2 = one - alpha;
+
+    Ok((b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0))
+}
+
+/// Apply one biquad in‑place, Direct‑Form II Transposed, with a0 assumed 1.
+fn apply_biquad_df2t_in_place<T: Float, S: DataMut<Elem = T>>(
+    data: &mut ArrayBase<S, Ix1>,
+    b0: T,
+    b1: T,
+    b2: T,
+    a1: T,
+    a2: T,
+) {
+    let mut z1 = T::zero();
+    let mut z2 = T::zero();
+    for i in 0..data.len() {
+        let x = data[i];
+        let y = b0 * x + z1;
+        z1 = b1 * x - a1 * y + z2;
+        z2 = b2 * x - a2 * y;
+        data[i] = y;
+    }
+}
+
+/// H(e^{jw}) of a normalized (a0=1) biquad at angular frequency w.
+fn biquad_h_ejw<T: Float>(w: T, b0: T, b1: T, b2: T, a1: T, a2: T) -> Complex<T> {
+    // e^{-jw} = cos(w) - j sin(w); e^{-j2w} likewise
+    let two = T::from(2.0).unwrap();
+    let ejw = Complex::new(w.cos(), -(w.sin()));
+    let ej2w = Complex::new((two * w).cos(), -((two * w).sin()));
+    let zero = T::zero();
+    let one = T::one();
+
+    let num = Complex::new(b0, zero) + ejw * b1 + ej2w * b2;
+    let den = Complex::new(one, zero) + ejw * a1 + ej2w * a2;
+    num / den
+}
+
+/// Magnitude of a complex number for generic Float `T`.
+fn complex_abs<T: Float>(c: Complex<T>) -> T {
+    (c.re * c.re + c.im * c.im).sqrt()
+}
 
 /// Design and run a constant‑peak (0 dB at center) band‑pass biquad using RBJ/W3C formulas,
 /// applying it **in place** (Direct Form II Transposed).
