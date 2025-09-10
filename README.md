@@ -5,6 +5,7 @@ In one command, most data can be processed in pre-set profiles or with custom fi
 Thank you to the creators of [RGPR](https://github.com/emanuelhuber/RGPR) from which the name and functionality where both inspired.
 
 This is still an early WIP, and currently only works with Malå (.rd3) radar formats.
+For most uses, [ImpDAR](https://github.com/dlilien/ImpDAR) will more likely be the tool for you!
 
 ### Possible meanings of the name
 - Really Simple GPR
