@@ -303,7 +303,15 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     {
         let mut data = file.add_variable::<f32>("data", &["y", "x"])?;
         data.set_compression(5, true)?;
-        data.set_chunking(&[1024, 1024])?;
+
+        for chunking in [1024, 512, 256, 128, 64, 32, 16, 8] {
+            if (gpr.data.shape()[0] < chunking) | (gpr.data.shape()[1] < chunking) {
+                continue;
+            }
+            data.set_chunking(&[chunking, chunking])
+                .map_err(|e| format!("Error when chunking data: {e}"))?;
+            break;
+        }
 
         data.put_values(
             &gpr.data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(),
@@ -321,7 +329,16 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
         file.add_dimension("y2", height)?;
         let mut data2 = file.add_variable::<f32>("data_topographically_corrected", &["y2", "x"])?;
         data2.set_compression(5, true)?;
-        data2.set_chunking(&[1024, 1024])?;
+
+        for chunking in [1024, 512, 256, 128, 64, 32, 16, 8] {
+            if (topo_data.shape()[0] < chunking) | (topo_data.shape()[1] < chunking) {
+                continue;
+            }
+            data2
+                .set_chunking(&[chunking, chunking])
+                .map_err(|e| format!("Error when chunking data: {e}"))?;
+            break;
+        }
 
         data2.put_values(
             &topo_data.iter().map(|v| v.to_owned()).collect::<Vec<f32>>(),
