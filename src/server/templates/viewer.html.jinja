@@ -38,6 +38,79 @@
     <span id="cursor-readout"></span>
   </div>
 
+  {#- The picking toolbar. Rendered even when the catalog is not a writable
+      project, in which case it explains why rather than vanishing: a missing
+      control reads as a missing feature. -#}
+  <div class="controls picker-controls" id="picker-controls">
+    {% if writable %}
+      <label>Layer:
+        <select id="pick-layer"><option value="">Loading&hellip;</option></select>
+      </label>
+      <button id="pick-toggle" type="button" aria-pressed="false">Start picking</button>
+      <button id="pick-undo" type="button" disabled>Undo vertex</button>
+      <button id="pick-finish" type="button" disabled>Finish line</button>
+      <button id="pick-save" type="button" disabled>Save</button>
+      <span id="pick-status" class="pick-status"></span>
+      <a id="pick-download" class="pick-download" href="#" hidden>Download points</a>
+    </div>
+
+    {#- Appears when a stored line is clicked. Separate from the drawing
+        toolbar because it acts on one existing line rather than on the
+        session, and because showing it only when relevant is what makes
+        "click a line to edit it" discoverable. -#}
+    <div class="controls picker-selection" id="pick-selection" hidden>
+      <strong>Selected line</strong>
+      <label>Layer:
+        <select id="pick-selected-layer"></select>
+      </label>
+      <button id="pick-delete" type="button" class="danger">Delete line</button>
+      <span id="pick-selection-hint" class="pick-status"></span>
+    {% else %}
+      <span class="pick-status">
+        {% if project %}
+          This server is read-only, so picks cannot be saved.
+        {% else %}
+          Not a Ridal project, so there is nowhere to save picks.
+          Run <code>ridal project init</code> and restart.
+        {% endif %}
+      </span>
+    {% endif %}
+  </div>
+
+  <div id="pick-error" class="warning" hidden></div>
+
+  <dialog id="download-dialog">
+    <h2>Download level 2 points</h2>
+    <p class="hint">
+      Picked lines resampled to evenly spaced points along the ground track,
+      with depth, travel time and position attached. Derived from the saved
+      interpretation, so save first.
+    </p>
+    <div class="add-layer-fields">
+      <label>Spacing
+        <select id="download-spacing">
+          <option value="auto" selected>Auto (from trace spacing)</option>
+          <option value="1">1 m</option>
+          <option value="5">5 m</option>
+          <option value="10">10 m</option>
+          <option value="25">25 m</option>
+          <option value="per-trace">Every trace</option>
+          <option value="vertices">Picked vertices only</option>
+        </select>
+      </label>
+      <label>Format
+        <select id="download-format">
+          <option value="geojson" selected>GeoJSON (WGS84)</option>
+          <option value="csv">CSV</option>
+        </select>
+      </label>
+    </div>
+    <p>
+      <button type="button" id="download-go">Download</button>
+      <button type="button" id="download-close">Close</button>
+    </p>
+  </dialog>
+
   <div class="layout" id="viewer-layout">
     <div id="map"></div>
     <div id="split-resizer" role="separator" aria-orientation="vertical"
@@ -76,7 +149,10 @@
     viewerHeight: {{ viewer_height }},
     sourceWidth: {{ shape_width }},
     sourceHeight: {{ shape_height }},
+    writable: {% if writable %}true{% else %}false{% endif %},
+    user: "{{ user }}",
   };
 </script>
 <script src="/static/viewer.js"></script>
+<script src="/static/picker.js"></script>
 {% endblock %}

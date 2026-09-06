@@ -70,6 +70,12 @@ function loadChunks(map, profile, scale) {
 }
 
 const map = L.map('map', { crs: L.CRS.Simple, minZoom: -6, attributionControl: false });
+// Published for picker.js, which draws onto this same map and needs the
+// current horizontal stretch to convert clicks to trace indices. Plain
+// globals rather than exports: these are classic scripts with no module
+// boundary between them (#120: no build step).
+window.RIDAL_MAP = map;
+window.RIDAL_XSCALE = 1;
 function fitToScale(scale) {
   map.fitBounds([[-VIEWER_HEIGHT, 0], [0, VIEWER_WIDTH * scale]]);
 }
@@ -91,7 +97,9 @@ document.getElementById('xscale-select').addEventListener('change', (event) => {
   const newScale = parseFloat(event.target.value);
   const center = map.getCenter();
   xScale = newScale;
+  window.RIDAL_XSCALE = newScale;
   loadChunks(map, currentProfile(), xScale);
+  if (window.RIDAL_REDRAW_PICKS) window.RIDAL_REDRAW_PICKS();
   map.setView(
     [center.lat, center.lng * (newScale / oldScale)],
     map.getZoom(),

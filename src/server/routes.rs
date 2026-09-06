@@ -182,7 +182,7 @@ pub async fn list_datasets(State(state): State<Arc<AppState>>) -> impl IntoRespo
     Json(serde_json::json!({ "entries": entries, "warnings": warnings }))
 }
 
-fn lookup_dataset<'a>(
+pub(super) fn lookup_dataset<'a>(
     state: &'a AppState,
     radargram_id: &str,
 ) -> Result<&'a super::catalog::CatalogEntry, ApiError> {
@@ -568,6 +568,9 @@ pub async fn viewer_page(
             processing_datetime => format_datetime_for_display(&entry.processing_datetime),
             shape_height => height,
             shape_width => width,
+            project => state.project.is_some(),
+            writable => state.writable,
+            user => crate::identity::DEFAULT_USER,
             profiles => profiles,
             active_profile => active_profile,
             chunk_size => super::render::grid::CHUNK_SIZE,

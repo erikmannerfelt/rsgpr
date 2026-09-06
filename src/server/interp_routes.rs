@@ -25,7 +25,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 
 use super::app::AppState;
-use super::routes::ApiError;
+use super::routes::{lookup_dataset, ApiError};
 use crate::identity::{RadargramId, UserId};
 use crate::interp::checks;
 use crate::project::store::{Expectation, StoreError, Version};
@@ -301,6 +301,97 @@ pub async fn get_layers(State(state): State<Arc<AppState>>) -> Result<impl IntoR
             "layers": set.layers,
             "writable": state.writable,
         })),
+    ))
+}
+
+/// `GET /api/v1/datasets/{id}/interpretations/{user}/level2` -- the derived
+/// point product, as a download.
+///
+/// Derived from the *stored* interpretation rather than from anything the
+/// browser holds, so what is downloaded is exactly what was saved. The
+/// picker hides the link while there are unsaved picks for the same reason.
+#[derive(serde::Deserialize)]
+pub struct Level2Query {
+    /// "auto", "per-trace", "vertices", or a distance in metres.
+    #[serde(default)]
+    spacing: Option<String>,
+    /// "geojson" (default) or "csv".
+    #[serde(default)]
+    format: Option<String>,
+}
+
+pub async fn interpretation_level2(
+    State(state): State<Arc<AppState>>,
+    Path((radargram_id, user)): Path<(String, String)>,
+    axum::extract::Query(query): axum::extract::Query<Level2Query>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = readable_project(&state)?;
+    let radargram = parse_radargram(&radargram_id)?;
+    let user = parse_user(&user)?;
+
+    let entry = lookup_dataset(&state, radargram.as_str())?;
+    let path = state
+        .absolute_path(entry)
+        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+
+    let stored = interpretations::read(project.documents(), &radargram, &user)
+        .map_err(interpretation_error)?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "interpretation_not_found",
+                format!(
+                    "'{}' has no saved interpretation of '{}'. Save some picks first.",
+                    user.as_str(),
+                    radargram.as_str()
+                ),
+            )
+        })?;
+
+    let spacing = crate::cli::parse_spacing(query.spacing.as_deref().unwrap_or("auto"))
+        .map_err(|e| ApiError::bad_request("invalid_spacing", e))?;
+
+    let geometry = crate::interp::source::read_geometry(&path)
+        .map_err(|e| ApiError::internal("radargram_read_failed", e))?;
+
+    let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
+    let allows = |label: Option<&str>| layer_set.allows_overhangs(label);
+
+    let export =
+        crate::interp::level2::export(&stored.document, &geometry, spacing, user.as_str(), &allows)
+            .map_err(|e| ApiError::bad_request("level2_failed", e.to_string()))?;
+
+    let csv = matches!(query.format.as_deref(), Some("csv"));
+    let (body, content_type, extension) = if csv {
+        (
+            crate::interp::writer::to_csv(&export),
+            "text/csv; charset=utf-8",
+            "csv",
+        )
+    } else {
+        (
+            crate::interp::writer::to_geojson(&export, &crate::interp::writer::OutputCrs::Wgs84)
+                .map_err(|e| ApiError::internal("serialize_failed", e))?,
+            "application/geo+json",
+            "geojson",
+        )
+    };
+
+    // Both components are validated slugs, so the filename cannot carry a
+    // quote, a newline, or a path separator into the header.
+    let filename = format!(
+        "{}-{}-level2.{extension}",
+        radargram.as_str(),
+        user.as_str()
+    );
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type.to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        body,
     ))
 }
 

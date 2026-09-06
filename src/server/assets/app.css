@@ -721,3 +721,58 @@ button.danger {
 button.danger:hover {
   border-color: var(--color-accent);
 }
+
+/* --- Picking toolbar (viewer page) --------------------------------------- */
+
+.picker-controls {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-2);
+}
+
+.pick-status {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* Unsaved work is the one thing on this toolbar that must be noticeable
+ * without being read. */
+.pick-status.dirty {
+  color: var(--color-warning-text);
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
+  font-weight: 600;
+}
+
+.pick-download {
+  font-size: var(--text-sm);
+}
+
+/* A crosshair says "this click places something" in a way a label cannot.
+ * Applied to the radargram pane only while picking is active. */
+#map.picking {
+  cursor: crosshair;
+}
+
+#map.picking .leaflet-interactive {
+  cursor: crosshair;
+}
+
+#download-dialog {
+  max-width: 32rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+#download-dialog select {
+  padding: var(--space-1) var(--space-2);
+}
+
+.picker-selection {
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+}

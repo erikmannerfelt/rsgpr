@@ -952,7 +952,7 @@ mod tests {
 ///
 /// Accepts a bare number of metres, "auto", or "per-trace". A bare number is
 /// metres rather than traces by design: see [`InterpExportArgs::spacing`].
-fn parse_spacing(text: &str) -> Result<crate::interp::level2::Spacing, String> {
+pub fn parse_spacing(text: &str) -> Result<crate::interp::level2::Spacing, String> {
     use crate::interp::level2::Spacing;
     match text.trim().to_ascii_lowercase().as_str() {
         "auto" => Ok(Spacing::Auto),

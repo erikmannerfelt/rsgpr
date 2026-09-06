@@ -39,6 +39,81 @@ fn write_test_nc(path: &StdPath, radargram_id: &str) {
         .unwrap();
 }
 
+/// A radargram with the coordinate variables a level 2 export needs.
+///
+/// `write_test_nc` deliberately writes the bare minimum the catalog
+/// recognises; deriving level 2 additionally needs distance, travel time,
+/// depth and positions, so those are written here rather than bloating the
+/// fixture every other test uses.
+fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str) {
+    let (n_samples, n_traces) = (8usize, 40usize);
+    let mut file = netcdf::create(path).unwrap();
+    file.add_dimension("y", n_samples).unwrap();
+    file.add_dimension("x", n_traces).unwrap();
+    let mut data = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
+    data.put_values(&vec![1.0f32; n_samples * n_traces], ..)
+        .unwrap();
+
+    // 1 m between traces, running due east, so expected values are obvious.
+    let mut put = |name: &str, values: Vec<f64>| {
+        let mut var = file.add_variable::<f64>(name, &["x"]).unwrap();
+        var.put_values(&values, ..).unwrap();
+    };
+    put("distance", (0..n_traces).map(|i| i as f64).collect());
+    put(
+        "easting",
+        (0..n_traces).map(|i| 400_000.0 + i as f64).collect(),
+    );
+    put("northing", vec![8_700_000.0; n_traces]);
+    put(
+        "longitude",
+        (0..n_traces).map(|i| 15.0 + i as f64 * 1e-5).collect(),
+    );
+    put("latitude", vec![78.0; n_traces]);
+
+    let mut twtt = file.add_variable::<f64>("twtt", &["y"]).unwrap();
+    twtt.put_values(
+        &(0..n_samples).map(|i| i as f64 * 0.4).collect::<Vec<f64>>(),
+        ..,
+    )
+    .unwrap();
+    let mut depth = file.add_variable::<f64>("depth", &["y"]).unwrap();
+    depth
+        .put_values(
+            &(0..n_samples)
+                .map(|i| i as f64 * 0.04)
+                .collect::<Vec<f64>>(),
+            ..,
+        )
+        .unwrap();
+
+    file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
+        .unwrap();
+    file.add_attribute("ridal_version", "ridal version 0.0.0 by test")
+        .unwrap();
+    file.add_attribute("ridal_radargram_id", radargram_id)
+        .unwrap();
+    file.add_attribute("crs", "EPSG:32633").unwrap();
+}
+
+/// A writable project whose radargram carries full coordinate axes.
+fn project_app_with_axes() -> (tempfile::TempDir, Router) {
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    write_test_nc_with_axes(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            true,
+        )
+        .unwrap(),
+    );
+    (dir, build_router(state))
+}
+
 /// A project containing one radargram, served writable unless stated.
 fn project_app(writable: bool) -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
@@ -435,6 +510,103 @@ async fn duplicate_layer_ids_are_rejected() {
     ]);
     let (status, _, _) = put(&app, "/api/v1/layers", &layers, None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+async fn page(app: &Router, uri: &str) -> (StatusCode, String) {
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_viewer_offers_picking_only_where_it_can_be_saved() {
+    let (_dir, app) = project_app(true);
+    let (status, html) = page(&app, "/view/line-01").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("writable: true"), "config flag missing");
+    assert!(html.contains(r#"id="pick-toggle""#), "no picking control");
+    assert!(html.contains(r#"id="pick-save""#), "no save control");
+    assert!(
+        html.contains(r#"id="pick-selection""#),
+        "no selection panel"
+    );
+    assert!(
+        html.contains("/static/picker.js"),
+        "picker script not loaded"
+    );
+    assert!(html.contains(r#"user: "default""#), "no author for saves");
+
+    // Read-only: the toolbar says why rather than vanishing, so a missing
+    // control never reads as a missing feature.
+    let (_dir2, read_only) = project_app(false);
+    let (_, html) = page(&read_only, "/view/line-01").await;
+    assert!(html.contains("read-only"), "{html}");
+    assert!(!html.contains(r#"id="pick-toggle""#));
+
+    let (_dir3, bare) = bare_app();
+    let (_, html) = page(&bare, "/view/line-01").await;
+    assert!(html.contains("ridal project init"), "{html}");
+    assert!(!html.contains(r#"id="pick-toggle""#));
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_level2_download_derives_from_the_saved_interpretation() {
+    let (_dir, app) = project_app_with_axes();
+    let (status, _, _) = put(&app, URI, &document(RADARGRAM), None).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{URI}/level2?spacing=vertices&format=csv"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let disposition = response
+        .headers()
+        .get(header::CONTENT_DISPOSITION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        disposition.contains("line-01-default-level2.csv"),
+        "{disposition}"
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let csv = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(csv.starts_with("layer,line_index,point_index,"), "{csv}");
+    assert!(csv.contains("bed,0,0,f-0001,"), "{csv}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn downloading_before_anything_is_saved_says_so() {
+    let (_dir, app) = project_app_with_axes();
+    let (status, _, body) = get(&app, &format!("{URI}/level2")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Save some picks first"),
+        "{body}"
+    );
 }
 
 #[tokio::test]

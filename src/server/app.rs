@@ -249,6 +249,7 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/static/app.js", get(super::assets::app_js))
         .route("/static/index.js", get(super::assets::index_js))
         .route("/static/viewer.js", get(super::assets::viewer_js))
+        .route("/static/picker.js", get(super::assets::picker_js))
         .route(
             "/static/images/marker-icon.png",
             get(super::assets::marker_icon),
@@ -282,6 +283,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route(
             "/api/v1/datasets/{radargram_id}/interpretations",
             get(super::interp_routes::list_interpretations),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/interpretations/{user}/level2",
+            get(super::interp_routes::interpretation_level2),
         )
         .route(
             "/api/v1/datasets/{radargram_id}/interpretations/{user}",
