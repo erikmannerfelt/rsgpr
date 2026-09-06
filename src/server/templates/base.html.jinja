@@ -16,8 +16,19 @@
       <img src="/static/images/logo.svg" alt="" class="brand-logo">
       Ridal
     </a>
+    {#- A menu rather than a row of links: project settings, sign in/out and
+        whatever else follows all belong here, and a header that grows a link
+        per page stops working quickly on a phone. `<details>` gives a
+        keyboard-accessible disclosure with no JavaScript; app.js only adds
+        closing it on Escape or an outside click. -#}
     <nav class="site-nav">
-      <a href="/layers">Layers</a>
+      <details class="site-menu" id="site-menu">
+        <summary aria-label="Menu">Menu</summary>
+        <ul>
+          <li><a href="/">Radargram catalog</a></li>
+          <li><a href="/layers">Layers</a></li>
+        </ul>
+      </details>
     </nav>
   </header>
   <main>

@@ -416,9 +416,22 @@ section.group {
  * and it hides again. That feedback loop made the viewer flicker rapidly
  * right at the wrap threshold. Keeping the box in flow makes the
  * measurement the ResizeObserver takes independent of the toggle. */
+/* When stacked, the handle takes a whole row of zero height rather than 8px
+ * of the overview map's row. Hidden with `visibility` it still occupied its
+ * flex slot plus a gap, which left the overview map 24px right of the
+ * radargram with their right edges aligned -- visibly askew.
+ *
+ * `display: none` is still the wrong fix, for the reason the note above
+ * gives: it shortens the row, which can let the two maps fit side by side
+ * again, which re-shows the handle, which lengthens the row. Taking a full
+ * row instead *reinforces* the stacked state, so it settles immediately. */
 #split-resizer.is-hidden {
   visibility: hidden;
   pointer-events: none;
+  flex-basis: 100%;
+  height: 0;
+  min-height: 0;
+  align-self: auto;
 }
 
 /* ---------- Leaflet popup ---------- */
@@ -1008,4 +1021,95 @@ button.danger:hover {
       height: 30vh;
     }
   }
+}
+
+/* --- Header menu ---------------------------------------------------------
+ *
+ * A `<details>` disclosure, so it opens and closes with no JavaScript and is
+ * keyboard-operable for free. app.js only adds dismissal on Escape or an
+ * outside click, which `<details>` does not do on its own. */
+
+.site-menu {
+  position: relative;
+}
+
+.site-menu > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  user-select: none;
+}
+
+/* Safari still paints the default triangle without this. */
+.site-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.site-menu > summary::before {
+  content: "\2261"; /* identical-to: three bars, without needing an icon font */
+  margin-right: var(--space-2);
+  font-size: 1.1em;
+  line-height: 1;
+}
+
+.site-menu > summary:hover,
+.site-menu[open] > summary {
+  border-color: var(--color-accent);
+}
+
+.site-menu > ul {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--space-1));
+  z-index: 1000;
+  margin: 0;
+  padding: var(--space-1);
+  min-width: 12rem;
+  list-style: none;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 22%);
+}
+
+.site-menu > ul a {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.site-menu > ul a:hover,
+.site-menu > ul a:focus-visible {
+  background: var(--color-surface-sunken);
+}
+
+/* --- Back link -----------------------------------------------------------
+ *
+ * Styled as a control rather than a bare link: it sits alone above the
+ * heading, where an unstyled anchor reads as leftover markup. */
+.back-link {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.back-link:hover,
+.back-link:focus-visible {
+  border-color: var(--color-accent);
+  color: var(--color-accent-hover);
 }

@@ -185,3 +185,27 @@ const RIDAL = Object.freeze({
     }
   },
 });
+
+/* Dismiss the header menu on Escape or a click outside it.
+ *
+ * `<details>` gives the disclosure, the keyboard behaviour and the open
+ * state for free, but it stays open until its own summary is clicked again,
+ * which is wrong for a menu: tapping the page elsewhere should close it.
+ * That is the only reason this file knows the menu exists. */
+(function setupSiteMenu() {
+  const menu = document.getElementById("site-menu");
+  if (!menu) return;
+
+  document.addEventListener("click", (event) => {
+    if (menu.open && !menu.contains(event.target)) menu.open = false;
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && menu.open) {
+      menu.open = false;
+      // Return focus to the control that opened it, or the close is
+      // invisible to a keyboard user.
+      menu.querySelector("summary").focus();
+    }
+  });
+})();

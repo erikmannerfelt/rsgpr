@@ -4,7 +4,8 @@
   {#- Carries the active profile back to the catalog, so a round trip
       viewer -> catalog -> viewer stays in the profile you were browsing
       in rather than silently resetting to the default. -#}
-  <p><a href="/?profile={{ active_profile }}#card-{{ radargram_id }}">&larr; Back to catalog</a></p>
+  <p><a class="back-link" href="/?profile={{ active_profile }}#card-{{ radargram_id }}">
+    <span aria-hidden="true">&larr;</span> Back to catalog</a></p>
   <h1>{{ effective_label }}{% if group_name %} (Group: {{ group_name }}){% endif %}</h1>
   <table class="meta">
     <tr>
