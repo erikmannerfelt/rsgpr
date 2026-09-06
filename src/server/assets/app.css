@@ -950,3 +950,62 @@ button.danger:hover {
   margin-inline: auto;
   box-shadow: 0 2px 12px rgb(0 0 0 / 30%);
 }
+
+/* The invisible companion that makes a line tappable.
+ *
+ * `pointer-events: stroke` hit-tests the stroke area regardless of whether
+ * it is painted, so a fully transparent line still receives taps. Chrome
+ * happens to hit-test a `stroke-opacity: 0` path anyway; saying so
+ * explicitly is what makes it portable. */
+.pick-hit {
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+/* --- Narrow screens ------------------------------------------------------
+ *
+ * Two problems, one cause: the radargram and the overview map both used the
+ * full viewer height, so at almost any scroll position the screen was
+ * entirely map. Leaflet claims touch drags inside a map for panning, which
+ * left only a sliver of page to scroll with -- and the sliver was at the
+ * edge, where a thumb cannot reach reliably.
+ *
+ * So: neither map takes the whole screen, and the picking toolbar sticks to
+ * the top. Between them there is always a band of ordinary page to drag,
+ * and the controls you need while drawing never scroll away in the first
+ * place. */
+@media (max-width: 40rem) {
+  :root {
+    --map-height-viewer: 52svh;
+    --map-min-height: 240px;
+  }
+
+  /* Shorter still: it is context, not the thing being worked on. */
+  #overview-map {
+    height: 30svh;
+    min-height: 180px;
+  }
+
+  .picker-controls {
+    position: sticky;
+    top: 0;
+    z-index: 500;
+    background: var(--color-bg);
+    border-bottom: 1px solid var(--color-border);
+    padding-bottom: var(--space-2);
+  }
+}
+
+/* `svh` is the stable unit (see the note on --map-height-viewer); this is
+   the fallback for browsers without it. */
+@media (max-width: 40rem) {
+  @supports not (height: 1svh) {
+    :root {
+      --map-height-viewer: 52vh;
+    }
+
+    #overview-map {
+      height: 30vh;
+    }
+  }
+}

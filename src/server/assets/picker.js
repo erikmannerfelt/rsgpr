@@ -114,6 +114,14 @@
     const DEFAULT_COLOR = "#ffcc00";
 
     const map = window.RIDAL_MAP;
+
+    /* How wide, in pixels, the invisible strip along each line that accepts
+     * a tap. A Leaflet polyline is only clickable within its own stroke, so
+     * a 3px line has a 3px target -- unusable with a finger. Each line
+     * therefore gets a transparent companion of this width carrying the
+     * interaction, which is how Leaflet.Draw and friends solve it too.
+     * Roughly a fingertip on touch, and a comfortable aim with a mouse. */
+    const HIT_WIDTH_PX = window.matchMedia("(pointer: coarse)").matches ? 34 : 14;
     const layerSelect = document.getElementById("pick-layer");
     const toggleButton = document.getElementById("pick-toggle");
     const undoButton = document.getElementById("pick-undo");
@@ -392,28 +400,41 @@
 
     function redraw() {
       drawnLines.forEach((line) => map.removeLayer(line));
-      drawnLines = features.map((feature, index) => {
+      drawnLines = [];
+      features.forEach((feature, index) => {
         const label = feature.properties && feature.properties.label;
         const isSelected = index === selected;
-        const line = L.polyline(
-          feature.geometry.coordinates.map(([t, s]) => toLatLng(t, s)),
-          {
-            color: colorFor(label),
-            weight: isSelected ? 5 : 3,
-            opacity: isSelected ? 1 : 0.85,
-          },
-        ).addTo(map);
-        line.bindTooltip(
+        const points = feature.geometry.coordinates.map(([t, s]) => toLatLng(t, s));
+
+        // The wide, invisible companion goes down first so the visible line
+        // draws over it, and carries all the interaction: the visible line
+        // is non-interactive, so it cannot swallow a tap meant for the
+        // easier target.
+        const hit = L.polyline(points, {
+          className: "pick-hit",
+          weight: HIT_WIDTH_PX,
+          opacity: 0,
+          interactive: true,
+        }).addTo(map);
+        hit.bindTooltip(
           `${label || "unlabelled"} (${feature.geometry.coordinates.length} vertices)`,
         );
-        line.on("click", (event) => {
+        hit.on("click", (event) => {
           // While picking, a tap over an existing line is still a new
           // vertex -- lines must not become holes in the drawing surface.
           if (picking) return;
           L.DomEvent.stopPropagation(event);
           select(index === selected ? null : index);
         });
-        return line;
+
+        const line = L.polyline(points, {
+          color: colorFor(label),
+          weight: isSelected ? 5 : 3,
+          opacity: isSelected ? 1 : 0.85,
+          interactive: false,
+        }).addTo(map);
+
+        drawnLines.push(hit, line);
       });
       redrawHandles();
       redrawOverhangs();
