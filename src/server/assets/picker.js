@@ -55,6 +55,30 @@
     ];
   }
 
+  /** Join two lines end to end.
+   *
+   * `aAtStart` / `bAtStart` say which end of each line is being joined.
+   * Each line is oriented so the meeting ends face each other, then `a`'s
+   * own endpoint is dropped and `b`'s is kept -- the two are near each
+   * other but not identical, and keeping one of them is what makes this a
+   * join rather than a line with a tiny kink in it.
+   *
+   * The result therefore has `a.length + b.length - 1` vertices. Anything
+   * else means a vertex was duplicated or lost.
+   *
+   * The inverse of `splitCoordinates`, and deliberately as literal about
+   * it: splitting at vertex `i` and rejoining the halves returns the
+   * original line.
+   */
+  function joinCoordinates(a, b, aAtStart, bAtStart) {
+    // Orient `a` so its joining end is last, and `b` so its joining end is
+    // first. Reversing a line is not a change of interpretation -- it is
+    // the same reflector recorded in the other direction.
+    const head = aAtStart ? a.slice().reverse() : a.slice();
+    const tail = bAtStart ? b.slice() : b.slice().reverse();
+    return [...head.slice(0, -1), ...tail];
+  }
+
   /** Every vertex at which a line stops advancing in trace.
    *
    * The client-side twin of `overhang_at` in `src/interp/checks.rs`, which
@@ -166,7 +190,7 @@
      * markers cannot be dragged at all, and an SVG circle is a poor touch
      * target. The icon is sized in CSS so it can grow on coarse pointers.
      */
-    function makeHandle(coordinates, index, label, kind, onTap) {
+    function makeHandle(coordinates, index, label, kind, onTap, featureIndex) {
       const [trace, sample] = coordinates[index];
       const marker = L.marker(toLatLng(trace, sample), {
         draggable: true,
@@ -181,7 +205,21 @@
 
       marker.on("dragend", () => {
         const before = coordinates[index];
-        const [newTrace, newSample] = toIndex(marker.getLatLng());
+        const dropped = marker.getLatLng();
+
+        // Dragging an end of a stored line onto the end of another is how
+        // two lines are joined back together -- the inverse of tapping a
+        // middle vertex to split one.
+        const isEnd = index === 0 || index === coordinates.length - 1;
+        if (featureIndex !== undefined && featureIndex !== null && isEnd) {
+          const target = findJoinTarget(featureIndex, dropped);
+          if (target) {
+            joinWith(featureIndex, index === 0, target);
+            return;
+          }
+        }
+
+        const [newTrace, newSample] = toIndex(dropped);
         // Preserve any third element GeoJSON allows, rather than truncating
         // a position this viewer did not author.
         coordinates[index] = [newTrace, newSample, ...before.slice(2)];
@@ -217,6 +255,86 @@
     function deselect() {
       if (selected === null) return;
       selected = null;
+      redraw();
+    }
+
+    /** How near, in screen pixels, an endpoint must be dropped to join.
+     *
+     * Screen pixels rather than trace indices because the user is aiming
+     * with a finger: the tolerance should be the size of a fingertip
+     * regardless of how far the radargram is zoomed in or stretched. */
+    const JOIN_RADIUS_PX = 24;
+
+    /** The nearest joinable endpoint to `latlng`, or null.
+     *
+     * Restricted to the same layer: joining a "bed" line to an "internal"
+     * one would have to silently pick a label for the result, and picking
+     * either is wrong. Restricted to *other* lines: dragging a line's start
+     * onto its own end would close a loop, which is never a function of
+     * trace. */
+    function findJoinTarget(featureIndex, latlng) {
+      const label = features[featureIndex].properties?.label;
+      const point = map.latLngToContainerPoint(latlng);
+      let best = null;
+      features.forEach((feature, index) => {
+        if (index === featureIndex) return;
+        if ((feature.properties?.label ?? null) !== (label ?? null)) return;
+        const coordinates = feature.geometry.coordinates;
+        for (const atStart of [true, false]) {
+          const [trace, sample] = atStart
+            ? coordinates[0]
+            : coordinates[coordinates.length - 1];
+          const distance = point.distanceTo(
+            map.latLngToContainerPoint(toLatLng(trace, sample)),
+          );
+          if (distance <= JOIN_RADIUS_PX && (!best || distance < best.distance)) {
+            best = { index, atStart, distance };
+          }
+        }
+      });
+      return best;
+    }
+
+    /** Merge the dragged line into the one whose endpoint it was dropped on.
+     *
+     * Two features out, one in, via a `splice` pair that removes the higher
+     * index first so the lower one is still valid -- the same discipline as
+     * `splitSelectedAt`, and for the same reason: a merge written as "add
+     * the joined line, then remove the two originals" leaves an original
+     * behind whenever a removal is skipped. */
+    function joinWith(featureIndex, draggedAtStart, target) {
+      const source = features[featureIndex];
+      const other = features[target.index];
+      const label = source.properties?.label;
+
+      const merged = joinCoordinates(
+        source.geometry.coordinates,
+        other.geometry.coordinates,
+        draggedAtStart,
+        target.atStart,
+      );
+
+      if (!allowsOverhangs(label) && overhangIndices(merged).length > 0) {
+        showError(
+          "Joining those two lines would double back, so the result would have " +
+            "two depths at one position. They probably need joining at their " +
+            "other ends, or they overlap along the profile.",
+        );
+        redraw();
+        return;
+      }
+
+      const low = Math.min(featureIndex, target.index);
+      const high = Math.max(featureIndex, target.index);
+      features.splice(high, 1);
+      features.splice(low, 1, newFeature(merged, label));
+
+      // Select the result rather than dropping the selection: the user is
+      // looking at what they just made, and its vertices are what they will
+      // want to adjust next.
+      selected = low;
+      clearError();
+      markDirty();
       redraw();
     }
 
@@ -337,6 +455,7 @@
           () => {
             if (interior) splitSelectedAt(index);
           },
+          selected,
         );
         handle.bindTooltip(
           interior ? "Drag to move, tap to split here" : "Drag to move",
@@ -395,9 +514,10 @@
       const label = feature.properties && feature.properties.label;
       selectedLayer.value = label || "";
       selectionHint.textContent =
-        feature.geometry.coordinates.length > 2
-          ? "Drag a vertex to move it; tap a middle vertex to split."
-          : "Drag a vertex to move it. Too few vertices to split.";
+        (feature.geometry.coordinates.length > 2
+          ? "Drag a vertex to move it; tap a middle one to split. "
+          : "Drag a vertex to move it. Too few vertices to split. ") +
+        "Drop an end onto another line's end in the same layer to join them.";
     }
 
     function countOverhangs() {

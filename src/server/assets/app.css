@@ -489,22 +489,42 @@ table.meta th {
   color: var(--color-accent);
 }
 
-/* Its own row, always, and never more than one line.
+/* Its own row, always exactly one line tall, scrolled horizontally.
  *
  * `flex-basis: 100%` is what makes populating it a no-op for layout: on a
  * narrow screen the text is long enough to wrap onto a new row anyway, so
  * reserving that row permanently costs one line and removes the shift
- * entirely. `nowrap` plus ellipsis stops an unusually long reading from
- * claiming a *second* row and reintroducing the problem. */
+ * entirely.
+ *
+ * The height is *fixed*, not a minimum, and that is the load-bearing part.
+ * A horizontal scrollbar appearing inside a fixed-height box eats into the
+ * content area rather than growing the box, so the row cannot change height
+ * whether the reading overflows or not -- which is the whole reason this
+ * element was pinned down in the first place.
+ *
+ * `touch-action: pan-x` keeps a sideways swipe here scrolling the reading
+ * rather than the page. The scrollbar is thin rather than hidden: on a
+ * desktop it is the only clue that there is more to read. */
 #cursor-readout {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   color: var(--color-text-muted);
   flex-basis: 100%;
-  min-height: 1.2em;
+  height: 1.6em;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-x: auto;
+  overflow-y: hidden;
+  touch-action: pan-x;
+  scrollbar-width: thin;
+}
+
+#cursor-readout::-webkit-scrollbar {
+  height: 3px;
+}
+
+#cursor-readout::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: var(--radius-sm);
 }
 
 /* ---------- metadata dialog ---------- */
