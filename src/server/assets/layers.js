@@ -230,18 +230,56 @@ async function load() {
 
 const form = document.getElementById("add-layer");
 if (form) {
+  /** Why this layer cannot be added, or null if it can.
+   *
+   * Specific rather than generic: "the id must be lowercase" is actionable,
+   * "please match the requested format" is not, and an id is not something
+   * the user can guess the rules for. */
+  function rejectionReason(id, name) {
+    if (id === "") {
+      return [
+        "A layer needs an id. It is the short name written into every pick " +
+          'and exported as the "layer" column, for example "bed".',
+        "id",
+      ];
+    }
+    if (!/^[a-z0-9_-]+$/.test(id)) {
+      const bad = [...id].find((c) => !/[a-z0-9_-]/.test(c));
+      return [
+        `The id cannot contain "${bad}". Use lowercase letters, digits, "-" ` +
+          "and \"_\" only -- it ends up in exported columns and URLs. Put " +
+          "capitals, spaces and punctuation in the name instead.",
+        "id",
+      ];
+    }
+    if (layers.some((layer) => layer.id === id)) {
+      return [`A layer with the id "${id}" already exists.`, "id"];
+    }
+    if (name === "") {
+      return ["A layer needs a name. This is the label shown in the viewer.", "name"];
+    }
+    return null;
+  }
+
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const data = new FormData(form);
     const id = String(data.get("id") || "").trim();
-    if (layers.some((layer) => layer.id === id)) {
-      showError(`A layer with the id "${id}" already exists.`);
+    const name = String(data.get("name") || "").trim();
+
+    const rejection = rejectionReason(id, name);
+    if (rejection) {
+      const [message, field] = rejection;
+      showError(message);
+      form.elements[field].focus();
       return;
     }
+
+    clearError();
     const description = String(data.get("description") || "").trim();
     layers.push({
       id,
-      name: String(data.get("name") || "").trim(),
+      name,
       color: String(data.get("color") || ""),
       description: description === "" ? undefined : description,
       allow_overhangs: data.get("allow_overhangs") === "on",

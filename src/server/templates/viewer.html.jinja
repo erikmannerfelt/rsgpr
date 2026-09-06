@@ -52,19 +52,6 @@
       <button id="pick-save" type="button" disabled>Save</button>
       <span id="pick-status" class="pick-status"></span>
       <a id="pick-download" class="pick-download" href="#" hidden>Download points</a>
-    </div>
-
-    {#- Appears when a stored line is clicked. Separate from the drawing
-        toolbar because it acts on one existing line rather than on the
-        session, and because showing it only when relevant is what makes
-        "click a line to edit it" discoverable. -#}
-    <div class="controls picker-selection" id="pick-selection" hidden>
-      <strong>Selected line</strong>
-      <label>Layer:
-        <select id="pick-selected-layer"></select>
-      </label>
-      <button id="pick-delete" type="button" class="danger">Delete line</button>
-      <span id="pick-selection-hint" class="pick-status"></span>
     {% else %}
       <span class="pick-status">
         {% if project %}
@@ -76,6 +63,21 @@
       </span>
     {% endif %}
   </div>
+
+  {#- Appears when a stored line is clicked. A sibling of the toolbar rather
+      than a child: it acts on one existing line rather than on the drawing
+      session, and showing it only when relevant is what makes "click a line
+      to edit it" discoverable. -#}
+  {% if writable %}
+  <div class="controls picker-selection" id="pick-selection" hidden>
+    <strong>Selected line</strong>
+    <label>Layer:
+      <select id="pick-selected-layer"></select>
+    </label>
+    <button id="pick-delete" type="button" class="danger">Delete line</button>
+    <span id="pick-selection-hint" class="pick-status"></span>
+  </div>
+  {% endif %}
 
   <div id="pick-error" class="warning" hidden></div>
 

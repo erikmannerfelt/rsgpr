@@ -44,7 +44,11 @@
   <p id="layers-empty" class="empty" hidden>No layers defined yet.</p>
 
   {% if writable %}
-    <form id="add-layer" class="add-layer">
+    {#- `novalidate`: the browser's own bubbles say "Please match the requested
+      format" without saying what the format is or why. layers.js validates
+      instead, into the same error box every other failure on this page uses.
+      `required`/`pattern` stay as a fallback for the no-JS case. -#}
+    <form id="add-layer" class="add-layer" novalidate>
       <h2>Add a layer</h2>
       <p class="hint">
         The id cannot be changed afterwards, because existing picks refer to

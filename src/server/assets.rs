@@ -202,4 +202,100 @@ mod tests {
             );
         }
     }
+
+    /// Names declared at the top level of a classic script.
+    ///
+    /// A crude scan -- a declaration keyword in column zero -- which is
+    /// exactly right for these files, since every nested declaration in
+    /// them is indented.
+    fn top_level_declarations(source: &str) -> Vec<String> {
+        source
+            .lines()
+            .filter_map(|line| {
+                let rest = ["const ", "let ", "var ", "function ", "class "]
+                    .iter()
+                    .find_map(|keyword| line.strip_prefix(keyword))?;
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                    .collect();
+                (!name.is_empty()).then_some(name)
+            })
+            .collect()
+    }
+
+    /// The scripts each page loads, in load order. Must match
+    /// `base.html.jinja` plus each template's `extrascript` block.
+    fn page_bundles() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+        let app = ("app.js", include_str!("assets/app.js"));
+        vec![
+            (
+                "index",
+                vec![app, ("index.js", include_str!("assets/index.js"))],
+            ),
+            (
+                "viewer",
+                vec![
+                    app,
+                    ("viewer.js", include_str!("assets/viewer.js")),
+                    ("picker.js", include_str!("assets/picker.js")),
+                ],
+            ),
+            (
+                "layers",
+                vec![app, ("layers.js", include_str!("assets/layers.js"))],
+            ),
+        ]
+    }
+
+    /// Two scripts on one page must not declare the same top-level name.
+    ///
+    /// Classic scripts share a single global scope, so a duplicated `const`
+    /// is a `SyntaxError` that kills the *whole* later file -- silently,
+    /// with no server-side symptom at all. This shipped once: `picker.js`
+    /// declared `const CFG`, which `viewer.js` already did, and every
+    /// picking control stopped working while the page still rendered
+    /// perfectly. Hence a test rather than a convention.
+    #[test]
+    fn no_two_scripts_on_a_page_declare_the_same_global() {
+        for (page, scripts) in page_bundles() {
+            let mut seen: Vec<(String, &str)> = Vec::new();
+            for (name, source) in scripts {
+                for declaration in top_level_declarations(source) {
+                    if let Some((_, first)) = seen.iter().find(|(d, _)| *d == declaration) {
+                        panic!(
+                            "the {page} page loads {first} and {name}, which both declare a \
+                             top-level `{declaration}`. Classic scripts share one global \
+                             scope, so {name} would fail to parse entirely. Wrap it in an \
+                             IIFE, or rename the declaration."
+                        );
+                    }
+                    seen.push((declaration, name));
+                }
+            }
+        }
+    }
+
+    /// The scanner has to actually find declarations, or the test above
+    /// passes by seeing nothing.
+    #[test]
+    fn the_declaration_scanner_finds_what_it_should() {
+        let source = "const A = 1;\nlet b = 2;\nfunction c() {\n  const nested = 3;\n}\n";
+        assert_eq!(top_level_declarations(source), vec!["A", "b", "c"]);
+        assert!(
+            top_level_declarations(include_str!("assets/viewer.js")).contains(&"CFG".to_string()),
+            "viewer.js should declare a top-level CFG"
+        );
+    }
+
+    /// picker.js runs beside viewer.js, which already occupies most of the
+    /// obvious names, so it is wrapped in an IIFE and must stay that way.
+    #[test]
+    fn picker_declares_nothing_globally() {
+        let declarations = top_level_declarations(include_str!("assets/picker.js"));
+        assert!(
+            declarations.is_empty(),
+            "picker.js must stay inside its IIFE; found {declarations:?}"
+        );
+    }
 }
