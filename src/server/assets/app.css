@@ -461,6 +461,20 @@ table.meta th {
   font-weight: 600;
 }
 
+/* `hidden` must actually hide.
+ *
+ * The UA stylesheet's `[hidden] { display: none }` loses to any author rule
+ * that sets `display`, so an element carrying both `hidden` and a class
+ * like `.controls` (which is `display: flex`) stays fully visible and
+ * clickable. That is not hypothetical: the picker's "Selected line" panel
+ * was permanently on screen for exactly this reason, which meant its Delete
+ * button could be pressed with nothing selected.
+ *
+ * `!important` is warranted here -- `hidden` is not a hint. */
+[hidden] {
+  display: none !important;
+}
+
 .controls {
   display: flex;
   gap: var(--space-4);

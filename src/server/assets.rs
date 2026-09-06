@@ -203,6 +203,48 @@ mod tests {
         }
     }
 
+    fn strip_css_comments(css: &str) -> String {
+        let mut out = String::with_capacity(css.len());
+        let mut rest = css;
+        while let Some(start) = rest.find("/*") {
+            out.push_str(&rest[..start]);
+            match rest[start..].find("*/") {
+                Some(end) => rest = &rest[start + end + 2..],
+                None => return out,
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// `hidden` must win over any author `display` rule.
+    ///
+    /// The UA stylesheet's `[hidden] { display: none }` loses to any author
+    /// rule that sets `display`, so an element carrying both `hidden` and a
+    /// class like `.controls` (`display: flex`) stays visible *and
+    /// clickable*. The picker's "Selected line" panel shipped that way: it
+    /// was permanently on screen, and its Delete button -- with no
+    /// selection -- ran `features.splice(null, 1)`, which coerces to index
+    /// 0 and deletes the first line on every press.
+    ///
+    /// Nothing about the markup or the JavaScript looks wrong when this
+    /// happens, which is why it is pinned here.
+    #[test]
+    fn hidden_beats_author_display_rules() {
+        // Comments first: the explanation above the rule also mentions
+        // `[hidden]`, and would otherwise be found instead of the rule.
+        let css = strip_css_comments(include_str!("assets/app.css"));
+        let rule = css
+            .split('}')
+            .find(|block| block.contains("[hidden]"))
+            .expect("app.css must define a [hidden] rule");
+        assert!(
+            rule.contains("display") && rule.contains("none") && rule.contains("!important"),
+            "the [hidden] rule must be `display: none !important`, or an author \
+             `display` rule will keep a hidden element visible and clickable. Found: {rule}"
+        );
+    }
+
     /// Names declared at the top level of a classic script.
     ///
     /// A crude scan -- a declaration keyword in column zero -- which is

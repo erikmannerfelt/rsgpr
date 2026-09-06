@@ -368,7 +368,20 @@
       redraw();
     }
 
+    /** Delete the selected line.
+     *
+     * Does nothing without a selection, rather than deleting a line the
+     * user cannot see. `features.splice(null, 1)` coerces `null` to `0` and
+     * quietly removes the *first* line, which is what this did when the
+     * panel was reachable with nothing selected -- once per press.
+     *
+     * Deleting "the last line" instead was the alternative, but a
+     * destructive action needs a visible target: there is no way to show
+     * which line "the last one" is, so a confirmation could not name what
+     * was about to be lost. Every control in a panel headed "Selected line"
+     * acts on the selection, or not at all. */
     function deleteSelected() {
+      if (selected === null) return;
       features.splice(selected, 1);
       selected = null;
       markDirty();
@@ -509,6 +522,10 @@
     function updateSelectionPanel() {
       const active = selected !== null;
       selectionBox.hidden = !active;
+      // Not only hidden: a disabled button cannot be activated even if a
+      // future style rule makes the panel visible again, which is the way
+      // this failed the first time.
+      deleteButton.disabled = !active;
       if (!active) return;
       const feature = features[selected];
       const label = feature.properties && feature.properties.label;
