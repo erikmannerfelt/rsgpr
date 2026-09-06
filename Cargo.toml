@@ -66,7 +66,10 @@ blake3 = "1"
 walkdir = { version = "2", optional = true }  # Recursive catalog discovery
 lru = { version = "0.12", optional = true }  # Wrapped in a byte-bounded cache
 webbrowser = { version = "1", optional = true }  # `ridal gui` browser opening
-toml = { version = "0.8", optional = true }
+# Project marker/config parsing (`ridal.toml`). Not optional: projects are
+# a CLI concept too -- `ridal project init` and interpretation storage must
+# work in builds without the server.
+toml = "0.8"
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
@@ -99,7 +102,6 @@ server = [
     "walkdir",
     "lru",
     "webbrowser",
-    "toml",
     "tracing",
     "tracing-subscriber",
 ]

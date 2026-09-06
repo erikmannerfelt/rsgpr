@@ -41,6 +41,15 @@ pub struct AppState {
     root_is_file: bool,
     pub catalog: Catalog,
     pub radargrams: HashMap<String, OpenRadargram>,
+    /// The project this catalog belongs to, when it belongs to one.
+    ///
+    /// `None` is the read-only case Ridal has always supported: a bare
+    /// directory of `.nc` files, or a single file, with nowhere to save
+    /// anything. Every write route checks this rather than assuming.
+    pub project: Option<crate::project::Project>,
+    /// Whether write routes are enabled. Requires a project, and can be
+    /// switched off for one that has one (`--read-only`).
+    pub writable: bool,
     /// Bounds how many renders may be in flight at once, across every
     /// radargram, sized from `--n-workers`.
     ///
@@ -75,7 +84,14 @@ impl AppState {
     /// producing an empty catalog, and every later comparison against it
     /// (this function's own containment check below) is symlink-resolved
     /// and consistent.
-    pub fn build(root: &StdPath, config: &RenderServiceConfig) -> Result<Self, String> {
+    /// `project` is `None` for a bare directory or single file, which is
+    /// the read-only case; `writable` is ignored unless a project is present.
+    pub fn build_with_project(
+        root: &StdPath,
+        config: &RenderServiceConfig,
+        project: Option<crate::project::Project>,
+        writable: bool,
+    ) -> Result<Self, String> {
         let root = root
             .canonicalize()
             .map_err(|e| format!("Invalid catalog root {}: {e}", root.display()))?;
@@ -122,6 +138,10 @@ impl AppState {
             root_is_file,
             catalog,
             radargrams,
+            // Writes need somewhere to go, so a catalog with no project is
+            // read-only no matter what the caller asked for.
+            writable: writable && project.is_some(),
+            project,
             // `.max(1)`: a zero-permit semaphore would deadlock every
             // render forever. The CLI rejects `--n-workers 0` with a
             // clear message, so this only guards programmatic callers.
@@ -249,6 +269,20 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/static/images/logo.svg", get(super::assets::logo_svg))
         .route("/favicon.ico", get(super::assets::favicon))
         .route("/api/v1/health", get(super::routes::health))
+        .route(
+            "/api/v1/layers",
+            get(super::interp_routes::get_layers).put(super::interp_routes::put_layers),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/interpretations",
+            get(super::interp_routes::list_interpretations),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/interpretations/{user}",
+            get(super::interp_routes::get_interpretation)
+                .put(super::interp_routes::put_interpretation)
+                .delete(super::interp_routes::delete_interpretation),
+        )
         .route("/api/v1/profiles", get(super::routes::list_profiles))
         .route("/api/v1/datasets", get(super::routes::list_datasets))
         .route(
@@ -353,7 +387,8 @@ mod tests {
 
     fn test_app(dir: &StdPath) -> Router {
         let config = RenderServiceConfig::default();
-        let state = std::sync::Arc::new(AppState::build(dir, &config).unwrap());
+        let state =
+            std::sync::Arc::new(AppState::build_with_project(dir, &config, None, false).unwrap());
         build_router(state)
     }
 
@@ -364,7 +399,8 @@ mod tests {
             n_workers,
             ..RenderServiceConfig::default()
         };
-        let state = std::sync::Arc::new(AppState::build(dir, &config).unwrap());
+        let state =
+            std::sync::Arc::new(AppState::build_with_project(dir, &config, None, false).unwrap());
         (build_router(state.clone()), state)
     }
 

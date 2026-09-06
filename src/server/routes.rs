@@ -44,16 +44,28 @@ impl ApiError {
         self
     }
 
-    fn not_found(code: &'static str, message: impl Into<String>) -> Self {
+    pub(super) fn not_found(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, code, message)
     }
 
-    fn bad_request(code: &'static str, message: impl Into<String>) -> Self {
+    pub(super) fn bad_request(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, code, message)
     }
 
-    fn internal(code: &'static str, message: impl Into<String>) -> Self {
+    pub(super) fn internal(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, code, message)
+    }
+
+    /// The request is well-formed but the server is not in a state that can
+    /// serve it -- no project, or started read-only. Distinct from a 400:
+    /// nothing about the request needs fixing.
+    pub(super) fn conflict(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, code, message)
+    }
+
+    /// A conditional write whose condition no longer holds.
+    pub(super) fn precondition_failed(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::PRECONDITION_FAILED, code, message)
     }
 
     /// Temporary overload rather than a fault: the request was valid and

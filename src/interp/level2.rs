@@ -22,9 +22,10 @@ use std::fmt;
 
 use gprinterp::{Document, Geometry, Position};
 
-/// The default author recorded on exported points until Ridal has real
-/// multi-user support.
-pub const DEFAULT_USER: &str = "default";
+/// The default author recorded on exported points. Shared with the
+/// interpretation store so a pick's filename and its exported `user` column
+/// can never disagree.
+pub use crate::identity::DEFAULT_USER;
 
 /// Everything about one processed radargram that level 2 derivation needs.
 ///

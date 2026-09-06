@@ -1,0 +1,510 @@
+//! Ridal projects: the on-disk home for everything that is *authored*
+//! rather than processed.
+//!
+//! Until now Ridal has been strictly read-only, so a radargram's path was
+//! all the state there was. Interpretations change that: picks have to be
+//! saved somewhere, and so do the layer definitions they refer to. A project
+//! is that somewhere.
+//!
+//! ```text
+//! myproject/
+//!   ridal.toml                              marker and settings
+//!   radargrams/                             optional; roots are configurable
+//!     dronbreen-0237.nc
+//!   interpretations/
+//!     dronbreen-0237/
+//!       default.gprinterp.json              one document per user
+//!   layers/
+//!     layers.json                           project-scoped layer vocabulary
+//!   cache/                                  derived data; safe to delete
+//! ```
+//!
+//! # Why an explicit marker
+//!
+//! A directory is a project only if it contains `ridal.toml`. Pointing
+//! `ridal gui` at a bare directory of `.nc` files keeps working exactly as
+//! before, read-only, which means adding a write path takes nothing away
+//! from the existing behaviour. It also makes "where do these picks go?"
+//! answerable by looking, rather than by inference from what happens to be
+//! lying around.
+//!
+//! # Two kinds of data, deliberately separated
+//!
+//! Everything under `interpretations/` and `layers/` is **authored**: a
+//! person made it, nothing can regenerate it, and losing it is data loss.
+//! Those go through [`store::DocumentStore`], which writes atomically and
+//! refuses to silently overwrite a concurrent edit.
+//!
+//! `cache/` is **derived**: rendered images and anything else Ridal can
+//! rebuild from a radargram. It is deliberately *not* a document store.
+//! Deleting it must always be safe, it needs no versioning or conflict
+//! detection, and it should not be backed up -- which is why Ridal drops a
+//! `CACHEDIR.TAG` in it, the convention backup tools already understand.
+//! Its location is configurable precisely because a project directory may
+//! sit on a network share while a cache wants local disk, which is the
+//! normal arrangement for a long-running daemon.
+//!
+//! # Adding another kind of data later
+//!
+//! Give it a store directory and a module beside [`interpretations`] and
+//! [`layers`]. The document store knows nothing about schemas, so nothing in
+//! `store.rs` needs to change.
+
+pub mod interpretations;
+pub mod layers;
+pub mod store;
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use store::DocumentStore;
+
+/// The file whose presence makes a directory a project.
+pub const MARKER: &str = "ridal.toml";
+
+/// Store directory for interpretations, relative to the project root.
+pub const INTERPRETATIONS_DIR: &str = "interpretations";
+/// Store directory for layer definitions.
+pub const LAYERS_DIR: &str = "layers";
+/// Default location for derived data.
+pub const DEFAULT_CACHE_DIR: &str = "cache";
+/// Default directory scanned for radargrams when the config says nothing.
+pub const DEFAULT_RADARGRAM_DIR: &str = "radargrams";
+
+/// Contents of `ridal.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProjectConfig {
+    #[serde(default)]
+    pub project: ProjectSection,
+    #[serde(default)]
+    pub radargrams: RadargramsSection,
+    #[serde(default)]
+    pub cache: CacheSection,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProjectSection {
+    /// Human-facing project name. Cosmetic; no identity semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RadargramsSection {
+    /// Directories scanned for processed radargrams. Relative paths resolve
+    /// against the project root; absolute paths are used as given, so a
+    /// project can index an archive it does not contain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roots: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CacheSection {
+    /// Where derived data lives. Relative to the project root unless
+    /// absolute -- an absolute path is the point, for a daemon whose project
+    /// is on a network share but whose cache should be on local disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+}
+
+/// Quote a value as a TOML basic string.
+///
+/// Project names are free text and paths can contain backslashes, so the
+/// template cannot just wrap them in quotes and hope.
+fn toml_string(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    format!("\"{escaped}\"")
+}
+
+/// An opened project.
+#[derive(Debug)]
+pub struct Project {
+    root: PathBuf,
+    config: ProjectConfig,
+    documents: DocumentStore,
+}
+
+#[derive(Debug)]
+pub enum ProjectError {
+    NotAProject(PathBuf),
+    AlreadyAProject(PathBuf),
+    Io { path: PathBuf, message: String },
+    Config { path: PathBuf, message: String },
+}
+
+impl std::fmt::Display for ProjectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProjectError::NotAProject(path) => write!(
+                f,
+                "{} is not a Ridal project (no {MARKER}). Run `ridal project init` \
+                 there to create one.",
+                path.display()
+            ),
+            ProjectError::AlreadyAProject(path) => write!(
+                f,
+                "{} is already a Ridal project ({MARKER} exists)",
+                path.display()
+            ),
+            ProjectError::Io { path, message } => write!(f, "{}: {message}", path.display()),
+            ProjectError::Config { path, message } => {
+                write!(f, "could not read {}: {message}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProjectError {}
+
+impl Project {
+    /// Open the project rooted exactly at `root`.
+    pub fn open(root: &Path) -> Result<Project, ProjectError> {
+        let marker = root.join(MARKER);
+        if !marker.is_file() {
+            return Err(ProjectError::NotAProject(root.to_path_buf()));
+        }
+        let text = std::fs::read_to_string(&marker).map_err(|e| ProjectError::Io {
+            path: marker.clone(),
+            message: e.to_string(),
+        })?;
+        let config: ProjectConfig = toml::from_str(&text).map_err(|e| ProjectError::Config {
+            path: marker,
+            message: e.to_string(),
+        })?;
+
+        let root = root.to_path_buf();
+        Ok(Project {
+            documents: DocumentStore::new(root.clone()),
+            root,
+            config,
+        })
+    }
+
+    /// Find the project containing `start`, searching upwards.
+    ///
+    /// Upwards rather than exact-match so that pointing Ridal at a
+    /// subdirectory -- or at a single `.nc` file inside a project -- still
+    /// finds the interpretations that belong to it. Returns `Ok(None)` when
+    /// there is no project above `start`, which is the ordinary read-only
+    /// case rather than an error.
+    pub fn discover(start: &Path) -> Result<Option<Project>, ProjectError> {
+        let start = std::fs::canonicalize(start).map_err(|e| ProjectError::Io {
+            path: start.to_path_buf(),
+            message: e.to_string(),
+        })?;
+        let mut current: Option<&Path> = if start.is_file() {
+            start.parent()
+        } else {
+            Some(start.as_path())
+        };
+        while let Some(dir) = current {
+            if dir.join(MARKER).is_file() {
+                return Ok(Some(Project::open(dir)?));
+            }
+            current = dir.parent();
+        }
+        Ok(None)
+    }
+
+    /// Create a project at `root`, which need not exist yet.
+    pub fn init(root: &Path, name: Option<&str>) -> Result<Project, ProjectError> {
+        if root.join(MARKER).exists() {
+            return Err(ProjectError::AlreadyAProject(root.to_path_buf()));
+        }
+        for dir in [
+            root.to_path_buf(),
+            root.join(INTERPRETATIONS_DIR),
+            root.join(LAYERS_DIR),
+            root.join(DEFAULT_RADARGRAM_DIR),
+        ] {
+            std::fs::create_dir_all(&dir).map_err(|e| ProjectError::Io {
+                path: dir,
+                message: e.to_string(),
+            })?;
+        }
+
+        let config = ProjectConfig {
+            project: ProjectSection {
+                name: name.map(str::to_string),
+            },
+            radargrams: RadargramsSection {
+                roots: vec![DEFAULT_RADARGRAM_DIR.to_string()],
+            },
+            cache: CacheSection::default(),
+        };
+        // Written as a commented template rather than serialized, because
+        // this file exists to be hand-edited: serde would emit a bare,
+        // undocumented `[cache]` with no keys, which reads as debris rather
+        // than as an invitation. `Project::open` parses either form.
+        let name_line = match &config.project.name {
+            Some(name) => format!("name = {}\n", toml_string(name)),
+            None => format!("# name = {}\n", toml_string("My survey")),
+        };
+        let text = format!(
+            "# Ridal project. Its presence is what makes this directory a project;\n\
+             # `ridal gui .` here can then save interpretations.\n\
+             \n\
+             [project]\n\
+             {name_line}\n\
+             # Directories scanned for processed radargrams. Relative paths resolve\n\
+             # against this file; absolute paths let a project index an archive it\n\
+             # does not contain.\n\
+             [radargrams]\n\
+             roots = [{}]\n\
+             \n\
+             # Where derived data (rendered images, and anything else Ridal can\n\
+             # rebuild) is kept. Safe to delete at any time. Point this at local\n\
+             # disk if the project itself lives on a network share.\n\
+             # [cache]\n\
+             # dir = {}\n",
+            toml_string(DEFAULT_RADARGRAM_DIR),
+            toml_string("/var/cache/ridal"),
+        );
+        let marker = root.join(MARKER);
+        std::fs::write(&marker, text).map_err(|e| ProjectError::Io {
+            path: marker,
+            message: e.to_string(),
+        })?;
+
+        let project = Project::open(root)?;
+        // Created and tagged up front so the layout is complete from the
+        // start, and so a project directory is safe to back up wholesale
+        // before anything has been rendered into it.
+        project.ensure_cache_dir()?;
+        Ok(project)
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn config(&self) -> &ProjectConfig {
+        &self.config
+    }
+
+    /// The store holding authored documents.
+    pub fn documents(&self) -> &DocumentStore {
+        &self.documents
+    }
+
+    /// Absolute directories to scan for processed radargrams.
+    ///
+    /// Falls back to the project root itself when the config lists none, so
+    /// a project whose `.nc` files sit loose at the top level still works
+    /// without configuration.
+    pub fn radargram_roots(&self) -> Vec<PathBuf> {
+        if self.config.radargrams.roots.is_empty() {
+            return vec![self.root.clone()];
+        }
+        self.config
+            .radargrams
+            .roots
+            .iter()
+            .map(|entry| self.resolve(entry))
+            .collect()
+    }
+
+    /// Where derived data belongs.
+    ///
+    /// Reserved now and created on demand: the on-disk render cache does not
+    /// exist yet, but its location is a project-shaped decision and settling
+    /// it here means adding the cache later is not also a layout change.
+    pub fn cache_dir(&self) -> PathBuf {
+        match &self.config.cache.dir {
+            Some(dir) => self.resolve(dir),
+            None => self.root.join(DEFAULT_CACHE_DIR),
+        }
+    }
+
+    /// Create the cache directory and mark it as derived data.
+    ///
+    /// `CACHEDIR.TAG` is the convention backup and archiving tools already
+    /// recognise (Cargo tags `target/` the same way), so a project directory
+    /// can be backed up wholesale without dragging along regenerable
+    /// renders.
+    pub fn ensure_cache_dir(&self) -> Result<PathBuf, ProjectError> {
+        let dir = self.cache_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| ProjectError::Io {
+            path: dir.clone(),
+            message: e.to_string(),
+        })?;
+        let tag = dir.join("CACHEDIR.TAG");
+        if !tag.exists() {
+            let contents = "Signature: 8a477f597d28d172789f06886806bc55\n\
+                            # This file is a cache directory tag created by ridal.\n\
+                            # For information about cache directory tags, see:\n\
+                            #\thttps://bford.info/cachedir/\n";
+            std::fs::write(&tag, contents).map_err(|e| ProjectError::Io {
+                path: tag,
+                message: e.to_string(),
+            })?;
+        }
+        Ok(dir)
+    }
+
+    fn resolve(&self, entry: &str) -> PathBuf {
+        let path = Path::new(entry);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.root.join(path)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn init_creates_a_marker_and_the_store_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("myproject");
+        let project = Project::init(&root, Some("Drønbreen 2022")).unwrap();
+
+        assert!(root.join(MARKER).is_file());
+        assert!(root.join(INTERPRETATIONS_DIR).is_dir());
+        assert!(root.join(LAYERS_DIR).is_dir());
+        assert_eq!(
+            project.config().project.name.as_deref(),
+            Some("Drønbreen 2022")
+        );
+    }
+
+    #[test]
+    fn init_refuses_to_overwrite_an_existing_project() {
+        let dir = tempfile::tempdir().unwrap();
+        Project::init(dir.path(), None).unwrap();
+        assert!(matches!(
+            Project::init(dir.path(), None),
+            Err(ProjectError::AlreadyAProject(_))
+        ));
+    }
+
+    #[test]
+    fn a_directory_without_a_marker_is_not_a_project() {
+        // The existing read-only behaviour depends on this: pointing Ridal
+        // at a bare directory of .nc files must not turn it into a project.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            Project::open(dir.path()),
+            Err(ProjectError::NotAProject(_))
+        ));
+        assert!(Project::discover(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn discover_walks_up_from_a_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        Project::init(dir.path(), None).unwrap();
+        let nested = dir.path().join("radargrams").join("2022").join("deep");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let found = Project::discover(&nested).unwrap().unwrap();
+        assert_eq!(
+            std::fs::canonicalize(found.root()).unwrap(),
+            std::fs::canonicalize(dir.path()).unwrap()
+        );
+    }
+
+    #[test]
+    fn discover_walks_up_from_a_file_inside_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        Project::init(dir.path(), None).unwrap();
+        let file = dir.path().join("radargrams").join("line.nc");
+        std::fs::write(&file, b"not really a netcdf").unwrap();
+
+        assert!(Project::discover(&file).unwrap().is_some());
+    }
+
+    #[test]
+    fn radargram_roots_resolve_relative_and_absolute_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        assert_eq!(
+            project.radargram_roots(),
+            vec![dir.path().join(DEFAULT_RADARGRAM_DIR)]
+        );
+
+        // An absolute root is how a project indexes an archive it does not
+        // contain.
+        let text = format!(
+            "[radargrams]\nroots = [\"inside\", \"{}\"]\n",
+            "/mnt/archive/svalbard"
+        );
+        std::fs::write(dir.path().join(MARKER), text).unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        assert_eq!(
+            project.radargram_roots(),
+            vec![
+                dir.path().join("inside"),
+                PathBuf::from("/mnt/archive/svalbard")
+            ]
+        );
+    }
+
+    #[test]
+    fn radargram_roots_fall_back_to_the_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(MARKER), "[project]\nname = \"x\"\n").unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        assert_eq!(project.radargram_roots(), vec![dir.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn the_cache_directory_can_be_moved_off_the_project() {
+        // The daemon case: project on a network share, cache on local disk.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(MARKER),
+            "[cache]\ndir = \"/var/cache/ridal\"\n",
+        )
+        .unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        assert_eq!(project.cache_dir(), PathBuf::from("/var/cache/ridal"));
+    }
+
+    #[test]
+    fn the_cache_directory_is_tagged_as_derived_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        let cache = project.ensure_cache_dir().unwrap();
+
+        let tag = std::fs::read_to_string(cache.join("CACHEDIR.TAG")).unwrap();
+        assert!(
+            tag.starts_with("Signature: 8a477f597d28d172789f06886806bc55"),
+            "the signature line is what backup tools actually match on"
+        );
+        // Idempotent: opening a project twice must not fail on the tag.
+        project.ensure_cache_dir().unwrap();
+    }
+
+    #[test]
+    fn an_unparseable_marker_is_reported_rather_than_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(MARKER), "this is not toml {{{").unwrap();
+        assert!(matches!(
+            Project::open(dir.path()),
+            Err(ProjectError::Config { .. })
+        ));
+    }
+
+    #[test]
+    fn unknown_config_keys_are_tolerated() {
+        // Forward compatibility: a project written by a newer Ridal should
+        // still open in an older one rather than refusing outright.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(MARKER),
+            "[project]\nname = \"x\"\n\n[future]\nsomething = 1\n",
+        )
+        .unwrap();
+        assert!(Project::open(dir.path()).is_ok());
+    }
+}

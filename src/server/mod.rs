@@ -46,14 +46,17 @@
 //! # The one rule every submodule follows
 //!
 //! Rendering and dataset logic must not depend on Axum, MiniJinja, or
-//! other HTTP/template types. Only [`app`], [`routes`], [`launch`], and
-//! [`templates`] are allowed to know an HTTP server exists; everything
+//! other HTTP/template types. Only [`app`], [`routes`], [`interp_routes`],
+//! [`launch`], and [`templates`] are allowed to know an HTTP server exists; everything
 //! else -- especially [`render`] -- must stay testable with nothing but
 //! plain Rust and, where needed, a real NetCDF file.
 
 pub mod app;
 pub mod assets;
 pub mod catalog;
+pub mod interp_routes;
+#[cfg(test)]
+mod interp_routes_tests;
 pub mod launch;
 pub mod render;
 pub mod routes;

@@ -24,12 +24,46 @@ pub enum Commands {
     Formats(FormatsArgs),
     /// Work with interpretations (picked layers) of processed radargrams
     Interp(InterpArgs),
+    /// Create and inspect Ridal projects
+    Project(ProjectArgs),
     /// Open a local browser GUI for one radargram or a directory of them
     #[cfg(feature = "server")]
     Gui(GuiArgs),
     /// Run the web server explicitly (for remote or persistent deployment)
     #[cfg(feature = "server")]
     Server(ServerArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProjectArgs {
+    #[command(subcommand)]
+    pub command: ProjectCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectCommand {
+    /// Create a project so interpretations have somewhere to live
+    Init(ProjectInitArgs),
+    /// Show what a project contains
+    Info(ProjectInfoArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProjectInitArgs {
+    /// Directory to create the project in. Created if it does not exist.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+
+    /// Human-facing project name. Cosmetic.
+    #[arg(long)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProjectInfoArgs {
+    /// A path inside the project. The project is found by searching upwards.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
 }
 
 #[derive(Debug, clap::Args)]
@@ -96,6 +130,10 @@ pub struct GuiArgs {
     /// Number of worker threads for CPU-heavy rendering.
     #[arg(long)]
     pub n_workers: Option<usize>,
+
+    /// Serve a project without accepting any writes.
+    #[arg(long)]
+    pub read_only: bool,
 }
 
 #[cfg(feature = "server")]
@@ -131,6 +169,18 @@ pub struct ServerStartArgs {
     /// Open a browser after starting (off by default in this mode).
     #[arg(long)]
     pub open_browser: bool,
+
+    /// Serve a project without accepting any writes.
+    #[arg(long)]
+    pub read_only: bool,
+
+    /// Accept writes while bound to a non-loopback address.
+    ///
+    /// Ridal has no authentication yet, so this makes interpretations
+    /// editable by anyone who can reach the address. Prefer binding loopback
+    /// behind a reverse proxy that authenticates.
+    #[arg(long)]
+    pub allow_remote_writes: bool,
 
     /// In-memory cache budget for encoded chunk/overview images, in MB.
     #[arg(long)]
@@ -450,6 +500,10 @@ pub fn run(arguments: Args) -> Result<(), String> {
         Commands::Interp(args) => match args.command {
             InterpCommand::Export(args) => interp_export_command(&args),
         },
+        Commands::Project(args) => match args.command {
+            ProjectCommand::Init(args) => project_init_command(&args),
+            ProjectCommand::Info(args) => project_info_command(&args),
+        },
         #[cfg(feature = "server")]
         Commands::Gui(args) => gui_command(args),
         #[cfg(feature = "server")]
@@ -480,7 +534,7 @@ fn render_service_config(
 #[cfg(feature = "server")]
 fn gui_command(args: GuiArgs) -> Result<(), String> {
     let config = render_service_config(args.cache_memory_mb, args.n_workers)?;
-    crate::server::launch::run_gui(&args.path, config)
+    crate::server::launch::run_gui(&args.path, args.read_only, config)
 }
 
 #[cfg(feature = "server")]
@@ -497,6 +551,8 @@ fn server_command(args: ServerArgs) -> Result<(), String> {
                 host,
                 start_args.port,
                 start_args.open_browser,
+                start_args.read_only,
+                start_args.allow_remote_writes,
                 config,
             )
         }
@@ -1020,5 +1076,103 @@ fn interp_export_command(args: &InterpExportArgs) -> Result<(), String> {
         document.layers().len(),
         args.output
     );
+    Ok(())
+}
+
+fn project_init_command(args: &ProjectInitArgs) -> Result<(), String> {
+    let project = crate::project::Project::init(&args.path, args.name.as_deref())
+        .map_err(|e| e.to_string())?;
+    println!("Created project at {}", project.root().display());
+    println!(
+        "  {} names it; interpretations go in {}/, layer definitions in {}/",
+        crate::project::MARKER,
+        crate::project::INTERPRETATIONS_DIR,
+        crate::project::LAYERS_DIR,
+    );
+    println!(
+        "  Put processed radargrams in {}/ (or point [radargrams] roots elsewhere).",
+        crate::project::DEFAULT_RADARGRAM_DIR
+    );
+    Ok(())
+}
+
+fn project_info_command(args: &ProjectInfoArgs) -> Result<(), String> {
+    let Some(project) = crate::project::Project::discover(&args.path).map_err(|e| e.to_string())?
+    else {
+        return Err(format!(
+            "No Ridal project at or above {}. Run `ridal project init` to create one.",
+            args.path.display()
+        ));
+    };
+
+    println!("Project: {}", project.root().display());
+    if let Some(name) = &project.config().project.name {
+        println!("Name: {name}");
+    }
+    for root in project.radargram_roots() {
+        println!("Radargram root: {}", root.display());
+    }
+    println!("Cache: {}", project.cache_dir().display());
+
+    let (layers, _) =
+        crate::project::layers::read(project.documents()).map_err(|e| e.to_string())?;
+    println!("Layers: {}", layers.layers.len());
+    for layer in &layers.layers {
+        println!("  {} ({})", layer.id, layer.name);
+    }
+
+    // Listed from the interpretations directory rather than from the
+    // catalog: an interpretation whose radargram is missing is exactly the
+    // thing worth noticing, and inspecting must not need the server feature.
+    let interpretations = project.root().join(crate::project::INTERPRETATIONS_DIR);
+    let mut total = 0usize;
+    if let Ok(entries) = std::fs::read_dir(&interpretations) {
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        for name in names {
+            let Ok(radargram) = crate::identity::RadargramId::new(&name) else {
+                continue;
+            };
+            let users =
+                crate::project::interpretations::list_users(project.documents(), &radargram)
+                    .map_err(|e| e.to_string())?;
+            if !users.is_empty() {
+                println!("Interpretations: {name} <- {}", users.join(", "));
+                total += users.len();
+            }
+            for user in &users {
+                let Ok(user_id) = crate::identity::UserId::new(user.as_str()) else {
+                    continue;
+                };
+                let Some(stored) = crate::project::interpretations::read(
+                    project.documents(),
+                    &radargram,
+                    &user_id,
+                )
+                .map_err(|e| e.to_string())?
+                else {
+                    continue;
+                };
+                // Labels with no definition are worth surfacing: the picks
+                // are real, the vocabulary just does not describe them, and
+                // the viewer will draw them with no colour.
+                let labels = stored.document.features.iter().filter_map(|f| f.label());
+                let unknown = layers.unknown_ids(labels);
+                if !unknown.is_empty() {
+                    println!(
+                        "  warning: {name}/{user} uses undefined layer(s): {}",
+                        unknown.join(", ")
+                    );
+                }
+            }
+        }
+    }
+    if total == 0 {
+        println!("Interpretations: none yet");
+    }
     Ok(())
 }

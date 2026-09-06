@@ -10,6 +10,13 @@
 //! - [`DisplayName`]: an optional human-facing label. No identity semantics;
 //!   must never affect revision or render identity.
 //!
+//! - [`UserId`]: who authored an interpretation. Ridal has no authentication
+//!   yet, so today this is always the literal `default`; it exists as a
+//!   validated type from the start because it is used as a *filename* inside
+//!   a project (`interpretations/<radargram>/<user>.gprinterp.json`), and a
+//!   name that arrives over HTTP must never be able to escape that
+//!   directory.
+//!
 //! `RadargramId` and `GroupId` share validation rules because both are used
 //! in path-like ways by the web server (#116): ASCII lowercase,
 //! `[a-z0-9_-]`, 1-128 characters, no leading/trailing separator, and not a
@@ -176,6 +183,14 @@ macro_rules! slug_newtype {
 
 slug_newtype!(RadargramId, "radargram ID");
 slug_newtype!(GroupId, "group");
+slug_newtype!(UserId, "user");
+
+/// The author recorded when Ridal has no authentication to ask.
+///
+/// Defined here rather than in the interpretation store or the level 2
+/// exporter because both need it and they must agree: the filename a pick is
+/// saved under and the `user` column it exports as are the same identity.
+pub const DEFAULT_USER: &str = "default";
 
 /// An optional human-facing label with no identity semantics. An empty or
 /// whitespace-only value is treated as absent by [`DisplayName::from_input`]
