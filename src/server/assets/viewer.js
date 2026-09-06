@@ -208,15 +208,16 @@ const overviewMap = RIDAL.basemap(L.map('overview-map'));
   });
 
   updateSideBySideState();
-  const observer = new ResizeObserver(() => {
+  new ResizeObserver(() => {
     updateSideBySideState();
     scheduleInvalidate();
-  });
-  observer.observe(layout);
-  // Also the map pane itself: the picking toolbar sits *above* the layout,
-  // so when its status text wraps to another line the layout is pushed down
-  // without changing size, and an observer on `layout` alone never fires.
-  observer.observe(mapEl);
+  }).observe(layout);
+
+  // The map pane gets its own observer, deliberately not the one above:
+  // that callback writes `mapEl.style.flex`, so pointing it at `mapEl`
+  // would let it feed itself. This one only tells Leaflet the pane
+  // resized, which is what a phone's address bar hiding does.
+  new ResizeObserver(() => scheduleInvalidate()).observe(mapEl);
 })();
 
 let ownTrack = null;

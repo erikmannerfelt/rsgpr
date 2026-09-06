@@ -59,10 +59,24 @@
   --radius-md: 6px;
   --table-cell-pad: 2px var(--space-3) 2px 0;
   --map-height-group: 320px;
+  /* `vh` is the fallback; the `@supports` block below prefers `svh`. See
+     the note there -- this is what stops the viewer jumping on a phone. */
   --map-height-viewer: 70vh;
   --map-min-height: 400px;
   --card-min: 18rem;
   --thumb-aspect: 5 / 2;
+}
+
+/* A phone's address bar hides on the first interaction, which grows `vh`
+   and therefore the map, which re-lays the radargram under the finger that
+   caused it -- the "jump" on placing a first vertex. `svh` is resolved
+   against the viewport *with* the bar visible and stays put when it hides,
+   trading ~10% of map height for a view that does not move. `dvh` would be
+   the worst choice here: it tracks the bar continuously. */
+@supports (height: 1svh) {
+  :root {
+    --map-height-viewer: 70svh;
+  }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -840,13 +854,21 @@ button.danger:hover {
   }
 }
 
-/* The status text changes on every vertex. Letting it reflow the toolbar
- * pushes the map down mid-tap, which on a narrow screen is what made the
- * first vertex land somewhere other than where it was tapped. Giving it its
- * own row keeps the buttons still. */
+/* The status text changes on every vertex, and must not resize the toolbar
+ * when it does: a toolbar that grows pushes the map down mid-tap.
+ *
+ * It takes the remaining space on its row and truncates, rather than
+ * wrapping or claiming a row of its own. An earlier attempt gave it
+ * `flex-basis: 100%`, which did stop the reflow but made the toolbar a line
+ * taller -- enough to make the page scroll on a phone, where the first tap
+ * then goes to collapsing the address bar instead of to the control under
+ * it. Stability has to come from *not changing size*, not from more space. */
 .picker-controls .pick-status {
-  flex-basis: 100%;
-  min-height: 1.4em;
+  flex: 1 1 0;
+  min-width: 6rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 @media (max-width: 40rem) {
@@ -859,4 +881,27 @@ button.danger:hover {
   .picker-selection button {
     min-height: 2.75rem;
   }
+}
+
+/* The picking error is a fixed toast rather than a block in the flow.
+ *
+ * In flow it changed the page height every time it appeared or cleared,
+ * which on a phone moves the map and the toolbar under the finger that
+ * triggered it -- and picking errors appear and clear constantly, once per
+ * refused tap. Taking it out of the flow means no picking interaction can
+ * reflow the page at all.
+ *
+ * Bottom rather than top: on a phone the top of the screen is the furthest
+ * point from the thumb, and the toolbar it refers to is at the bottom of
+ * the controls anyway. */
+#pick-error {
+  position: fixed;
+  left: var(--space-3);
+  right: var(--space-3);
+  bottom: var(--space-3);
+  z-index: 1000;
+  margin: 0;
+  max-width: 44rem;
+  margin-inline: auto;
+  box-shadow: 0 2px 12px rgb(0 0 0 / 30%);
 }
