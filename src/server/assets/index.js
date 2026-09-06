@@ -38,19 +38,24 @@ document.querySelectorAll('.group-map').forEach((el) => {
     .then((members) => {
       const allPoints = [];
       for (const [radargramId, info] of Object.entries(members)) {
-        const layers = RIDAL.trackToLatLngs(info.track).map((latlngs) => {
+        const pairs = RIDAL.trackToLatLngs(info.track).map((latlngs) => {
           allPoints.push(...latlngs);
-          return L.polyline(latlngs, {
-            color: RIDAL.trackColor,
-            weight: RIDAL.trackWeight,
-          })
+          // The wide companion goes down first and carries the popup, so a
+          // track is as easy to hit as it is to see.
+          const hit = RIDAL.hitLine(latlngs)
             .bindPopup(RIDAL.popupContent(radargramId, info.effective_label))
             .addTo(map);
+          const visible = L.polyline(latlngs, {
+            color: RIDAL.trackColor,
+            weight: RIDAL.trackWeight,
+            interactive: false,
+          }).addTo(map);
+          return { visible, hit };
         });
         // Two-way highlight with the matching catalog card (#121
         // planning round item 7): hovering either one highlights both.
         const card = document.getElementById(`card-${radargramId}`);
-        RIDAL.bindTrackHighlight(layers, card, RIDAL.trackWeight, RIDAL.trackFocusWeight);
+        RIDAL.bindTrackHighlight(pairs, card, RIDAL.trackWeight, RIDAL.trackFocusWeight);
       }
       if (allPoints.length > 0) {
         map.fitBounds(allPoints);

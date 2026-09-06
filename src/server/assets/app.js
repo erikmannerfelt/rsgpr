@@ -162,18 +162,53 @@ const RIDAL = Object.freeze({
    * rather than fighting over the layer's weight when one ends before
    * the other. `layers` is an array because one track can be several
    * polyline segments. */
-  bindTrackHighlight(layers, card, baseWeight, focusWeight) {
+  /** How wide, in pixels, the invisible strip along a line that accepts a
+   * tap or hover.
+   *
+   * A Leaflet polyline is only interactive within its own stroke, so a 3px
+   * track has a 3px target -- unusable with a finger and fiddly with a
+   * mouse. Every interactive line therefore gets a transparent companion of
+   * this width. Roughly a fingertip on touch, a comfortable aim otherwise. */
+  hitWidth: window.matchMedia("(pointer: coarse)").matches ? 34 : 14,
+
+  /** A transparent, interactive companion for `latlngs`.
+   *
+   * Add it *before* the visible line so the visible one draws on top, and
+   * put every handler on this rather than on the line it shadows -- a
+   * visible line left interactive would swallow events aimed at the easier
+   * target. */
+  hitLine(latlngs) {
+    return L.polyline(latlngs, {
+      className: "hit-line",
+      weight: RIDAL.hitWidth,
+      opacity: 0,
+      interactive: true,
+    });
+  },
+
+  /** Two-way hover/popup highlighting for a set of track lines.
+   *
+   * Takes `{ visible, hit }` pairs: events come from the wide companion,
+   * while the weight change is applied to the line that can actually be
+   * seen. */
+  bindTrackHighlight(pairs, card, baseWeight, focusWeight) {
     let hovered = false;
     let popupOpen = false;
     const apply = () => {
       const on = hovered || popupOpen;
-      layers.forEach((layer) => {
-        layer.setStyle({ weight: on ? focusWeight : baseWeight });
-        if (on) layer.bringToFront();
+      pairs.forEach(({ visible, hit }) => {
+        visible.setStyle({ weight: on ? focusWeight : baseWeight });
+        if (on) {
+          // Order matters: the companion first, so the visible line still
+          // ends up above it.
+          hit.bringToFront();
+          visible.bringToFront();
+        }
       });
       if (card) card.classList.toggle("is-hovered", on);
     };
-    layers.forEach((layer) => {
+    pairs.forEach(({ hit }) => {
+      const layer = hit;
       layer.on("mouseover", () => { hovered = true; apply(); });
       layer.on("mouseout", () => { hovered = false; apply(); });
       layer.on("popupopen", () => { popupOpen = true; apply(); });

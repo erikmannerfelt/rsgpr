@@ -12,7 +12,10 @@
 </head>
 <body>
   <header>
-    <a href="/" class="brand">
+    {#- Same reasoning as the menu links below: the logo is another way home,
+        and it should not be the one that quietly resets the profile. -#}
+    {%- set profile_query = "?profile=" ~ active_profile if active_profile else "" %}
+    <a href="/{{ profile_query }}" class="brand">
       <img src="/static/images/logo.svg" alt="" class="brand-logo">
       Ridal
     </a>
@@ -24,9 +27,14 @@
     <nav class="site-nav">
       <details class="site-menu" id="site-menu">
         <summary aria-label="Menu">Menu</summary>
+        {#- The render profile is a viewing preference, so it rides along
+            through every page rather than resetting whenever the menu is
+            used. `active_profile` is undefined on pages that have none (the
+            error page), which minijinja treats as falsy -- so the links
+            simply come out bare there. -#}
         <ul>
-          <li><a href="/">Radargram catalog</a></li>
-          <li><a href="/layers">Layers</a></li>
+          <li><a href="/{{ profile_query }}">Radargram catalog</a></li>
+          <li><a href="/layers{{ profile_query }}">Layers</a></li>
         </ul>
       </details>
     </nav>

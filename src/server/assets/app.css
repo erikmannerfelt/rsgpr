@@ -964,13 +964,14 @@ button.danger:hover {
   box-shadow: 0 2px 12px rgb(0 0 0 / 30%);
 }
 
-/* The invisible companion that makes a line tappable.
+/* The invisible companion that makes a line tappable -- picked reflectors
+ * on the radargram, and radargram tracks on the geographic maps.
  *
  * `pointer-events: stroke` hit-tests the stroke area regardless of whether
  * it is painted, so a fully transparent line still receives taps. Chrome
  * happens to hit-test a `stroke-opacity: 0` path anyway; saying so
  * explicitly is what makes it portable. */
-.pick-hit {
+.hit-line {
   pointer-events: stroke;
   cursor: pointer;
 }

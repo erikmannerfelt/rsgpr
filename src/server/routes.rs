@@ -427,7 +427,15 @@ struct GroupSummary {
 /// edit -- a 404 here would be an odd answer to "show me the layers".
 pub async fn layers_page(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<ProfileQuery>,
 ) -> Result<impl IntoResponse, PageError> {
+    // This page has nothing to render, but it carries the profile so the
+    // menu's links out of it keep the viewing preference the user arrived
+    // with. An unknown profile is rejected rather than passed on, so a bad
+    // value cannot propagate silently through the menu.
+    let active_profile = query.profile.unwrap_or_else(|| "default".to_string());
+    lookup_profile(&active_profile).map_err(PageError)?;
+
     let env = templates::environment();
     let tmpl = env
         .get_template("layers.html.jinja")
@@ -436,6 +444,7 @@ pub async fn layers_page(
         .render(minijinja::context! {
             project => state.project.is_some(),
             writable => state.writable,
+            active_profile => active_profile,
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))

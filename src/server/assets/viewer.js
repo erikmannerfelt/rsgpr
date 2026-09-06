@@ -262,16 +262,19 @@ if (GROUP) {
     .then((siblings) => {
       for (const [siblingId, info] of Object.entries(siblings)) {
         if (siblingId === RADARGRAM_ID) continue;
-        const layers = trackToLatLngs(info.track).map((latlngs) =>
-          L.polyline(latlngs, {
+        const pairs = trackToLatLngs(info.track).map((latlngs) => {
+          const hit = RIDAL.hitLine(latlngs)
+            .bindPopup(RIDAL.popupContent(siblingId, info.effective_label))
+            .addTo(overviewMap);
+          const visible = L.polyline(latlngs, {
             color: RIDAL.siblingColor,
             weight: RIDAL.siblingWeight,
             opacity: RIDAL.siblingOpacity,
-          })
-            .bindPopup(RIDAL.popupContent(siblingId, info.effective_label))
-            .addTo(overviewMap),
-        );
-        RIDAL.bindTrackHighlight(layers, null, RIDAL.siblingWeight, RIDAL.siblingFocusWeight);
+            interactive: false,
+          }).addTo(overviewMap);
+          return { visible, hit };
+        });
+        RIDAL.bindTrackHighlight(pairs, null, RIDAL.siblingWeight, RIDAL.siblingFocusWeight);
       }
     })
     .catch((error) => {
