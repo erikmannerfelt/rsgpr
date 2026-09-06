@@ -332,6 +332,16 @@ function axisValue(array, index) {
 }
 
 const readout = document.getElementById('cursor-readout');
+// Seeded, and never blanked below, so the readout always occupies exactly
+// one line. An empty readout used to take no width, sit on the controls
+// row, and then wrap to a row of its own the moment it was populated --
+// growing the whole controls block and shifting the radargram down by a
+// line. On a phone that happens on every tap: moving a finger from the map
+// to a button fires `mouseout` (blank, shift up), tapping the map fires
+// `mousemove` (populate, shift down). It made the first tap on any control
+// land on whatever had just moved out from under it, and put a placed
+// vertex a line higher than where it was tapped.
+readout.textContent = `trace - / ${SOURCE_WIDTH}`;
 map.on('mousemove', (event) => {
   const viewerX = event.latlng.lng / xScale;
   const viewerY = -event.latlng.lat;
@@ -364,7 +374,9 @@ map.on('mousemove', (event) => {
 });
 map.on('mouseout', () => {
   cursorMarker.setStyle({ opacity: 0 });
-  readout.textContent = '';
+  // The last reading deliberately stays. Blanking it resized the controls
+  // block (see the seed above), and keeping it is better anyway: on a touch
+  // screen the value is only readable *after* the finger lifts.
 });
 
 // --- Metadata dialog: a button opening a <dialog> with the server's

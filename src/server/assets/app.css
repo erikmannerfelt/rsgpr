@@ -489,11 +489,22 @@ table.meta th {
   color: var(--color-accent);
 }
 
+/* Its own row, always, and never more than one line.
+ *
+ * `flex-basis: 100%` is what makes populating it a no-op for layout: on a
+ * narrow screen the text is long enough to wrap onto a new row anyway, so
+ * reserving that row permanently costs one line and removes the shift
+ * entirely. `nowrap` plus ellipsis stops an unusually long reading from
+ * claiming a *second* row and reintroducing the problem. */
 #cursor-readout {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   color: var(--color-text-muted);
+  flex-basis: 100%;
   min-height: 1.2em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---------- metadata dialog ---------- */
