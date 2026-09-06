@@ -140,8 +140,13 @@ const overviewMap = RIDAL.basemap(L.map('overview-map'));
     invalidateQueued = true;
     requestAnimationFrame(() => {
       invalidateQueued = false;
-      map.invalidateSize();
-      overviewMap.invalidateSize();
+      // `pan: false` is load-bearing on a phone. The default re-centres the
+      // map to keep the previous centre visible, which reads as the viewer
+      // jumping -- and it fires exactly when a first tap collapses the
+      // browser's address bar and changes the 70vh map height. The picks
+      // stay put either way; only the view was moving.
+      map.invalidateSize({ pan: false });
+      overviewMap.invalidateSize({ pan: false });
     });
   }
 
@@ -203,10 +208,15 @@ const overviewMap = RIDAL.basemap(L.map('overview-map'));
   });
 
   updateSideBySideState();
-  new ResizeObserver(() => {
+  const observer = new ResizeObserver(() => {
     updateSideBySideState();
     scheduleInvalidate();
-  }).observe(layout);
+  });
+  observer.observe(layout);
+  // Also the map pane itself: the picking toolbar sits *above* the layout,
+  // so when its status text wraps to another line the layout is pushed down
+  // without changing size, and an observer on `layout` alone never fires.
+  observer.observe(mapEl);
 })();
 
 let ownTrack = null;

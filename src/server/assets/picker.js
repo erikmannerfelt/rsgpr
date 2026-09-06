@@ -6,17 +6,20 @@
  * directory.
  *
  * Built directly on Leaflet rather than on Leaflet.Draw. The interaction a
- * horizon picker needs is narrow -- extend a line, undo, finish, reassign,
- * split -- while Leaflet.Draw brings a shape palette and a modal toolbar
- * that would mostly be hidden, and has been unmaintained since before
- * Leaflet 1.9. Owning this is cheaper than owning that mismatch, and it
- * lets the overhang guardrail refuse a vertex at click time rather than at
- * save time.
+ * horizon picker needs is narrow -- extend a line, drag a vertex, undo,
+ * finish, reassign, split -- while Leaflet.Draw brings a shape palette and
+ * a modal toolbar that would mostly be hidden, and has been unmaintained
+ * since before Leaflet 1.9.
  *
  * Coordinates: the map is L.CRS.Simple over the *viewer raster*, while
  * picks are stored in source trace/sample index space. The conversion is
  * redone here rather than imported from viewer.js, because both are plain
  * scripts with no module boundary between them (#120: no build step).
+ *
+ * Touch first: the field device is a phone. Vertex handles are `L.marker`s,
+ * not `L.circleMarker`s, because only markers are draggable and only they
+ * get a real touch target. Every gesture works with one finger -- there is
+ * no right-click and no hover anywhere in here.
  */
 
 /* Everything below is wrapped in an IIFE. This is load-bearing, not style:
@@ -38,14 +41,11 @@
    * The split vertex belongs to **both** halves. A horizon split into two
    * lines should still cover every position it covered before; dropping the
    * shared vertex from one side would leave a gap exactly where the user
-   * clicked. So the vertex count goes up by one -- that is the split, not a
+   * tapped. So the vertex count goes up by one -- that is the split, not a
    * duplicated line.
    *
    * Splitting at an end is refused rather than clamped, because it would
    * leave a one-vertex "line", which is not a line and cannot be exported.
-   *
-   * Kept as a pure function, separate from the DOM, so its behaviour can be
-   * reasoned about on its own.
    */
   function splitCoordinates(coordinates, vertexIndex) {
     if (vertexIndex <= 0 || vertexIndex >= coordinates.length - 1) return null;
@@ -53,6 +53,31 @@
       coordinates.slice(0, vertexIndex + 1),
       coordinates.slice(vertexIndex),
     ];
+  }
+
+  /** Every vertex at which a line stops advancing in trace.
+   *
+   * The client-side twin of `overhang_at` in `src/interp/checks.rs`, which
+   * returns only the first. This returns all of them, because they are
+   * drawn: a line that doubles back three times gets three markers, so the
+   * problem is visible rather than merely described.
+   *
+   * Direction comes from the first and last vertex, matching the server, so
+   * a line drawn right-to-left is not an overhang -- it is the same
+   * interpretation recorded in the opposite order.
+   */
+  function overhangIndices(coordinates) {
+    const traces = coordinates.map((c) => c[0]);
+    if (traces.length < 2) return [];
+    const descending = traces[traces.length - 1] < traces[0];
+    const offending = [];
+    for (let i = 1; i < traces.length; i++) {
+      const advances = descending
+        ? traces[i] < traces[i - 1]
+        : traces[i] > traces[i - 1];
+      if (!advances) offending.push(i);
+    }
+    return offending;
   }
 
   if (CFG.writable) {
@@ -80,8 +105,7 @@
 
     /** Stored features, as gprinterp features in index space. */
     let features = [];
-    /** ETag of the document these came from, or null if none is stored yet.
-     * Sent as If-Match so a save cannot silently discard another tab's edit. */
+    /** ETag of the document these came from, or null if none is stored yet. */
     let etag = null;
     let layers = [];
     let picking = false;
@@ -94,6 +118,7 @@
     let drawnLines = [];
     let draftLine = null;
     let handles = [];
+    let overhangMarkers = [];
     let nextId = 1;
 
     const showError = (message) => {
@@ -122,34 +147,64 @@
 
     const layerFor = (label) => layers.find((l) => l.id === label);
     const colorFor = (label) => (layerFor(label) || {}).color || DEFAULT_COLOR;
-    const allowsOverhangs = (label) => Boolean((layerFor(label) || {}).allow_overhangs);
+    const allowsOverhangs = (label) =>
+      Boolean((layerFor(label) || {}).allow_overhangs);
 
     function newFeature(coordinates, label) {
       return {
         type: "Feature",
         geometry: { type: "LineString", coordinates },
-        // Unique per feature: `properties.id` is identity, and two features
-        // sharing one would make the document ambiguous (SPEC 4.5).
         properties: { id: `f-${Date.now()}-${nextId++}`, label },
       };
     }
 
-    // --- The overhang rule, applied while drawing ----------------------------
+    // --- Handles -------------------------------------------------------------
 
-    /** Whether adding `trace` would make the draft double back.
+    /** A draggable vertex handle.
      *
-     * The same rule the server enforces at save (interp/checks.rs), run here
-     * so a mis-click is refused when it happens rather than when the whole
-     * document is rejected. The server stays the authority; this is only the
-     * earlier, kinder half. */
-    function wouldOverhang(trace) {
-      if (!draft || draft.length < 1) return false;
-      if (allowsOverhangs(layerSelect.value)) return false;
-      const traces = draft.map((v) => v[0]);
-      if (traces.length === 1) return trace === traces[0];
-      const descending = traces[traces.length - 1] < traces[0];
-      const last = traces[traces.length - 1];
-      return descending ? trace >= last : trace <= last;
+     * `L.marker` with a `divIcon` rather than `L.circleMarker`: circle
+     * markers cannot be dragged at all, and an SVG circle is a poor touch
+     * target. The icon is sized in CSS so it can grow on coarse pointers.
+     */
+    function makeHandle(coordinates, index, label, kind, onTap) {
+      const [trace, sample] = coordinates[index];
+      const marker = L.marker(toLatLng(trace, sample), {
+        draggable: true,
+        keyboard: false,
+        icon: L.divIcon({
+          className: `pick-handle pick-handle-${kind}`,
+          iconSize: [16, 16],
+          iconAnchor: [8, 8],
+        }),
+      }).addTo(map);
+      marker.setZIndexOffset(1000);
+
+      marker.on("dragend", () => {
+        const before = coordinates[index];
+        const [newTrace, newSample] = toIndex(marker.getLatLng());
+        // Preserve any third element GeoJSON allows, rather than truncating
+        // a position this viewer did not author.
+        coordinates[index] = [newTrace, newSample, ...before.slice(2)];
+
+        if (!allowsOverhangs(label) && overhangIndices(coordinates).length > 0) {
+          coordinates[index] = before;
+          showError(
+            "Moving that vertex there would make the line double back, so it " +
+              "would have two depths at one position. Move it somewhere the " +
+              "line keeps advancing, or allow overhangs on this layer.",
+          );
+        } else {
+          clearError();
+          markDirty();
+        }
+        redraw();
+      });
+
+      marker.on("click", (event) => {
+        L.DomEvent.stopPropagation(event);
+        onTap();
+      });
+      return marker;
     }
 
     // --- Editing a stored line ----------------------------------------------
@@ -167,18 +222,18 @@
 
     /** Replace the selected line with the two halves of a split.
      *
-     * One `splice` that removes exactly one feature and inserts exactly two.
-     * Written this way on purpose: a split implemented as "add both halves,
-     * then remove the original" leaves the original behind whenever the
-     * removal is skipped or the handler fires twice, which is how a split
-     * turns into duplicate overlapping lines. */
+     * One `splice` that removes exactly one feature and inserts exactly
+     * two. Written this way on purpose: a split implemented as "add both
+     * halves, then remove the original" leaves the original behind whenever
+     * the removal is skipped or the handler fires twice, which is how a
+     * split turns into duplicate overlapping lines. */
     function splitSelectedAt(vertexIndex) {
       const feature = features[selected];
       const halves = splitCoordinates(feature.geometry.coordinates, vertexIndex);
       if (halves === null) {
         showError(
-          "Pick a vertex in the middle of the line to split it -- splitting at an " +
-            "end would leave a line with a single vertex.",
+          "Tap a vertex in the middle of the line to split it -- splitting at " +
+            "an end would leave a line with a single vertex.",
         );
         return;
       }
@@ -189,7 +244,6 @@
         newFeature(halves[0], label),
         newFeature(halves[1], label),
       );
-      // Indices have shifted, and "the selected line" no longer exists.
       selected = null;
       clearError();
       markDirty();
@@ -222,7 +276,7 @@
           `${label || "unlabelled"} (${feature.geometry.coordinates.length} vertices)`,
         );
         line.on("click", (event) => {
-          // While picking, a click over an existing line is still a new
+          // While picking, a tap over an existing line is still a new
           // vertex -- lines must not become holes in the drawing surface.
           if (picking) return;
           L.DomEvent.stopPropagation(event);
@@ -231,11 +285,14 @@
         return line;
       });
       redrawHandles();
+      redrawOverhangs();
       updateSelectionPanel();
       updateStatus();
     }
 
-    /** Vertex handles: the draft's, or the selected line's. */
+    /** Handles for whichever line is being edited: the draft, or the
+     * selected stored line. Only one set exists at a time, so a tap on a
+     * handle is never ambiguous. */
     function redrawHandles() {
       if (draftLine) {
         map.removeLayer(draftLine);
@@ -245,22 +302,23 @@
       handles = [];
 
       if (draft && draft.length) {
-        const color = colorFor(layerSelect.value);
+        const label = layerSelect.value;
         if (draft.length > 1) {
           draftLine = L.polyline(
             draft.map(([t, s]) => toLatLng(t, s)),
-            { color, weight: 3, dashArray: "6 4" },
+            { color: colorFor(label), weight: 3, dashArray: "6 4" },
           ).addTo(map);
         }
-        handles = draft.map(([t, s], index) =>
-          L.circleMarker(toLatLng(t, s), { color, radius: 4, fillOpacity: 1 })
-            .addTo(map)
-            .on("contextmenu", (event) => {
-              L.DomEvent.stop(event);
-              draft.splice(index, 1);
-              redrawHandles();
-              updateStatus();
-            }),
+        handles = draft.map((_, index) =>
+          makeHandle(draft, index, label, "draft", () => {
+            // Tap removes. There is no right-click on a phone, and Undo
+            // only ever reaches the last vertex.
+            draft.splice(index, 1);
+            clearError();
+            redrawHandles();
+            redrawOverhangs();
+            updateStatus();
+          }),
         );
         return;
       }
@@ -268,21 +326,65 @@
       if (selected === null) return;
       const feature = features[selected];
       const label = feature.properties && feature.properties.label;
-      handles = feature.geometry.coordinates.map(([t, s], index) => {
-        const interior = index > 0 && index < feature.geometry.coordinates.length - 1;
-        return L.circleMarker(toLatLng(t, s), {
-          color: colorFor(label),
-          fillColor: interior ? "#fff" : colorFor(label),
-          radius: interior ? 5 : 4,
-          fillOpacity: 1,
-        })
-          .addTo(map)
-          .bindTooltip(interior ? "Click to split here" : "End of line")
-          .on("click", (event) => {
-            L.DomEvent.stopPropagation(event);
-            splitSelectedAt(index);
-          });
+      const coordinates = feature.geometry.coordinates;
+      handles = coordinates.map((_, index) => {
+        const interior = index > 0 && index < coordinates.length - 1;
+        const handle = makeHandle(
+          coordinates,
+          index,
+          label,
+          interior ? "interior" : "end",
+          () => {
+            if (interior) splitSelectedAt(index);
+          },
+        );
+        handle.bindTooltip(
+          interior ? "Drag to move, tap to split here" : "Drag to move",
+        );
+        return handle;
       });
+    }
+
+    /** A marker at every vertex where a line doubles back.
+     *
+     * Drawn for *all* lines, including layers that allow overhangs: an
+     * intentional overhang is still worth seeing, and a line saved before
+     * the rule existed would otherwise look fine while quietly failing to
+     * export at even spacing. */
+    function redrawOverhangs() {
+      overhangMarkers.forEach((marker) => map.removeLayer(marker));
+      overhangMarkers = [];
+
+      const lines = features.map((f) => [
+        f.geometry.coordinates,
+        (f.properties && f.properties.label) || null,
+      ]);
+      if (draft && draft.length) lines.push([draft, layerSelect.value]);
+
+      for (const [coordinates, label] of lines) {
+        const allowed = allowsOverhangs(label);
+        for (const index of overhangIndices(coordinates)) {
+          const [trace, sample] = coordinates[index];
+          overhangMarkers.push(
+            L.marker(toLatLng(trace, sample), {
+              keyboard: false,
+              icon: L.divIcon({
+                className: `pick-overhang${allowed ? " pick-overhang-allowed" : ""}`,
+                iconSize: [18, 18],
+                iconAnchor: [9, 9],
+              }),
+            })
+              .addTo(map)
+              .bindTooltip(
+                allowed
+                  ? `Overhang at vertex ${index}, allowed on "${label}". This ` +
+                      "layer exports as picked vertices, not evenly spaced."
+                  : `Overhang at vertex ${index}: the line doubles back here, ` +
+                      "so it has two depths at one position.",
+              ),
+          );
+        }
+      }
     }
 
     function updateSelectionPanel() {
@@ -294,15 +396,30 @@
       selectedLayer.value = label || "";
       selectionHint.textContent =
         feature.geometry.coordinates.length > 2
-          ? "Click a hollow vertex to split this line."
-          : "Too few vertices to split.";
+          ? "Drag a vertex to move it; tap a middle vertex to split."
+          : "Drag a vertex to move it. Too few vertices to split.";
+    }
+
+    function countOverhangs() {
+      let total = features.reduce(
+        (sum, f) => sum + overhangIndices(f.geometry.coordinates).length,
+        0,
+      );
+      if (draft) total += overhangIndices(draft).length;
+      return total;
     }
 
     function updateStatus() {
-      const parts = [`${features.length} line${features.length === 1 ? "" : "s"}`];
-      if (draft && draft.length) parts.push(`drawing: ${draft.length} vertices`);
+      const parts = [
+        `${features.length} line${features.length === 1 ? "" : "s"}`,
+      ];
+      if (draft && draft.length) parts.push(`drawing: ${draft.length}`);
+      const overhangs = countOverhangs();
+      if (overhangs) {
+        parts.push(`${overhangs} overhang${overhangs === 1 ? "" : "s"}`);
+      }
       parts.push(dirty ? "unsaved" : "saved");
-      statusEl.textContent = parts.join(" - ");
+      statusEl.textContent = parts.join(" · ");
       statusEl.classList.toggle("dirty", dirty);
 
       saveButton.disabled = !dirty;
@@ -331,6 +448,7 @@
       if (!draft || draft.length < 2) {
         draft = null;
         redrawHandles();
+        redrawOverhangs();
         updateStatus();
         return;
       }
@@ -350,21 +468,38 @@
         return;
       }
       const [trace, sample] = toIndex(event.latlng);
-      if (trace < 0 || trace > CFG.sourceWidth || sample < 0 || sample > CFG.sourceHeight) {
+      if (
+        trace < 0 ||
+        trace > CFG.sourceWidth ||
+        sample < 0 ||
+        sample > CFG.sourceHeight
+      ) {
         return;
       }
-      if (wouldOverhang(trace)) {
+
+      // Test the whole candidate line, not just this vertex against the
+      // previous one. Direction is a property of the line as a whole, and
+      // checking pairwise let one stray vertex flip the perceived direction
+      // and then reject every later point as an overhang.
+      const candidate = draft
+        ? draft.concat([[trace, sample]])
+        : [[trace, sample]];
+      if (
+        !allowsOverhangs(layerSelect.value) &&
+        overhangIndices(candidate).length > 0
+      ) {
         showError(
-          "A line in this layer must not double back: each position along the " +
-            "profile can have only one depth. Finish this line and start another, " +
-            "or allow overhangs on the layer.",
+          "That point would make the line double back, so it would have two " +
+            "depths at one position. Carry on in the direction you started, " +
+            "finish this line and begin another, or allow overhangs on this " +
+            "layer.",
         );
         return;
       }
       clearError();
-      if (draft === null) draft = [];
-      draft.push([trace, sample]);
+      draft = candidate;
       redrawHandles();
+      redrawOverhangs();
       updateStatus();
     });
 
@@ -373,10 +508,16 @@
         if (picking) finishLine();
         else deselect();
       }
-      if (event.key === "z" && (event.ctrlKey || event.metaKey) && draft && draft.length) {
+      if (
+        event.key === "z" &&
+        (event.ctrlKey || event.metaKey) &&
+        draft &&
+        draft.length
+      ) {
         event.preventDefault();
         draft.pop();
         redrawHandles();
+        redrawOverhangs();
         updateStatus();
       }
       if (event.key === "s" && (event.ctrlKey || event.metaKey)) {
@@ -391,13 +532,19 @@
     undoButton.addEventListener("click", () => {
       if (draft && draft.length) {
         draft.pop();
+        clearError();
         redrawHandles();
+        redrawOverhangs();
         updateStatus();
       }
     });
     finishButton.addEventListener("click", finishLine);
     saveButton.addEventListener("click", save);
-    layerSelect.addEventListener("change", redrawHandles);
+    layerSelect.addEventListener("change", () => {
+      redrawHandles();
+      redrawOverhangs();
+      updateStatus();
+    });
     deleteButton.addEventListener("click", deleteSelected);
     selectedLayer.addEventListener("change", () => {
       if (selected === null) return;
@@ -449,7 +596,9 @@
         }
         if (!response.ok) {
           const failure = await response.json().catch(() => null);
-          showError(failure?.error?.message || `Could not save (${response.status}).`);
+          showError(
+            failure?.error?.message || `Could not save (${response.status}).`,
+          );
           return;
         }
         etag = response.headers.get("ETag");
@@ -462,15 +611,13 @@
 
     /** Load whatever is already stored for this radargram.
      *
-     * Runs on page load, unconditionally: opening a radargram shows the picks
-     * that exist for it, rather than an empty canvas that would invite
-     * redrawing work someone has already done. */
+     * Runs on page load, unconditionally: opening a radargram shows the
+     * picks that exist for it, rather than an empty canvas that would
+     * invite redoing work someone has already done. */
     async function load() {
       try {
         const response = await fetch(documentUrl);
         if (response.status === 404) {
-          // Nobody has interpreted this radargram yet: a starting state, not
-          // a failure.
           features = [];
           etag = null;
           redraw();
@@ -478,16 +625,18 @@
         }
         if (!response.ok) {
           const failure = await response.json().catch(() => null);
-          showError(failure?.error?.message || `Could not load picks (${response.status}).`);
+          showError(
+            failure?.error?.message ||
+              `Could not load picks (${response.status}).`,
+          );
           return;
         }
         etag = response.headers.get("ETag");
         const body = await response.json();
-        // Only lines are editable here. Anything else in the document is left
-        // untouched on the server rather than silently dropped by a save --
-        // which is why a document containing one is not offered for editing.
         const all = body.features || [];
-        features = all.filter((f) => f.geometry && f.geometry.type === "LineString");
+        features = all.filter(
+          (f) => f.geometry && f.geometry.type === "LineString",
+        );
         if (features.length !== all.length) {
           showError(
             "This interpretation contains geometry other than lines, which this " +
@@ -531,7 +680,9 @@
       event.preventDefault();
       dialog.showModal();
     });
-    document.getElementById("download-close").addEventListener("click", () => dialog.close());
+    document
+      .getElementById("download-close")
+      .addEventListener("click", () => dialog.close());
     document.getElementById("download-go").addEventListener("click", () => {
       const spacing = document.getElementById("download-spacing").value;
       const format = document.getElementById("download-format").value;

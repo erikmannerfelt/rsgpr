@@ -776,3 +776,87 @@ button.danger:hover {
   border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3);
 }
+
+/* --- Vertex handles and overhang markers ---------------------------------
+ *
+ * Handles are Leaflet divIcons, so they are styled here rather than through
+ * path options. Sized for a finger first: 16px is already near the lower
+ * bound for a touch target, and coarse pointers get more below.
+ */
+
+.pick-handle {
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 2px solid var(--color-text);
+  background: var(--color-surface);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 35%);
+  cursor: grab;
+}
+
+.pick-handle:active {
+  cursor: grabbing;
+}
+
+/* Hollow means splittable: it is the only visual difference between a
+ * vertex that will split the line and one that will not, so it has to be
+ * legible at a glance. */
+.pick-handle-interior {
+  background: var(--color-surface);
+}
+
+.pick-handle-end,
+.pick-handle-draft {
+  background: var(--color-text);
+}
+
+/* An overhang marker sits on top of a handle, so it must read as a warning
+ * without hiding what is underneath. */
+.pick-overhang {
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 3px solid #d7263d;
+  background: rgb(215 38 61 / 22%);
+  pointer-events: auto;
+}
+
+/* Allowed on this layer: still shown, because it changes how the layer
+ * exports, but muted so it does not read as an error. */
+.pick-overhang-allowed {
+  border-color: var(--color-warning-border);
+  background: rgb(224 178 60 / 22%);
+}
+
+@media (pointer: coarse) {
+  .pick-handle {
+    margin: -4px 0 0 -4px;
+    width: 24px !important;
+    height: 24px !important;
+  }
+
+  .pick-overhang {
+    margin: -4px 0 0 -4px;
+    width: 26px !important;
+    height: 26px !important;
+  }
+}
+
+/* The status text changes on every vertex. Letting it reflow the toolbar
+ * pushes the map down mid-tap, which on a narrow screen is what made the
+ * first vertex land somewhere other than where it was tapped. Giving it its
+ * own row keeps the buttons still. */
+.picker-controls .pick-status {
+  flex-basis: 100%;
+  min-height: 1.4em;
+}
+
+@media (max-width: 40rem) {
+  .picker-controls,
+  .picker-selection {
+    gap: var(--space-2);
+  }
+
+  .picker-controls button,
+  .picker-selection button {
+    min-height: 2.75rem;
+  }
+}
