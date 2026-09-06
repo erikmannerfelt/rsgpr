@@ -4,6 +4,11 @@
 //! status codes, `ETag`/`If-Match` handling and error envelopes are the ones
 //! a browser will actually see -- not just the store behaviour underneath,
 //! which `project::store` already covers.
+//!
+//! Every test here builds an `AppState`, which creates and opens a NetCDF.
+//! netcdf-c is not thread-safe, so they carry the same
+//! `#[serial_test::serial(netcdf)]` guard as the tests in `app.rs`; without
+//! it they pass alone and flake in a full run.
 
 use std::path::Path as StdPath;
 use std::sync::Arc;
@@ -116,6 +121,7 @@ async fn put(
 const URI: &str = "/api/v1/datasets/line-01/interpretations/default";
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn an_interpretation_is_created_then_updated() {
     let (_dir, app) = project_app(true);
 
@@ -135,6 +141,7 @@ async fn an_interpretation_is_created_then_updated() {
 }
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_stale_if_match_is_refused_with_412() {
     // The two-tab case. The second save must not silently win.
     let (_dir, app) = project_app(true);
@@ -155,6 +162,7 @@ async fn a_stale_if_match_is_refused_with_412() {
 }
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn if_none_match_star_refuses_to_clobber() {
     let (_dir, app) = project_app(true);
     put(&app, URI, &document(RADARGRAM), None).await;
@@ -171,6 +179,7 @@ async fn if_none_match_star_refuses_to_clobber() {
 }
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_document_naming_another_radargram_is_rejected() {
     let (_dir, app) = project_app(true);
     let (status, _, body) = put(&app, URI, &document("some-other-line"), None).await;
@@ -179,6 +188,7 @@ async fn a_document_naming_another_radargram_is_rejected() {
 }
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn writing_to_an_unknown_radargram_is_404_not_a_stray_directory() {
     let (dir, app) = project_app(true);
     let (status, _, _) = put(
@@ -196,6 +206,7 @@ async fn writing_to_an_unknown_radargram_is_404_not_a_stray_directory() {
 }
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_user_name_cannot_escape_the_interpretations_directory() {
     let (_dir, app) = project_app(true);
     // Axum's path matching already rejects most of these; the point is that
@@ -211,6 +222,7 @@ async fn a_user_name_cannot_escape_the_interpretations_directory() {
 }
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn deleting_removes_the_document_and_then_404s() {
     let (_dir, app) = project_app(true);
     put(&app, URI, &document(RADARGRAM), None).await;
@@ -233,6 +245,7 @@ async fn deleting_removes_the_document_and_then_404s() {
 }
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn listing_reports_users_and_whether_writes_are_possible() {
     let (_dir, app) = project_app(true);
     put(&app, URI, &document(RADARGRAM), None).await;
@@ -244,6 +257,7 @@ async fn listing_reports_users_and_whether_writes_are_possible() {
 }
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_read_only_server_refuses_writes_but_still_serves_reads() {
     let (_dir, writable) = project_app(true);
     put(&writable, URI, &document(RADARGRAM), None).await;
@@ -259,6 +273,7 @@ async fn a_read_only_server_refuses_writes_but_still_serves_reads() {
 }
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_catalog_that_is_not_a_project_explains_itself() {
     // The pre-existing read-only arrangement must keep working, and must say
     // why saving is unavailable rather than failing obscurely.
@@ -282,7 +297,102 @@ async fn a_catalog_that_is_not_a_project_explains_itself() {
     assert_eq!(body["writable"], false);
 }
 
+fn overhanging_document() -> Value {
+    serde_json::json!({
+        "key": RADARGRAM,
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "LineString",
+                         "coordinates": [[5.0, 2.0], [30.0, 3.0], [20.0, 5.0]]},
+            "properties": {"id": "f-0001", "label": "bed"}
+        }]
+    })
+}
+
 #[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_overhanging_line_is_refused_by_default() {
+    // The guardrail is on for a layer nobody has opted out of -- including
+    // one the vocabulary does not define at all.
+    let (_dir, app) = project_app(true);
+    let (status, _, body) = put(&app, URI, &overhanging_document(), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "overhang");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("f-0001"), "{message}");
+    assert!(message.contains("bed"), "{message}");
+
+    let (status, _, _) = get(&app, URI).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a refused save must not have stored anything"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_layer_that_allows_overhangs_accepts_one() {
+    let (_dir, app) = project_app(true);
+    let layers = serde_json::json!([
+        {"id": "bed", "name": "Bed", "allow_overhangs": true}
+    ]);
+    let (status, _, _) = put(&app, "/api/v1/layers", &layers, None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _, _) = put(&app, URI, &overhanging_document(), None).await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn turning_the_guardrail_off_and_on_again_changes_what_is_accepted() {
+    // The setting is read at save time, not baked in at startup, so a
+    // project can tighten the rule without a restart.
+    let (_dir, app) = project_app(true);
+    put(
+        &app,
+        "/api/v1/layers",
+        &serde_json::json!([{"id": "bed", "name": "Bed", "allow_overhangs": true}]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        put(&app, URI, &overhanging_document(), None).await.0,
+        StatusCode::CREATED
+    );
+
+    put(
+        &app,
+        "/api/v1/layers",
+        &serde_json::json!([{"id": "bed", "name": "Bed"}]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        put(&app, URI, &overhanging_document(), None).await.0,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_overhang_flag_round_trips_and_defaults_to_off() {
+    let (_dir, app) = project_app(true);
+    let layers = serde_json::json!([
+        {"id": "bed", "name": "Bed"},
+        {"id": "crevasse", "name": "Crevasse", "allow_overhangs": true}
+    ]);
+    put(&app, "/api/v1/layers", &layers, None).await;
+
+    let (_, _, body) = get(&app, "/api/v1/layers").await;
+    // Absent rather than `false`: the default is not written out.
+    assert!(body["layers"][0].get("allow_overhangs").is_none());
+    assert_eq!(body["layers"][1]["allow_overhangs"], true);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn layers_round_trip_through_the_api() {
     let (_dir, app) = project_app(true);
 
@@ -306,6 +416,7 @@ async fn layers_round_trip_through_the_api() {
 }
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_layer_id_that_would_not_survive_export_is_rejected() {
     let (_dir, app) = project_app(true);
     let layers = serde_json::json!([{"id": "Bed Layer", "name": "Bed"}]);
@@ -315,6 +426,7 @@ async fn a_layer_id_that_would_not_survive_export_is_rejected() {
 }
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn duplicate_layer_ids_are_rejected() {
     let (_dir, app) = project_app(true);
     let layers = serde_json::json!([
@@ -326,6 +438,106 @@ async fn duplicate_layer_ids_are_rejected() {
 }
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn layer_usage_counts_features_and_flags_undefined_labels() {
+    let (_dir, app) = project_app(true);
+    put(
+        &app,
+        "/api/v1/layers",
+        &serde_json::json!([{"id": "bed", "name": "Bed"}]),
+        None,
+    )
+    .await;
+
+    let document = serde_json::json!({
+        "key": RADARGRAM,
+        "features": [
+            {"type": "Feature",
+             "geometry": {"type": "LineString", "coordinates": [[1.0, 1.0], [10.0, 2.0]]},
+             "properties": {"id": "f-1", "label": "bed"}},
+            {"type": "Feature",
+             "geometry": {"type": "LineString", "coordinates": [[12.0, 1.0], [20.0, 2.0]]},
+             "properties": {"id": "f-2", "label": "bed"}},
+            {"type": "Feature",
+             "geometry": {"type": "LineString", "coordinates": [[22.0, 1.0], [30.0, 2.0]]},
+             "properties": {"id": "f-3", "label": "englacial"}}
+        ]
+    });
+    put(&app, URI, &document, None).await;
+
+    let (status, _, body) = get(&app, "/api/v1/layers/usage").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["counts"]["bed"], 2);
+    // A label nobody defined is reported separately, not silently counted.
+    assert_eq!(body["undefined"]["englacial"], 1);
+    assert!(body["counts"].get("englacial").is_none());
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_defined_layer_nobody_uses_reports_zero_rather_than_vanishing() {
+    // So the page can say "0 features" before a delete, instead of nothing.
+    let (_dir, app) = project_app(true);
+    put(
+        &app,
+        "/api/v1/layers",
+        &serde_json::json!([{"id": "unused", "name": "Unused"}]),
+        None,
+    )
+    .await;
+
+    let (_, _, body) = get(&app, "/api/v1/layers/usage").await;
+    assert_eq!(body["counts"]["unused"], 0);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_layers_page_renders_for_a_project_and_for_a_bare_catalog() {
+    let (_dir, app) = project_app(true);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/layers")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(html.contains("writable: true"), "{html}");
+    assert!(html.contains("Add a layer"));
+
+    // A catalog with no project still answers, explaining why rather than
+    // 404ing on "show me the layers".
+    let (_dir2, bare) = bare_app();
+    let response = bare
+        .oneshot(
+            Request::builder()
+                .uri("/layers")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(html.contains("ridal project init"), "{html}");
+    assert!(
+        !html.contains("Add a layer"),
+        "read-only page must not offer a form"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn malformed_json_is_a_client_error_with_the_standard_envelope() {
     let (_dir, app) = project_app(true);
     let (status, _, body) = put(&app, URI, &serde_json::json!({"no_key": true}), None).await;
@@ -334,6 +546,7 @@ async fn malformed_json_is_a_client_error_with_the_standard_envelope() {
 }
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn validation_warnings_are_reported_without_refusing_the_save() {
     // The format is permissive by design: a feature with no stable id is
     // worth mentioning but must still save.
@@ -356,6 +569,7 @@ async fn validation_warnings_are_reported_without_refusing_the_save() {
 }
 
 #[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn unknown_fields_survive_a_save_and_reload_over_http() {
     let (_dir, app) = project_app(true);
     let mut document = document(RADARGRAM);

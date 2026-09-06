@@ -64,6 +64,7 @@ embedded_asset!(app_css, "app.css", "text/css");
 embedded_asset!(app_js, "app.js", "text/javascript");
 embedded_asset!(index_js, "index.js", "text/javascript");
 embedded_asset!(viewer_js, "viewer.js", "text/javascript");
+embedded_asset!(layers_js, "layers.js", "text/javascript");
 
 // Repo-root, first-party. Shown beside the "Ridal" wordmark in the shared
 // header (base.html.jinja); logo.png doubles as the favicon.

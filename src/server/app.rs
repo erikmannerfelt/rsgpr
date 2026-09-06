@@ -269,9 +269,15 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/static/images/logo.svg", get(super::assets::logo_svg))
         .route("/favicon.ico", get(super::assets::favicon))
         .route("/api/v1/health", get(super::routes::health))
+        .route("/layers", get(super::routes::layers_page))
+        .route("/static/layers.js", get(super::assets::layers_js))
         .route(
             "/api/v1/layers",
             get(super::interp_routes::get_layers).put(super::interp_routes::put_layers),
+        )
+        .route(
+            "/api/v1/layers/usage",
+            get(super::interp_routes::layer_usage),
         )
         .route(
             "/api/v1/datasets/{radargram_id}/interpretations",

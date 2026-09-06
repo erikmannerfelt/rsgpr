@@ -52,9 +52,27 @@ pub struct Layer {
     pub color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Permit lines in this layer to double back in trace.
+    ///
+    /// Off by default, because a reflector has one depth per position and a
+    /// line that overhangs is usually a mis-click. Some layers legitimately
+    /// do overhang -- a crevasse wall, a water-body outline -- which is why
+    /// it is a property of the layer rather than of Ridal.
+    ///
+    /// Turning it on has a cost: such a layer cannot be exported at even
+    /// spacing along the ground track, because that works by asking the line
+    /// for its depth at a position, which is the question an overhang has
+    /// two answers to. It exports as its own picked vertices instead. See
+    /// [`crate::interp::checks`].
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub allow_overhangs: bool,
     /// Anything a future version adds, preserved on rewrite.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// The whole vocabulary.
@@ -92,6 +110,18 @@ impl Default for LayerSet {
 impl LayerSet {
     pub fn get(&self, id: &str) -> Option<&Layer> {
         self.layers.iter().find(|l| l.id == id)
+    }
+
+    /// Whether `label` names a layer that permits overhangs.
+    ///
+    /// An undefined or missing label answers `false`: opting out of the
+    /// guardrail is a deliberate act recorded on a layer, and a label with
+    /// no definition has not made it.
+    pub fn allows_overhangs(&self, label: Option<&str>) -> bool {
+        label
+            .and_then(|id| self.get(id))
+            .map(|layer| layer.allow_overhangs)
+            .unwrap_or(false)
     }
 
     /// Ids referenced by `labels` that this vocabulary does not define.
@@ -223,6 +253,7 @@ mod tests {
             name: name.to_string(),
             color: Some("#e6194b".to_string()),
             description: None,
+            allow_overhangs: false,
             extra: serde_json::Map::new(),
         }
     }

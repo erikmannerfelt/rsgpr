@@ -557,3 +557,167 @@ dialog th {
   border-radius: var(--radius-sm);
   padding: var(--space-2);
 }
+
+/* --- Layer management page (/layers) ------------------------------------
+ *
+ * The vocabulary is small -- a handful of rows -- so this is a plain table
+ * rather than a card grid: the columns invite comparison across layers,
+ * which is exactly what someone reviewing a vocabulary is doing.
+ */
+
+.site-nav {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-4);
+}
+
+.lede {
+  color: var(--color-text-muted);
+  max-width: 60ch;
+}
+
+.hint {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  max-width: 70ch;
+}
+
+.empty {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* Screen-reader-only: the actions column needs a name for table semantics
+ * but a visible header would just be noise above two buttons. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.layers-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: var(--space-4) 0;
+}
+
+.layers-table th,
+.layers-table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3) var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+.layers-table th {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+/* Text inputs sit inside cells, so they get no border until focused --
+ * a table of bordered boxes reads as a form, not as data. */
+.layers-table input[type="text"] {
+  width: 100%;
+  min-width: 8rem;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.layers-table input[type="text"]:hover {
+  border-color: var(--color-border);
+}
+
+.layers-table input[type="text"]:focus {
+  border-color: var(--color-accent);
+  background: var(--color-surface);
+  outline: none;
+}
+
+.layers-table input[type="color"] {
+  width: 2.5rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: none;
+}
+
+.layer-swatch {
+  display: inline-block;
+  width: 1.6rem;
+  height: 1.6rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.add-layer {
+  margin-top: var(--space-6);
+  padding: var(--space-4);
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-md);
+}
+
+.add-layer h2 {
+  margin-top: 0;
+  font-size: var(--text-lg);
+}
+
+.add-layer-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin: var(--space-3) 0;
+}
+
+.add-layer-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.add-layer-fields label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.add-layer-fields input[type="text"] {
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+}
+
+button.danger {
+  border-color: var(--color-warning-border);
+  color: var(--color-warning-text);
+  background: var(--color-warning-bg);
+}
+
+.add-layer button,
+button.danger {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.add-layer button:hover,
+button.danger:hover {
+  border-color: var(--color-accent);
+}

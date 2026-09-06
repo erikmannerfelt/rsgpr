@@ -112,6 +112,13 @@ pub enum Spacing {
     Auto,
     /// One point per native trace the line spans. No resampling.
     PerTrace,
+    /// The line's own picked vertices, unresampled.
+    ///
+    /// The only spacing defined for a layer that permits overhangs: even
+    /// spacing asks the line for its depth at a position, which such a line
+    /// answers twice. Also useful on its own for round-tripping exactly what
+    /// was drawn.
+    Vertices,
 }
 
 /// One exported level 2 point.
@@ -233,6 +240,7 @@ pub fn export(
     geometry: &RadargramGeometry,
     spacing: Spacing,
     user: &str,
+    allows_overhangs: &dyn Fn(Option<&str>) -> bool,
 ) -> Result<Level2Export, Level2Error> {
     geometry.validate()?;
 
@@ -244,12 +252,22 @@ pub fn export(
             Some(step)
         }
         Spacing::Auto => Some(auto_step(&geometry.distance)),
-        Spacing::PerTrace => None,
+        Spacing::PerTrace | Spacing::Vertices => None,
     };
 
     let mut points = Vec::new();
-    for (layer, features) in document.layers() {
-        let layer = layer.unwrap_or("unlabeled").to_string();
+    let mut vertex_layers: Vec<String> = Vec::new();
+    for (label, features) in document.layers() {
+        let layer = label.unwrap_or("unlabeled").to_string();
+        // A layer that permits overhangs has no well-defined depth at a
+        // position, so neither even spacing nor per-trace sampling applies
+        // to it. Its own vertices are the only honest answer, and silently
+        // giving it one of the others would fabricate depths.
+        let as_vertices = spacing == Spacing::Vertices || allows_overhangs(label);
+        if as_vertices && spacing != Spacing::Vertices && !vertex_layers.contains(&layer) {
+            vertex_layers.push(layer.clone());
+        }
+
         for (line_index, feature) in features.iter().enumerate() {
             let vertices = match &feature.geometry {
                 Geometry::LineString(vertices) => vertices.clone(),
@@ -260,10 +278,29 @@ pub fn export(
                     })
                 }
             };
-            let line = Line::new(&vertices, &layer, line_index)?;
             let feature_id = feature.id().map(str::to_string);
+            if as_vertices {
+                points.extend(sample_vertices(
+                    &vertices,
+                    geometry,
+                    &layer,
+                    line_index,
+                    &feature_id,
+                    user,
+                ));
+                continue;
+            }
+            let line = Line::new(&vertices, &layer, line_index)?;
             points.extend(line.sample(geometry, step, &layer, line_index, &feature_id, user));
         }
+    }
+    if !vertex_layers.is_empty() {
+        vertex_layers.sort();
+        eprintln!(
+            "Note: layer(s) {} permit overhangs, so they were exported as their picked \
+             vertices rather than at even spacing.",
+            vertex_layers.join(", ")
+        );
     }
 
     Ok(Level2Export {
@@ -273,6 +310,42 @@ pub fn export(
         crs: geometry.crs.clone(),
         spacing_m: step,
     })
+}
+
+/// Emit a line's own picked vertices, unresampled.
+///
+/// Well defined for any polyline, including one that doubles back, because
+/// nothing is asked of the geometry beyond where its vertices are: each
+/// vertex already carries its own trace and sample.
+fn sample_vertices(
+    vertices: &[Position],
+    geometry: &RadargramGeometry,
+    layer: &str,
+    line_index: usize,
+    feature_id: &Option<String>,
+    user: &str,
+) -> Vec<Level2Point> {
+    vertices
+        .iter()
+        .filter_map(|position| Some((position.x()?, position.y()?)))
+        .enumerate()
+        .map(|(point_index, (trace, sample))| Level2Point {
+            layer: layer.to_string(),
+            line_index,
+            point_index,
+            feature_id: feature_id.clone(),
+            trace,
+            sample,
+            distance_m: interpolate_index(&geometry.distance, trace),
+            twtt_ns: interpolate_index(&geometry.twtt, sample),
+            depth_m: interpolate_index(&geometry.depth, sample),
+            easting: interpolate_index(&geometry.easting, trace),
+            northing: interpolate_index(&geometry.northing, trace),
+            longitude: interpolate_index(&geometry.longitude, trace),
+            latitude: interpolate_index(&geometry.latitude, trace),
+            user: user.to_string(),
+        })
+        .collect()
 }
 
 /// A picked line, normalized to be increasing in trace.
@@ -486,6 +559,12 @@ fn interpolate(xs: &[f64], ys: &[f64], at: f64) -> f64 {
 mod tests {
     use super::*;
 
+    /// No layer permits overhangs: the default, and what a CLI export with
+    /// no project in sight uses.
+    fn enforce_everywhere(_: Option<&str>) -> bool {
+        false
+    }
+
     /// A 101-trace radargram, 1 m between traces, running due east.
     fn geometry() -> RadargramGeometry {
         let n = 101;
@@ -534,6 +613,7 @@ mod tests {
             &geometry(),
             Spacing::ArcLength(10.0),
             DEFAULT_USER,
+            &enforce_everywhere,
         )
         .unwrap();
 
@@ -553,6 +633,7 @@ mod tests {
             &geometry(),
             Spacing::ArcLength(50.0),
             DEFAULT_USER,
+            &enforce_everywhere,
         )
         .unwrap();
 
@@ -579,6 +660,7 @@ mod tests {
             &geometry(),
             Spacing::ArcLength(25.0),
             DEFAULT_USER,
+            &enforce_everywhere,
         )
         .unwrap();
 
@@ -610,6 +692,7 @@ mod tests {
             &geom,
             Spacing::ArcLength(10.0),
             DEFAULT_USER,
+            &enforce_everywhere,
         )
         .unwrap();
 
@@ -635,6 +718,7 @@ mod tests {
             &geometry(),
             Spacing::PerTrace,
             DEFAULT_USER,
+            &enforce_everywhere,
         )
         .unwrap();
 
@@ -651,7 +735,14 @@ mod tests {
             ("bed", &[[60.0, 20.0], [100.0, 20.0]]),
             ("internal", &[[0.0, 5.0], [40.0, 5.0]]),
         ]);
-        let export = export(&doc, &geometry(), Spacing::ArcLength(20.0), DEFAULT_USER).unwrap();
+        let export = export(
+            &doc,
+            &geometry(),
+            Spacing::ArcLength(20.0),
+            DEFAULT_USER,
+            &enforce_everywhere,
+        )
+        .unwrap();
 
         let bed: Vec<(usize, &str)> = export
             .points
@@ -678,6 +769,7 @@ mod tests {
             &geometry(),
             Spacing::ArcLength(50.0),
             DEFAULT_USER,
+            &enforce_everywhere,
         )
         .unwrap();
 
@@ -685,6 +777,96 @@ mod tests {
         assert_eq!(traces.len(), 3);
         assert!(traces.windows(2).all(|w| w[1] > w[0]), "{traces:?}");
         assert!((export.points[0].sample - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_layer_that_allows_overhangs_exports_its_vertices_instead() {
+        // The overhanging line has no single depth at a position, so even
+        // spacing cannot describe it. Its own vertices can.
+        let doc = document_multi(&[("crevasse", &[[10.0, 10.0], [60.0, 12.0], [40.0, 30.0]])]);
+        let allows = |layer: Option<&str>| layer == Some("crevasse");
+
+        let export = export(
+            &doc,
+            &geometry(),
+            Spacing::ArcLength(10.0),
+            DEFAULT_USER,
+            &allows,
+        )
+        .unwrap();
+
+        let traces: Vec<f64> = export.points.iter().map(|p| p.trace).collect();
+        assert_eq!(traces, vec![10.0, 60.0, 40.0], "vertices, exactly as drawn");
+        let samples: Vec<f64> = export.points.iter().map(|p| p.sample).collect();
+        assert_eq!(samples, vec![10.0, 12.0, 30.0]);
+        // Still fully attributed: geography and depth come from the axes.
+        assert!((export.points[2].easting - 400_040.0).abs() < 1e-9);
+        assert!((export.points[2].depth_m - 1.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_same_line_is_still_rejected_when_its_layer_does_not_allow_overhangs() {
+        let doc = document_multi(&[("bed", &[[10.0, 10.0], [60.0, 12.0], [40.0, 30.0]])]);
+        assert!(export(
+            &doc,
+            &geometry(),
+            Spacing::ArcLength(10.0),
+            DEFAULT_USER,
+            &enforce_everywhere,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn vertices_spacing_applies_to_every_layer_regardless_of_permission() {
+        let doc = document(&[[0.0, 10.0], [100.0, 20.0]]);
+        let export = export(
+            &doc,
+            &geometry(),
+            Spacing::Vertices,
+            DEFAULT_USER,
+            &enforce_everywhere,
+        )
+        .unwrap();
+
+        assert_eq!(export.spacing_m, None);
+        let traces: Vec<f64> = export.points.iter().map(|p| p.trace).collect();
+        assert_eq!(traces, vec![0.0, 100.0]);
+    }
+
+    #[test]
+    fn a_mixed_document_routes_each_layer_by_its_own_permission() {
+        // The realistic case: a bed horizon resampled evenly, a crevasse
+        // outline kept as drawn, in one export.
+        let doc = document_multi(&[
+            ("bed", &[[0.0, 10.0], [100.0, 10.0]]),
+            ("crevasse", &[[10.0, 20.0], [60.0, 22.0], [40.0, 40.0]]),
+        ]);
+        let allows = |layer: Option<&str>| layer == Some("crevasse");
+        let export = export(
+            &doc,
+            &geometry(),
+            Spacing::ArcLength(50.0),
+            DEFAULT_USER,
+            &allows,
+        )
+        .unwrap();
+
+        let bed: Vec<f64> = export
+            .points
+            .iter()
+            .filter(|p| p.layer == "bed")
+            .map(|p| p.distance_m)
+            .collect();
+        assert_eq!(bed, vec![0.0, 50.0, 100.0]);
+
+        let crevasse: Vec<f64> = export
+            .points
+            .iter()
+            .filter(|p| p.layer == "crevasse")
+            .map(|p| p.trace)
+            .collect();
+        assert_eq!(crevasse, vec![10.0, 60.0, 40.0]);
     }
 
     #[test]
@@ -696,6 +878,7 @@ mod tests {
             &geometry(),
             Spacing::ArcLength(10.0),
             DEFAULT_USER,
+            &enforce_everywhere,
         )
         .unwrap_err();
 
@@ -721,7 +904,14 @@ mod tests {
         }))
         .unwrap();
 
-        let error = export(&doc, &geometry(), Spacing::Auto, DEFAULT_USER).unwrap_err();
+        let error = export(
+            &doc,
+            &geometry(),
+            Spacing::Auto,
+            DEFAULT_USER,
+            &enforce_everywhere,
+        )
+        .unwrap_err();
         assert_eq!(
             error,
             Level2Error::UnsupportedGeometry {
@@ -761,6 +951,7 @@ mod tests {
             &geom,
             Spacing::ArcLength(5.0),
             DEFAULT_USER,
+            &enforce_everywhere,
         )
         .unwrap();
         assert_eq!(export.points.len(), 1);
@@ -775,6 +966,7 @@ mod tests {
             &geom,
             Spacing::Auto,
             DEFAULT_USER,
+            &enforce_everywhere,
         )
         .unwrap_err();
         assert!(matches!(

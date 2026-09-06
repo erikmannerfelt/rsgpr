@@ -27,6 +27,7 @@ use axum::Json;
 use super::app::AppState;
 use super::routes::ApiError;
 use crate::identity::{RadargramId, UserId};
+use crate::interp::checks;
 use crate::project::store::{Expectation, StoreError, Version};
 use crate::project::{interpretations, layers, Project};
 
@@ -206,6 +207,17 @@ pub async fn put_interpretation(
         ));
     }
 
+    // The overhang guardrail, enforced here because this is the boundary
+    // where picks enter the store. The browser checks while drawing too, but
+    // that is a convenience: anything reaching this route -- a second client,
+    // a script, a replayed request -- has to pass the same rule.
+    let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
+    let violations = checks::check(&document, &|label| layer_set.allows_overhangs(label));
+    if !violations.is_empty() {
+        let joined: Vec<String> = violations.iter().map(|v| v.to_string()).collect();
+        return Err(ApiError::bad_request("overhang", joined.join("; ")));
+    }
+
     let existed = interpretations::read(project.documents(), &radargram, &user)
         .map_err(interpretation_error)?
         .is_some();
@@ -290,6 +302,66 @@ pub async fn get_layers(State(state): State<Arc<AppState>>) -> Result<impl IntoR
             "writable": state.writable,
         })),
     ))
+}
+
+/// `GET /api/v1/layers/usage` -- how many picked features use each layer.
+///
+/// Exists so the management page can say what deleting a layer would
+/// orphan, before it is deleted rather than after. Also reports labels in
+/// use that the vocabulary does not define, which is the same information
+/// `ridal project info` prints.
+///
+/// Scans every stored interpretation. That is a directory walk plus a JSON
+/// parse per document, which is fine at the scale this serves (a project has
+/// tens to low hundreds of radargrams, and each document is small) and is
+/// only requested when someone opens the layers page.
+pub async fn layer_usage(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = readable_project(&state)?;
+    let (set, _) = layers::read(project.documents()).map_err(layer_error)?;
+
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut undefined: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+
+    for entry in &state.catalog.entries {
+        let radargram = &entry.radargram_id;
+        let users = interpretations::list_users(project.documents(), radargram)
+            .map_err(interpretation_error)?;
+        for user in users {
+            let Ok(user_id) = UserId::new(user.as_str()) else {
+                continue;
+            };
+            let Some(stored) = interpretations::read(project.documents(), radargram, &user_id)
+                .map_err(interpretation_error)?
+            else {
+                continue;
+            };
+            for feature in &stored.document.features {
+                let Some(label) = feature.label() else {
+                    continue;
+                };
+                let target = if set.get(label).is_some() {
+                    &mut counts
+                } else {
+                    &mut undefined
+                };
+                *target.entry(label.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Defined layers appear with a zero count rather than being omitted, so
+    // the page can say "used by 0 features" instead of showing nothing.
+    for layer in &set.layers {
+        counts.entry(layer.id.clone()).or_insert(0);
+    }
+
+    Ok(Json(serde_json::json!({
+        "counts": counts,
+        "undefined": undefined,
+    })))
 }
 
 /// `PUT /api/v1/layers` -- replace the vocabulary.

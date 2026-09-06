@@ -417,6 +417,30 @@ struct GroupSummary {
     entries: Vec<DatasetSummary>,
 }
 
+/// The layer management page.
+///
+/// A page of its own rather than a panel in the viewer: the vocabulary is
+/// project-scoped, editing it is a deliberate act rather than something done
+/// mid-pick, and a delete needs room to say what it would affect.
+///
+/// Renders for a non-project catalog too, explaining why there is nothing to
+/// edit -- a 404 here would be an odd answer to "show me the layers".
+pub async fn layers_page(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, PageError> {
+    let env = templates::environment();
+    let tmpl = env
+        .get_template("layers.html.jinja")
+        .expect("layers template is always registered");
+    let html = tmpl
+        .render(minijinja::context! {
+            project => state.project.is_some(),
+            writable => state.writable,
+        })
+        .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
+    Ok(Html(html))
+}
+
 pub async fn index_page(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ProfileQuery>,

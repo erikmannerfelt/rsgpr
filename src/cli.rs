@@ -93,7 +93,8 @@ pub struct InterpExportArgs {
 
     /// Point spacing along the ground track. A distance in metres ("5",
     /// "2.5"), "auto" to derive one from the radargram's own trace spacing,
-    /// or "per-trace" for one point per native trace.
+    /// "per-trace" for one point per native trace, or "vertices" for the
+    /// picked vertices exactly as drawn.
     ///
     /// Spacing is always measured in metres along the track, never in
     /// traces: trace spacing varies with survey speed, so a fixed trace
@@ -956,6 +957,7 @@ fn parse_spacing(text: &str) -> Result<crate::interp::level2::Spacing, String> {
     match text.trim().to_ascii_lowercase().as_str() {
         "auto" => Ok(Spacing::Auto),
         "per-trace" | "per_trace" | "pertrace" => Ok(Spacing::PerTrace),
+        "vertices" | "vertex" => Ok(Spacing::Vertices),
         other => {
             // Tolerate a trailing "m" so `--spacing 5m` does not fail on
             // something that obviously means five metres.
@@ -963,7 +965,7 @@ fn parse_spacing(text: &str) -> Result<crate::interp::level2::Spacing, String> {
             let step: f64 = numeric.parse().map_err(|_| {
                 format!(
                     "Could not read --spacing '{text}'. Expected a distance in metres \
-                     (e.g. '5' or '2.5'), 'auto', or 'per-trace'."
+                     (e.g. '5' or '2.5'), 'auto', 'per-trace', or 'vertices'."
                 )
             })?;
             if !step.is_finite() || step <= 0.0 {
@@ -1032,8 +1034,23 @@ fn interp_export_command(args: &InterpExportArgs) -> Result<(), String> {
         }
     }
 
-    let export = crate::interp::level2::export(&document, &geometry, spacing, &args.user)
-        .map_err(|e| format!("{e}"))?;
+    // Overhang permission is a property of the project's layer vocabulary.
+    // An export from outside a project has no vocabulary, so nothing has
+    // opted out and the guardrail applies everywhere -- the safe default.
+    let layer_set =
+        match crate::project::Project::discover(&args.radargram).map_err(|e| e.to_string())? {
+            Some(project) => {
+                crate::project::layers::read(project.documents())
+                    .map_err(|e| e.to_string())?
+                    .0
+            }
+            None => crate::project::layers::LayerSet::default(),
+        };
+    let allows_overhangs = |label: Option<&str>| layer_set.allows_overhangs(label);
+
+    let export =
+        crate::interp::level2::export(&document, &geometry, spacing, &args.user, &allows_overhangs)
+            .map_err(|e| format!("{e}"))?;
 
     let output_crs = match &args.crs {
         None => crate::interp::writer::OutputCrs::Wgs84,

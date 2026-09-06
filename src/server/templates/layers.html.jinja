@@ -1,0 +1,93 @@
+{% extends "base.html.jinja" %}
+{% block title %}Layers - Ridal{% endblock %}
+{% block content %}
+  <h1>Layers</h1>
+  <p class="lede">
+    A layer is what a picked line belongs to. Its <strong>id</strong> is
+    written into every pick and exported as the <code>layer</code> column;
+    its <strong>name</strong> is only for display, so renaming is free.
+  </p>
+
+  {% if not project %}
+    <div class="warning">
+      <p>
+        This catalog is not a Ridal project, so it has no layer definitions.
+        Run <code>ridal project init</code> in the directory being served and
+        restart to define some.
+      </p>
+    </div>
+  {% elif not writable %}
+    <div class="warning">
+      <p>This server is read-only. Layers are shown but cannot be changed.</p>
+    </div>
+  {% endif %}
+
+  <div id="layers-error" class="warning" hidden></div>
+
+  <table id="layers-table" class="layers-table">
+    <thead>
+      <tr>
+        <th scope="col">Colour</th>
+        <th scope="col">ID</th>
+        <th scope="col">Name</th>
+        <th scope="col">Description</th>
+        {#- The guardrail is off by default, so the column asks the question
+            in the direction the answer is usually "no". -#}
+        <th scope="col" title="Allow a line in this layer to double back, so it has more than one depth at a position. Such a layer is exported as its picked vertices rather than at even spacing.">Overhangs</th>
+        <th scope="col">Used by</th>
+        <th scope="col"><span class="visually-hidden">Actions</span></th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <p id="layers-empty" class="empty" hidden>No layers defined yet.</p>
+
+  {% if writable %}
+    <form id="add-layer" class="add-layer">
+      <h2>Add a layer</h2>
+      <p class="hint">
+        The id cannot be changed afterwards, because existing picks refer to
+        it. Lowercase letters, digits, <code>-</code> and <code>_</code>.
+      </p>
+      <div class="add-layer-fields">
+        <label>ID
+          <input type="text" name="id" required pattern="[a-z0-9_\-]+"
+                 placeholder="bed" autocomplete="off">
+        </label>
+        <label>Name
+          <input type="text" name="name" required placeholder="Bed" autocomplete="off">
+        </label>
+        <label>Colour
+          <input type="color" name="color" value="#e6194b">
+        </label>
+        <label>Description
+          <input type="text" name="description" placeholder="optional" autocomplete="off">
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" name="allow_overhangs">
+          Allow overhangs
+        </label>
+      </div>
+      <button type="submit">Add layer</button>
+    </form>
+  {% endif %}
+
+  <div id="undefined-labels" hidden>
+    <h2>Labels in use with no definition</h2>
+    <p class="hint">
+      These appear on stored picks but are not defined above, so the viewer
+      draws them without a colour. Defining one adopts the existing picks;
+      they are never modified either way.
+    </p>
+    <ul id="undefined-list"></ul>
+  </div>
+{% endblock %}
+{% block extrascript %}
+  {#- The only inline JS on this page: a server-side value layers.js cannot
+      know. Matches the viewer's convention so both pages read the same way. -#}
+  <script>
+    window.RIDAL_LAYERS = { writable: {% if writable %}true{% else %}false{% endif %} };
+  </script>
+  <script src="/static/layers.js"></script>
+{% endblock %}

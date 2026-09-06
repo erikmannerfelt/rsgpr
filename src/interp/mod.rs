@@ -20,6 +20,7 @@
 //!
 //! [gprinterp]: https://github.com/erikmannerfelt/gprinterp
 
+pub mod checks;
 pub mod level2;
 pub mod source;
 pub mod writer;
