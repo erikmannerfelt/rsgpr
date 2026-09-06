@@ -9,6 +9,7 @@ mod filters;
 mod formats;
 mod gpr;
 mod identity;
+mod interp;
 mod io;
 #[cfg(feature = "server")]
 mod server;

@@ -22,12 +22,65 @@ pub enum Commands {
     Steps(StepsArgs),
     /// Inspect supported formats
     Formats(FormatsArgs),
+    /// Work with interpretations (picked layers) of processed radargrams
+    Interp(InterpArgs),
     /// Open a local browser GUI for one radargram or a directory of them
     #[cfg(feature = "server")]
     Gui(GuiArgs),
     /// Run the web server explicitly (for remote or persistent deployment)
     #[cfg(feature = "server")]
     Server(ServerArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct InterpArgs {
+    #[command(subcommand)]
+    pub command: InterpCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum InterpCommand {
+    /// Derive the level 2 point product from a level 1 interpretation
+    Export(InterpExportArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct InterpExportArgs {
+    /// The processed radargram (.nc) the interpretation was drawn on.
+    pub radargram: PathBuf,
+
+    /// The level 1 interpretation (a gprinterp JSON document).
+    pub interpretation: PathBuf,
+
+    /// Where to write the level 2 product. The format follows the
+    /// extension: ".geojson"/".json" for GeoJSON, ".csv" for CSV.
+    #[arg(short, long)]
+    pub output: PathBuf,
+
+    /// Point spacing along the ground track. A distance in metres ("5",
+    /// "2.5"), "auto" to derive one from the radargram's own trace spacing,
+    /// or "per-trace" for one point per native trace.
+    ///
+    /// Spacing is always measured in metres along the track, never in
+    /// traces: trace spacing varies with survey speed, so a fixed trace
+    /// stride produces unevenly spaced ground positions.
+    #[arg(long, default_value = "auto")]
+    pub spacing: String,
+
+    /// CRS for the output geometry. WGS84 by default, which is what RFC 7946
+    /// requires of GeoJSON. Accepts "native" for the radargram's own
+    /// projected CRS, or any CRS string PROJ understands.
+    ///
+    /// Note that projected GeoJSON is not portable: readers that follow
+    /// RFC 7946 will interpret the coordinates as degrees. Native
+    /// easting/northing are always present as properties regardless.
+    #[arg(long)]
+    pub crs: Option<String>,
+
+    /// The author recorded on every exported point. Ridal has no
+    /// multi-user support yet, so this is a label rather than an identity.
+    #[arg(long, default_value = crate::interp::level2::DEFAULT_USER)]
+    pub user: String,
 }
 
 #[cfg(feature = "server")]
@@ -394,6 +447,9 @@ pub fn run(arguments: Args) -> Result<(), String> {
         Commands::Info(args) => info_command(args),
         Commands::Steps(args) => steps_command(args),
         Commands::Formats(args) => formats_command(args),
+        Commands::Interp(args) => match args.command {
+            InterpCommand::Export(args) => interp_export_command(&args),
+        },
         #[cfg(feature = "server")]
         Commands::Gui(args) => gui_command(args),
         #[cfg(feature = "server")]
@@ -833,4 +889,136 @@ mod tests {
         let steps = choose_steps(false, true, None).unwrap();
         assert!(steps.iter().any(|step| step == "correct_topography"));
     }
+}
+
+/// Parse the `--spacing` value.
+///
+/// Accepts a bare number of metres, "auto", or "per-trace". A bare number is
+/// metres rather than traces by design: see [`InterpExportArgs::spacing`].
+fn parse_spacing(text: &str) -> Result<crate::interp::level2::Spacing, String> {
+    use crate::interp::level2::Spacing;
+    match text.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(Spacing::Auto),
+        "per-trace" | "per_trace" | "pertrace" => Ok(Spacing::PerTrace),
+        other => {
+            // Tolerate a trailing "m" so `--spacing 5m` does not fail on
+            // something that obviously means five metres.
+            let numeric = other.strip_suffix('m').unwrap_or(other);
+            let step: f64 = numeric.parse().map_err(|_| {
+                format!(
+                    "Could not read --spacing '{text}'. Expected a distance in metres \
+                     (e.g. '5' or '2.5'), 'auto', or 'per-trace'."
+                )
+            })?;
+            if !step.is_finite() || step <= 0.0 {
+                return Err(format!("--spacing must be greater than zero, got '{text}'"));
+            }
+            Ok(Spacing::ArcLength(step))
+        }
+    }
+}
+
+fn interp_export_command(args: &InterpExportArgs) -> Result<(), String> {
+    let spacing = parse_spacing(&args.spacing)?;
+
+    let text = std::fs::read_to_string(&args.interpretation)
+        .map_err(|e| format!("Could not read {:?}: {e}", args.interpretation))?;
+    let document = gprinterp::Document::from_json(&text).map_err(|e| {
+        format!(
+            "Could not parse {:?} as gprinterp: {e}",
+            args.interpretation
+        )
+    })?;
+
+    // Validation warnings are surfaced but not fatal: the format is
+    // deliberately permissive, and a document missing a stable feature id
+    // still exports correctly.
+    let report = gprinterp::validate(&document);
+    if !report.errors.is_empty() {
+        // All of them, not just the first: a hand-written document usually
+        // has several problems at once, and fixing them one round trip at a
+        // time is needless.
+        let errors: Vec<String> = report.errors.iter().map(|e| format!("  - {e}")).collect();
+        return Err(format!(
+            "{:?} is not a valid gprinterp document:\n{}",
+            args.interpretation,
+            errors.join("\n")
+        ));
+    }
+    for warning in &report.warnings {
+        eprintln!("warning: {warning}");
+    }
+
+    let geometry = crate::interp::source::read_geometry(&args.radargram)?;
+
+    // The interpretation names a radargram; exporting it against a different
+    // one silently produces plausible, wrong depths. Refusing is the only
+    // safe default, since nothing downstream can detect the mistake.
+    if document.key != geometry.radargram_id {
+        return Err(format!(
+            "{:?} was drawn on radargram '{}', but {:?} is '{}'. \
+             Export it against the radargram it was drawn on.",
+            args.interpretation, document.key, args.radargram, geometry.radargram_id
+        ));
+    }
+    if let Some(revision) = document
+        .source
+        .as_ref()
+        .and_then(|s| s.revision_id.as_deref())
+    {
+        if revision != geometry.revision_id {
+            eprintln!(
+                "warning: the interpretation was drawn on revision {revision}, but {:?} is \
+                 revision {}. The radargram has been reprocessed since, so trace and sample \
+                 indices may no longer line up.",
+                args.radargram, geometry.revision_id
+            );
+        }
+    }
+
+    let export = crate::interp::level2::export(&document, &geometry, spacing, &args.user)
+        .map_err(|e| format!("{e}"))?;
+
+    let output_crs = match &args.crs {
+        None => crate::interp::writer::OutputCrs::Wgs84,
+        Some(name) => crate::interp::writer::OutputCrs::Named(name.clone()),
+    };
+
+    let extension = args
+        .output
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let serialized = match extension.as_str() {
+        "csv" => crate::interp::writer::to_csv(&export),
+        "geojson" | "json" => crate::interp::writer::to_geojson(&export, &output_crs)?,
+        other => {
+            return Err(format!(
+                "Cannot tell what format to write from the extension '{other}'. \
+                 Use '.geojson' or '.csv'."
+            ))
+        }
+    };
+    if extension == "csv" && args.crs.is_some() {
+        eprintln!(
+            "warning: --crs is ignored for CSV output, which always carries both native \
+             easting/northing and WGS84 longitude/latitude as columns."
+        );
+    }
+
+    std::fs::write(&args.output, serialized)
+        .map_err(|e| format!("Could not write {:?}: {e}", args.output))?;
+
+    let spacing_note = match export.spacing_m {
+        Some(step) => format!("{step} m spacing"),
+        None => "per-trace spacing".to_string(),
+    };
+    println!(
+        "Wrote {} point(s) from {} layer(s) at {spacing_note} to {:?}",
+        export.points.len(),
+        document.layers().len(),
+        args.output
+    );
+    Ok(())
 }

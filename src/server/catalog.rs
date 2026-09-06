@@ -10,45 +10,9 @@
 
 use std::path::Path;
 
+pub use crate::identity::RevisionId;
 use crate::identity::{DisplayName, GroupId, GroupName, RadargramId};
 use crate::io::{self, RidalNetcdfKind};
-
-/// A derived identity for one processed revision (#117). Changes when
-/// reprocessing produces new output; used to invalidate cached metadata,
-/// overviews and tiles. Deliberately *not* computed in `io.rs`'s
-/// `inspect_ridal_netcdf` (#123, M2): it needs `blake3`, which sits behind
-/// the `server` feature since cache invalidation is a server-only concern,
-/// while the inspector itself must stay usable without that feature.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RevisionId(String);
-
-impl RevisionId {
-    /// `FastRevisionFingerprintV1`: a declared processing-revision
-    /// identifier, not a content-integrity checksum. Deliberately excludes
-    /// path, filesystem timestamps, filesize and display name -- see #117
-    /// for the full list of what must *not* change the revision.
-    pub fn fingerprint_v1(radargram_id: &RadargramId, processing_datetime: &str) -> Self {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"ridal-revision-v1");
-        hasher.update(radargram_id.as_str().as_bytes());
-        hasher.update(processing_datetime.as_bytes());
-        // First 16 bytes (32 hex chars): a revision identifier needs to be
-        // collision-resistant among one user's radargrams, not
-        // cryptographically unforgeable, and the full 32-byte hex digest
-        // would make already-long chunk/overview URLs harder to read.
-        Self(hasher.finalize().to_hex()[..32].to_string())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for RevisionId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
 
 /// One discovered radargram, selected as the representative for its
 /// `radargram_id` if duplicates were found.
