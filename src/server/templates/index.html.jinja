@@ -18,30 +18,36 @@
       </span>
       <span class="card-title">{{ e.effective_label }}</span>
     </a>
-    {#- Shown only when the catalog is a project. "No picks yet" and "there
-        is nowhere to save picks" are different states, and a card that says
-        nothing is the honest rendering of the second. -#}
-    {% if e.line_count is not none %}
-      <p class="card-picks{% if e.line_count == 0 %} is-empty{% endif %}">
-        {% if e.line_count == 0 %}
-          Not interpreted yet
-        {% elif e.line_count == 1 %}
-          1 picked line
-        {% else %}
-          {{ e.line_count }} picked lines
-        {% endif %}
-      </p>
-    {% endif %}
+    {#- Interpretation progress takes the front row and the shape moves
+        behind the toggle: the shape is the same on every card of a survey
+        and answers no question anyone is asking of a catalog, while "has
+        this been worked on?" is the reason to scan one.
+
+        Only when the catalog is a project. "No picks yet" and "there is
+        nowhere to save picks" are different states, and a card that says
+        nothing at all is the honest rendering of the second. -#}
     <dl class="card-meta">
       <dt>ID</dt><dd><code>{{ e.radargram_id }}</code></dd>
-      <dt>Size</dt><dd>{{ e.shape[1] }} traces &times; {{ e.shape[0] }} samples</dd>
+      {% if e.line_count is not none %}
+      <dt>Picked</dt>
+      <dd>
+        {%- if e.line_count == 0 -%}
+          <span class="meta-none">None yet</span>
+        {%- elif e.line_count == 1 -%}
+          1 line
+        {%- else -%}
+          {{ e.line_count }} lines
+        {%- endif -%}
+      </dd>
+      {% endif %}
     </dl>
-    {#- Path and processed-datetime are secondary lookup info, not
+    {#- Shape, path and processed-datetime are secondary lookup info, not
         scanning info -- tucked behind a details toggle so the card grid
         stays scannable. -#}
     <details class="meta-details card-more">
       <summary>More info</summary>
       <dl class="card-meta">
+        <dt>Size</dt><dd>{{ e.shape[1] }} traces &times; {{ e.shape[0] }} samples</dd>
         <dt>Path</dt><dd class="path">{{ e.relative_path }}</dd>
         <dt>Processed</dt><dd>{{ e.processing_datetime_display }}</dd>
       </dl>

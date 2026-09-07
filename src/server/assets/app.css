@@ -1154,18 +1154,10 @@ button.danger:hover {
   }
 }
 
-/* Interpretation progress on a catalog card. The point of it is scanning a
- * grid for what has been worked on, so "not interpreted yet" is muted and
- * a real count is not. */
-.card-picks {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-sm);
-  font-weight: 600;
-  color: var(--color-accent);
-}
-
-.card-picks.is-empty {
-  font-weight: 400;
-  font-style: italic;
+/* A metadata value that is an absence rather than a number. Muted so a
+ * grid of cards can be scanned for the ones carrying a real count, without
+ * the row itself looking different from its neighbours. */
+.meta-none {
   color: var(--color-text-muted);
+  font-style: italic;
 }
