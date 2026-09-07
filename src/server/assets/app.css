@@ -1216,3 +1216,17 @@ button.danger:hover {
 .settings-form button:hover {
   border-color: var(--color-accent);
 }
+
+/* A layer swatch sitting beside a select rather than in a table cell.
+ *
+ * Sized in `em` so it tracks the control it labels, and vertically centred
+ * against the select's text. Kept under the row height on purpose: this
+ * toolbar must not change size when the picker updates it, and a swatch
+ * taller than the buttons beside it would set a new row height. */
+.layer-swatch-inline {
+  width: 1.1em;
+  height: 1.1em;
+  vertical-align: -0.2em;
+  margin-left: var(--space-2);
+  border-color: var(--color-border-strong);
+}

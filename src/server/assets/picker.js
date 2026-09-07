@@ -127,6 +127,8 @@
     const selectedLayer = document.getElementById("pick-selected-layer");
     const deleteButton = document.getElementById("pick-delete");
     const selectionHint = document.getElementById("pick-selection-hint");
+    const layerSwatch = document.getElementById("pick-layer-swatch");
+    const selectedSwatch = document.getElementById("pick-selected-swatch");
 
     /** Stored features, as gprinterp features in index space. */
     let features = [];
@@ -180,6 +182,17 @@
     function toLatLng(trace, sample) {
       const scale = window.RIDAL_XSCALE || 1;
       return [-sample * VERTICAL_RASTER_SCALE, trace * RASTER_SCALE * scale];
+    }
+
+    /** Show the colour a layer's lines are actually drawn in.
+     *
+     * Deliberately `colorFor` rather than the layer's stored colour: an
+     * undefined layer has no colour and falls back to the picking default,
+     * and the swatch should say what will appear on the radargram rather
+     * than what the vocabulary happens to record. */
+    function paintSwatch(element, label) {
+      if (!element) return;
+      element.style.background = colorFor(label);
     }
 
     const layerFor = (label) => layers.find((l) => l.id === label);
@@ -892,6 +905,7 @@
     finishButton.addEventListener("click", finishLine);
     saveButton.addEventListener("click", save);
     layerSelect.addEventListener("change", () => {
+      paintSwatch(layerSwatch, layerSelect.value);
       redrawHandles();
       redrawOverhangs();
       updateStatus();
@@ -900,6 +914,7 @@
     selectedLayer.addEventListener("change", () => {
       if (selected === null) return;
       features[selected].properties.label = selectedLayer.value;
+      paintSwatch(selectedSwatch, selectedLayer.value);
       markDirty();
       redraw();
     });
@@ -1022,6 +1037,7 @@
         : [new Option("No layers defined - add one on the Layers page", "")];
       layerSelect.replaceChildren(...options);
       selectedLayer.replaceChildren(...options.map((o) => o.cloneNode(true)));
+      paintSwatch(layerSwatch, layerSelect.value);
     }
 
     // --- Level 2 download ------------------------------------------------------
