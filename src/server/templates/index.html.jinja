@@ -18,6 +18,20 @@
       </span>
       <span class="card-title">{{ e.effective_label }}</span>
     </a>
+    {#- Shown only when the catalog is a project. "No picks yet" and "there
+        is nowhere to save picks" are different states, and a card that says
+        nothing is the honest rendering of the second. -#}
+    {% if e.line_count is not none %}
+      <p class="card-picks{% if e.line_count == 0 %} is-empty{% endif %}">
+        {% if e.line_count == 0 %}
+          Not interpreted yet
+        {% elif e.line_count == 1 %}
+          1 picked line
+        {% else %}
+          {{ e.line_count }} picked lines
+        {% endif %}
+      </p>
+    {% endif %}
     <dl class="card-meta">
       <dt>ID</dt><dd><code>{{ e.radargram_id }}</code></dd>
       <dt>Size</dt><dd>{{ e.shape[1] }} traces &times; {{ e.shape[0] }} samples</dd>

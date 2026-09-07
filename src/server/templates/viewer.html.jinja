@@ -84,11 +84,18 @@
   <div id="pick-error" class="warning" role="status" aria-live="polite" hidden></div>
 
   <dialog id="download-dialog">
-    <h2>Download level 2 points</h2>
+    <h2>Download points</h2>
     <p class="hint">
       Picked lines resampled to evenly spaced points along the ground track,
       with depth, travel time and position attached. Derived from the saved
       interpretation, so save first.
+    </p>
+    <p class="hint">
+      WGS84 is the portable choice and what RFC 7946 requires of GeoJSON.
+      Native CRS writes the radargram's own projected coordinates instead,
+      which most GIS tools read but strict GeoJSON readers will take for
+      degrees. Either way the projected easting and northing are also
+      present as properties on every point.
     </p>
     <div class="add-layer-fields">
       <label>Spacing
@@ -105,6 +112,7 @@
       <label>Format
         <select id="download-format">
           <option value="geojson" selected>GeoJSON (WGS84)</option>
+          <option value="geojson-native">GeoJSON (native CRS)</option>
           <option value="csv">CSV</option>
         </select>
       </label>

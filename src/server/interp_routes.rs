@@ -318,6 +318,11 @@ pub struct Level2Query {
     /// "geojson" (default) or "csv".
     #[serde(default)]
     format: Option<String>,
+    /// Coordinates for the GeoJSON geometry: absent for WGS84, "native" for
+    /// the radargram's own projected CRS, or any CRS string PROJ accepts.
+    /// Ignored for CSV, which carries both regardless.
+    #[serde(default)]
+    crs: Option<String>,
 }
 
 pub async fn interpretation_level2(
@@ -368,9 +373,15 @@ pub async fn interpretation_level2(
             "csv",
         )
     } else {
+        let output_crs = match query.crs.as_deref() {
+            None | Some("") => crate::interp::writer::OutputCrs::Wgs84,
+            Some(name) => crate::interp::writer::OutputCrs::Named(name.to_string()),
+        };
         (
-            crate::interp::writer::to_geojson(&export, &crate::interp::writer::OutputCrs::Wgs84)
-                .map_err(|e| ApiError::internal("serialize_failed", e))?,
+            crate::interp::writer::to_geojson(&export, &output_crs)
+                // A CRS the projection tools cannot resolve is the caller's
+                // mistake, not a server fault.
+                .map_err(|e| ApiError::bad_request("invalid_crs", e))?,
             "application/geo+json",
             "geojson",
         )

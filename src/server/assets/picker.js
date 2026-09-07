@@ -210,8 +210,8 @@
         keyboard: false,
         icon: L.divIcon({
           className: `pick-handle pick-handle-${kind}`,
-          iconSize: [16, 16],
-          iconAnchor: [8, 8],
+          iconSize: [HANDLE_PX, HANDLE_PX],
+          iconAnchor: [HANDLE_PX / 2, HANDLE_PX / 2],
         }),
       }).addTo(map);
       marker.setZIndexOffset(1000);
@@ -274,6 +274,19 @@
     const SNAP_RADIUS_PX = 24;
 
     const COARSE_POINTER = window.matchMedia("(pointer: coarse)").matches;
+
+    /* Marker sizes live here, not in CSS.
+     *
+     * Leaflet writes `iconAnchor` as an *inline* margin, so a stylesheet
+     * rule cannot move the anchor -- but `width: ... !important` does beat
+     * Leaflet's inline size. Overriding the size in a media query therefore
+     * grew each marker from its top-left while it stayed anchored as if it
+     * were still the smaller size, leaving every handle a few pixels below
+     * the line it belonged to. Sizing them here lets Leaflet derive the
+     * anchor from the size, which is the only way the two stay consistent. */
+    const HANDLE_PX = COARSE_POINTER ? 24 : 16;
+    const MIDPOINT_PX = COARSE_POINTER ? 36 : 26;
+    const OVERHANG_PX = COARSE_POINTER ? 26 : 18;
 
     /** A segment shorter than this on screen gets no midpoint handle.
      *
@@ -351,8 +364,8 @@
         icon: L.divIcon({
           className: "pick-midpoint",
           html: '<i class="pick-midpoint-dot"></i>',
-          iconSize: [26, 26],
-          iconAnchor: [13, 13],
+          iconSize: [MIDPOINT_PX, MIDPOINT_PX],
+          iconAnchor: [MIDPOINT_PX / 2, MIDPOINT_PX / 2],
         }),
       }).addTo(map);
       // Below the real vertices, so where the two overlap the vertex wins.
@@ -678,8 +691,8 @@
               keyboard: false,
               icon: L.divIcon({
                 className: `pick-overhang${allowed ? " pick-overhang-allowed" : ""}`,
-                iconSize: [18, 18],
-                iconAnchor: [9, 9],
+                iconSize: [OVERHANG_PX, OVERHANG_PX],
+                iconAnchor: [OVERHANG_PX / 2, OVERHANG_PX / 2],
               }),
             })
               .addTo(map)
@@ -1023,10 +1036,15 @@
       .addEventListener("click", () => dialog.close());
     document.getElementById("download-go").addEventListener("click", () => {
       const spacing = document.getElementById("download-spacing").value;
-      const format = document.getElementById("download-format").value;
+      // One select covers both the file format and its coordinates, since
+      // "GeoJSON in native coordinates" is a single choice to a user even
+      // though it is two parameters on the wire.
+      const choice = document.getElementById("download-format").value;
+      const format = choice === "csv" ? "csv" : "geojson";
+      const crs = choice === "geojson-native" ? "&crs=native" : "";
       window.location.href =
         `${documentUrl}/level2?spacing=${encodeURIComponent(spacing)}` +
-        `&format=${encodeURIComponent(format)}`;
+        `&format=${encodeURIComponent(format)}${crs}`;
       dialog.close();
     });
 

@@ -13,6 +13,7 @@ use super::app::{validate_radargram_id, AppState, NO_GROUP_ID};
 use super::render::grid::{ChunkGrid, OverviewSpec, ViewerRaster};
 use super::render::profile::{DatasetView, RenderProfile};
 use super::templates;
+use crate::identity::RadargramId;
 
 /// Stable JSON error envelope (#120): `{"error": {"code", "message"}}`.
 pub struct ApiError {
@@ -142,6 +143,12 @@ struct DatasetSummary {
     processing_datetime_display: String,
     revision_id: String,
     shape: (usize, usize),
+    /// Picked lines stored for this radargram, across every user.
+    ///
+    /// `None` when the catalog is not a project, which is different from
+    /// `Some(0)`: "nowhere to save picks" and "nobody has picked this yet"
+    /// should not look the same on a card.
+    line_count: Option<usize>,
 }
 
 /// Format an RFC3339 processing datetime for display as `YYYY-MM-DD HH:MM`.
@@ -157,7 +164,36 @@ fn format_datetime_for_display(raw: &str) -> String {
 }
 
 fn to_summary(entry: &super::catalog::CatalogEntry) -> DatasetSummary {
+    summarize(entry, None)
+}
+
+/// Count the picked lines stored for `radargram`, across all users.
+///
+/// Returns `None` if the count cannot be established, so a card falls back
+/// to saying nothing rather than claiming zero. A malformed document on
+/// disk is a reason not to answer, not a reason to report "no picks".
+fn count_lines(project: &crate::project::Project, radargram: &RadargramId) -> Option<usize> {
+    let store = project.documents();
+    let users = crate::project::interpretations::list_users(store, radargram).ok()?;
+    let mut total = 0;
+    for user in users {
+        let user_id = crate::identity::UserId::new(user).ok()?;
+        let stored = crate::project::interpretations::read(store, radargram, &user_id).ok()?;
+        if let Some(stored) = stored {
+            total += stored
+                .document
+                .features
+                .iter()
+                .filter(|f| matches!(f.geometry, gprinterp::Geometry::LineString(_)))
+                .count();
+        }
+    }
+    Some(total)
+}
+
+fn summarize(entry: &super::catalog::CatalogEntry, line_count: Option<usize>) -> DatasetSummary {
     DatasetSummary {
+        line_count,
         radargram_id: entry.radargram_id.to_string(),
         effective_label: entry.effective_label(),
         display_name: entry.display_name.as_ref().map(|d| d.to_string()),
@@ -172,7 +208,22 @@ fn to_summary(entry: &super::catalog::CatalogEntry) -> DatasetSummary {
 }
 
 pub async fn list_datasets(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let entries: Vec<DatasetSummary> = state.catalog.entries.iter().map(to_summary).collect();
+    // Counted here too, so `line_count` means the same thing in the API as
+    // it does on a card rather than being null for a project.
+    let entries: Vec<DatasetSummary> = state
+        .catalog
+        .entries
+        .iter()
+        .map(|entry| {
+            summarize(
+                entry,
+                state
+                    .project
+                    .as_ref()
+                    .and_then(|project| count_lines(project, &entry.radargram_id)),
+            )
+        })
+        .collect();
     let warnings: Vec<String> = state
         .catalog
         .warnings
@@ -461,7 +512,34 @@ pub async fn index_page(
         .map(|p| p.name)
         .collect();
 
-    let entries: Vec<DatasetSummary> = state.catalog.entries.iter().map(to_summary).collect();
+    // Counted once per entry here and reused below, rather than per card:
+    // the same radargram appears in both the flat list and its group, and
+    // each count is a directory read plus a JSON parse.
+    let line_counts: std::collections::HashMap<String, Option<usize>> = match &state.project {
+        Some(project) => state
+            .catalog
+            .entries
+            .iter()
+            .map(|e| {
+                (
+                    e.radargram_id.to_string(),
+                    count_lines(project, &e.radargram_id),
+                )
+            })
+            .collect(),
+        None => std::collections::HashMap::new(),
+    };
+    let summarize_entry = |entry: &super::catalog::CatalogEntry| {
+        summarize(
+            entry,
+            line_counts
+                .get(entry.radargram_id.as_str())
+                .copied()
+                .flatten(),
+        )
+    };
+
+    let entries: Vec<DatasetSummary> = state.catalog.entries.iter().map(&summarize_entry).collect();
     let warnings: Vec<String> = state
         .catalog
         .warnings
@@ -497,7 +575,7 @@ pub async fn index_page(
                 entries: state
                     .entries_in_group(id)
                     .into_iter()
-                    .map(to_summary)
+                    .map(&summarize_entry)
                     .collect(),
             }
         })
@@ -507,7 +585,7 @@ pub async fn index_page(
         .entries
         .iter()
         .filter(|e| e.group_id.is_none())
-        .map(to_summary)
+        .map(&summarize_entry)
         .collect();
     if !ungrouped_entries.is_empty() {
         groups.push(GroupSummary {

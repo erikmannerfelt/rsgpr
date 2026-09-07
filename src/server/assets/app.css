@@ -898,19 +898,9 @@ button.danger:hover {
   background: rgb(224 178 60 / 22%);
 }
 
-@media (pointer: coarse) {
-  .pick-handle {
-    margin: -4px 0 0 -4px;
-    width: 24px !important;
-    height: 24px !important;
-  }
-
-  .pick-overhang {
-    margin: -4px 0 0 -4px;
-    width: 26px !important;
-    height: 26px !important;
-  }
-}
+/* Marker sizes are set in picker.js, not here: Leaflet derives each icon's
+ * anchor from its size, and overriding the size in CSS left the anchor
+ * behind -- every handle sat a few pixels below its line. */
 
 /* The status text changes on every vertex, and must not resize the toolbar
  * when it does: a toolbar that grows pushes the map down mid-tap.
@@ -1157,15 +1147,25 @@ button.danger:hover {
 }
 
 @media (pointer: coarse) {
-  /* Matches the vertex handles' target, which is the whole point. */
-  .pick-midpoint {
-    margin: -5px 0 0 -5px;
-    width: 36px !important;
-    height: 36px !important;
-  }
-
+  /* The dot only -- the target around it is sized in picker.js. */
   .pick-midpoint-dot {
     width: 16px;
     height: 16px;
   }
+}
+
+/* Interpretation progress on a catalog card. The point of it is scanning a
+ * grid for what has been worked on, so "not interpreted yet" is muted and
+ * a real count is not. */
+.card-picks {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-accent);
+}
+
+.card-picks.is-empty {
+  font-weight: 400;
+  font-style: italic;
+  color: var(--color-text-muted);
 }
