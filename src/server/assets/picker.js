@@ -273,8 +273,16 @@
      * should be a fingertip regardless of zoom or horizontal stretch. */
     const SNAP_RADIUS_PX = 24;
 
-    /** Above this many vertices, midpoint handles are not drawn. */
-    const MAX_MIDPOINT_VERTICES = 120;
+    const COARSE_POINTER = window.matchMedia("(pointer: coarse)").matches;
+
+    /** A segment shorter than this on screen gets no midpoint handle.
+     *
+     * Erik's suggestion, and it is better than the fixed vertex cap it
+     * replaces: midpoints appear only where there is room to use them, so
+     * zooming out thins them out on its own and they never crowd the
+     * vertices they sit between. Roughly two handle widths, so a midpoint
+     * and its two neighbours cannot overlap. */
+    const MIN_SEGMENT_PX_FOR_MIDPOINT = COARSE_POINTER ? 72 : 44;
 
     function pixelsApart(latlng, [trace, sample]) {
       return map
@@ -331,17 +339,29 @@
       const [bTrace, bSample] = coordinates[index + 1];
       const midpoint = [(aTrace + bTrace) / 2, (aSample + bSample) / 2];
 
+      // The touch target is the full icon; the dot inside it is what you
+      // see. They were the same element before, at 18px on a phone against
+      // a vertex handle's 24px, and a finger drag whose first sample lands
+      // a few pixels off then goes to the map instead of the marker --
+      // which is why a midpoint could be tapped but not dragged. A tap is
+      // one point and forgiving; a drag is not.
       const marker = L.marker(toLatLng(midpoint[0], midpoint[1]), {
         draggable: true,
         keyboard: false,
         icon: L.divIcon({
-          className: "pick-handle pick-handle-midpoint",
-          iconSize: [12, 12],
-          iconAnchor: [6, 6],
+          className: "pick-midpoint",
+          html: '<i class="pick-midpoint-dot"></i>',
+          iconSize: [26, 26],
+          iconAnchor: [13, 13],
         }),
       }).addTo(map);
+      // Below the real vertices, so where the two overlap the vertex wins.
       marker.setZIndexOffset(900);
-      marker.bindTooltip("Tap to add a vertex here, or drag to place one");
+      // Hover-only affordance: on a touch screen the tooltip opens on the
+      // same tap that adds the vertex, so it is noise at best.
+      if (!COARSE_POINTER) {
+        marker.bindTooltip("Tap to add a vertex here, or drag to place one");
+      }
 
       // Inserted on `dragstart` so the drag is already moving a real
       // vertex, exactly as if it had been there all along. Deliberately no
@@ -616,14 +636,20 @@
         return handle;
       });
 
-      // One midpoint per segment, so a line already carrying N handles gets
-      // 2N-1. Capped because a heavily clicked horizon can run to hundreds
-      // of vertices, and at that point the markers cost more than the
-      // convenience is worth -- the line can still be split and rejoined.
-      if (coordinates.length <= MAX_MIDPOINT_VERTICES) {
-        for (let index = 0; index < coordinates.length - 1; index++) {
-          handles.push(makeMidpoint(coordinates, index, label));
-        }
+      // A midpoint per segment, but only where one is usable: long enough
+      // on screen to aim at, and actually in view. A horizon with hundreds
+      // of vertices therefore costs nothing until it is zoomed into, and
+      // then only for the part being looked at.
+      const view = map.getBounds();
+      for (let index = 0; index < coordinates.length - 1; index++) {
+        const a = toLatLng(coordinates[index][0], coordinates[index][1]);
+        const b = toLatLng(coordinates[index + 1][0], coordinates[index + 1][1]);
+        if (!view.intersects(L.latLngBounds(a, b))) continue;
+        const lengthPx = map
+          .latLngToContainerPoint(a)
+          .distanceTo(map.latLngToContainerPoint(b));
+        if (lengthPx < MIN_SEGMENT_PX_FOR_MIDPOINT) continue;
+        handles.push(makeMidpoint(coordinates, index, label));
       }
     }
 
@@ -833,6 +859,12 @@
     });
 
     window.RIDAL_REDRAW_PICKS = redraw;
+
+    // Midpoint visibility depends on zoom and pan, so the handles are
+    // rebuilt when the view settles. `moveend`/`zoomend` rather than
+    // `move`/`zoom`: rebuilding markers on every frame of a pan would be
+    // both wasteful and visibly jumpy.
+    map.on("moveend zoomend", redrawHandles);
 
     toggleButton.addEventListener("click", () => setPicking(!picking));
     undoButton.addEventListener("click", () => {

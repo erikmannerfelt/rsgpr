@@ -1123,23 +1123,49 @@ button.danger:hover {
   color: var(--color-text);
 }
 
-/* The handle between two vertices that adds a third. Smaller and hollow, so
- * it reads as "not yet a vertex" rather than competing with the real ones. */
-.pick-handle-midpoint {
-  border-style: dashed;
-  border-width: 2px;
+/* The handle between two vertices that adds a third.
+ *
+ * Two elements, on purpose: the outer one is the touch target and is
+ * invisible, the inner dot is what is seen. They used to be the same
+ * element, which forced a choice between a dot small enough to read as
+ * "not yet a vertex" and a target big enough to drag -- and the small dot
+ * won, so it could be tapped but not dragged. */
+.pick-midpoint {
+  background: none;
+  border: none;
+  display: grid;
+  place-items: center;
+  cursor: grab;
+}
+
+.pick-midpoint:active {
+  cursor: grabbing;
+}
+
+.pick-midpoint-dot {
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border: 2px dashed var(--color-text);
+  border-radius: 50%;
   background: var(--color-surface);
   opacity: 0.75;
 }
 
-.pick-handle-midpoint:hover {
+.pick-midpoint:hover .pick-midpoint-dot {
   opacity: 1;
 }
 
 @media (pointer: coarse) {
-  .pick-handle-midpoint {
-    margin: -3px 0 0 -3px;
-    width: 18px !important;
-    height: 18px !important;
+  /* Matches the vertex handles' target, which is the whole point. */
+  .pick-midpoint {
+    margin: -5px 0 0 -5px;
+    width: 36px !important;
+    height: 36px !important;
+  }
+
+  .pick-midpoint-dot {
+    width: 16px;
+    height: 16px;
   }
 }
