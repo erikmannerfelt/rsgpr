@@ -163,6 +163,17 @@ fn format_datetime_for_display(raw: &str) -> String {
     }
 }
 
+/// The profile a page should render with.
+///
+/// The request wins, then the project's configured default, then the
+/// built-in one. Three pages used to hardcode the last of those, which is
+/// what made a project-wide default impossible to express.
+fn resolve_profile(state: &AppState, requested: Option<String>) -> String {
+    requested
+        .or_else(|| state.project.as_ref().and_then(|p| p.default_profile()))
+        .unwrap_or_else(|| "default".to_string())
+}
+
 fn to_summary(entry: &super::catalog::CatalogEntry) -> DatasetSummary {
     summarize(entry, None)
 }
@@ -468,6 +479,40 @@ struct GroupSummary {
     entries: Vec<DatasetSummary>,
 }
 
+/// The project settings page.
+///
+/// Thin on purpose: one setting today, and the shape to hang the rest on
+/// when multi-user and deployment settings arrive. Renders for a
+/// non-project catalog too, explaining why there is nothing to configure.
+pub async fn settings_page(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ProfileQuery>,
+) -> Result<impl IntoResponse, PageError> {
+    let active_profile = resolve_profile(&state, query.profile);
+    lookup_profile(&active_profile).map_err(PageError)?;
+
+    let env = templates::environment();
+    let tmpl = env
+        .get_template("settings.html.jinja")
+        .expect("settings template is always registered");
+    let html = tmpl
+        .render(minijinja::context! {
+            project => state.project.is_some(),
+            writable => state.writable,
+            active_profile => active_profile,
+            project_name => state
+                .project
+                .as_ref()
+                .and_then(|p| p.config().project.name.clone()),
+            project_root => state
+                .project
+                .as_ref()
+                .map(|p| p.root().display().to_string()),
+        })
+        .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
+    Ok(Html(html))
+}
+
 /// The layer management page.
 ///
 /// A page of its own rather than a panel in the viewer: the vocabulary is
@@ -484,7 +529,7 @@ pub async fn layers_page(
     // menu's links out of it keep the viewing preference the user arrived
     // with. An unknown profile is rejected rather than passed on, so a bad
     // value cannot propagate silently through the menu.
-    let active_profile = query.profile.unwrap_or_else(|| "default".to_string());
+    let active_profile = resolve_profile(&state, query.profile);
     lookup_profile(&active_profile).map_err(PageError)?;
 
     let env = templates::environment();
@@ -505,7 +550,7 @@ pub async fn index_page(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ProfileQuery>,
 ) -> Result<impl IntoResponse, PageError> {
-    let active_profile = query.profile.unwrap_or_else(|| "default".to_string());
+    let active_profile = resolve_profile(&state, query.profile);
     lookup_profile(&active_profile).map_err(PageError)?;
     let profiles: Vec<String> = RenderProfile::built_in_profiles()
         .into_iter()
@@ -617,7 +662,7 @@ pub async fn viewer_page(
     Query(query): Query<ProfileQuery>,
 ) -> Result<impl IntoResponse, PageError> {
     let entry = lookup_dataset(&state, &radargram_id).map_err(PageError)?;
-    let active_profile = query.profile.unwrap_or_else(|| "default".to_string());
+    let active_profile = resolve_profile(&state, query.profile);
     lookup_profile(&active_profile).map_err(PageError)?;
 
     let radargram = state

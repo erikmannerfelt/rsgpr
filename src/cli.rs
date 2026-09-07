@@ -1130,6 +1130,12 @@ fn project_info_command(args: &ProjectInfoArgs) -> Result<(), String> {
         println!("Radargram root: {}", root.display());
     }
     println!("Cache: {}", project.cache_dir().display());
+    println!(
+        "Default render profile: {}",
+        project
+            .default_profile()
+            .unwrap_or_else(|| "(unset, Ridal's built-in default)".to_string())
+    );
 
     let (layers, _) =
         crate::project::layers::read(project.documents()).map_err(|e| e.to_string())?;

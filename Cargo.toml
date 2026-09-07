@@ -70,6 +70,10 @@ webbrowser = { version = "1", optional = true }  # `ridal gui` browser opening
 # a CLI concept too -- `ridal project init` and interpretation storage must
 # work in builds without the server.
 toml = "0.8"
+# Editing `ridal.toml` in place from the settings page without destroying
+# the comments `ridal project init` writes into it. Already present as a
+# transitive dependency of `toml`, so this costs no extra compilation.
+toml_edit = "0.22"
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 

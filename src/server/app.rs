@@ -271,6 +271,12 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/favicon.ico", get(super::assets::favicon))
         .route("/api/v1/health", get(super::routes::health))
         .route("/layers", get(super::routes::layers_page))
+        .route("/settings", get(super::routes::settings_page))
+        .route("/static/settings.js", get(super::assets::settings_js))
+        .route(
+            "/api/v1/project/settings",
+            get(super::interp_routes::get_settings).put(super::interp_routes::put_settings),
+        )
         .route("/static/layers.js", get(super::assets::layers_js))
         .route(
             "/api/v1/layers",

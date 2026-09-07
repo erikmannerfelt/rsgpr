@@ -1,4 +1,4 @@
-//! A small store for JSON documents inside a project.
+//! A small store for text documents inside a project.
 //!
 //! Interpretations and layer definitions have identical persistence needs: a
 //! single JSON file, written atomically, with enough concurrency control
@@ -178,7 +178,11 @@ impl Drop for TempFile {
     }
 }
 
-/// Stores JSON documents under a root directory.
+/// Stores text documents under a root directory.
+///
+/// JSON in every case but one: the project marker (`ridal.toml`) goes
+/// through here too, for the atomic write and the process-wide write lock
+/// rather than for anything JSON-specific.
 #[derive(Debug)]
 pub struct DocumentStore {
     root: PathBuf,
@@ -352,8 +356,8 @@ impl DocumentStore {
     }
 }
 
-/// A unique temporary sibling, keeping the `.json` suffix last so anything
-/// that sniffs by extension still sees JSON.
+/// A unique temporary sibling, keeping the real extension last so anything
+/// that sniffs by suffix still sees the right format.
 fn temp_path(path: &Path) -> PathBuf {
     let unique = Version::of(
         format!(
@@ -368,8 +372,8 @@ fn temp_path(path: &Path) -> PathBuf {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("document.json");
-    let stem = name.strip_suffix(".json").unwrap_or(name);
-    path.with_file_name(format!("{stem}.{}.tmp.json", &unique.as_str()[..8]))
+    let (stem, extension) = name.rsplit_once('.').unwrap_or((name, "tmp"));
+    path.with_file_name(format!("{stem}.{}.tmp.{extension}", &unique.as_str()[..8]))
 }
 
 #[cfg(test)]

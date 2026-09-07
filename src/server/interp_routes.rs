@@ -406,6 +406,67 @@ pub async fn interpretation_level2(
     ))
 }
 
+/// `GET /api/v1/project/settings`
+///
+/// Answers for a non-project catalog too, with `project: false` and no
+/// values, so the page can explain itself rather than 404.
+pub async fn get_settings(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let profiles: Vec<String> = crate::server::render::profile::RenderProfile::built_in_profiles()
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    let project = state.project.as_ref();
+    Json(serde_json::json!({
+        "project": project.is_some(),
+        "writable": state.writable,
+        "name": project.and_then(|p| p.config().project.name.clone()),
+        "root": project.map(|p| p.root().display().to_string()),
+        "default_profile": project.and_then(|p| p.default_profile()),
+        "profiles": profiles,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+pub struct SettingsUpdate {
+    /// The profile to use when a request names none. `null` (or absent)
+    /// clears it, restoring the built-in default.
+    #[serde(default)]
+    default_profile: Option<String>,
+}
+
+/// `PUT /api/v1/project/settings`
+pub async fn put_settings(
+    State(state): State<Arc<AppState>>,
+    Json(update): Json<SettingsUpdate>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = writable_project(&state)?;
+
+    // Validated here rather than in `Project`: which profiles exist is a
+    // server concept, and a CLI-only build has no way to check it. Storing
+    // a name nothing renders would leave every page 400ing with no obvious
+    // cause.
+    let profile = match update.default_profile.as_deref() {
+        None | Some("") => None,
+        Some(name) => {
+            if crate::server::render::profile::RenderProfile::by_name(name).is_none() {
+                return Err(ApiError::bad_request(
+                    "unknown_profile",
+                    format!("There is no render profile called '{name}'."),
+                ));
+            }
+            Some(name)
+        }
+    };
+
+    project
+        .set_default_profile(profile)
+        .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "default_profile": project.default_profile(),
+    })))
+}
+
 /// `GET /api/v1/layers/usage` -- how many picked features use each layer.
 ///
 /// Exists so the management page can say what deleting a layer would

@@ -1161,3 +1161,58 @@ button.danger:hover {
   color: var(--color-text-muted);
   font-style: italic;
 }
+
+/* --- Project settings ---------------------------------------------------- */
+
+.settings-summary {
+  margin-bottom: var(--space-5);
+}
+
+.settings-form {
+  padding: var(--space-4);
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-md);
+  max-width: 44rem;
+}
+
+.settings-form h2 {
+  margin-top: 0;
+  font-size: var(--text-lg);
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-4);
+}
+
+.settings-label {
+  font-weight: 600;
+}
+
+.settings-field select {
+  align-self: flex-start;
+  min-width: 14rem;
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.settings-form button {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.settings-form button:hover {
+  border-color: var(--color-accent);
+}

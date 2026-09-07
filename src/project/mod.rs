@@ -81,6 +81,8 @@ pub struct ProjectConfig {
     pub radargrams: RadargramsSection,
     #[serde(default)]
     pub cache: CacheSection,
+    #[serde(default)]
+    pub render: RenderSection,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -97,6 +99,18 @@ pub struct RadargramsSection {
     /// project can index an archive it does not contain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roots: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RenderSection {
+    /// Render profile used when a request does not name one.
+    ///
+    /// Kept as a plain string: the set of valid profiles is a server
+    /// concept, and a CLI-only build has no way to check it. Validation
+    /// belongs at the HTTP boundary where a bad value can be refused with a
+    /// useful message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -123,10 +137,15 @@ fn toml_string(value: &str) -> String {
 }
 
 /// An opened project.
+///
+/// The config sits behind a lock because the settings page edits it through
+/// a shared `&AppState`, and a change that only reached the file would not
+/// take effect until a restart -- which is not what pressing Save looks
+/// like it does.
 #[derive(Debug)]
 pub struct Project {
     root: PathBuf,
-    config: ProjectConfig,
+    config: std::sync::RwLock<ProjectConfig>,
     documents: DocumentStore,
 }
 
@@ -182,7 +201,7 @@ impl Project {
         Ok(Project {
             documents: DocumentStore::new(root.clone()),
             root,
-            config,
+            config: std::sync::RwLock::new(config),
         })
     }
 
@@ -237,6 +256,7 @@ impl Project {
                 roots: vec![DEFAULT_RADARGRAM_DIR.to_string()],
             },
             cache: CacheSection::default(),
+            render: RenderSection::default(),
         };
         // Written as a commented template rather than serialized, because
         // this file exists to be hand-edited: serde would emit a bare,
@@ -262,9 +282,20 @@ impl Project {
              # rebuild) is kept. Safe to delete at any time. Point this at local\n\
              # disk if the project itself lives on a network share.\n\
              # [cache]\n\
-             # dir = {}\n",
+             # dir = {}\n\
+             \n\
+             # Render profile used when a page does not ask for one. Set it\n\
+             # from Project settings in the browser, or add a line here such\n\
+             # as `default_profile = {}`. Left unset, Ridal uses its\n\
+             # built-in \"default\" profile.\n\
+             #\n\
+             # A real (empty) table rather than a commented one, so that\n\
+             # saving from the browser puts the key under this note instead\n\
+             # of appending a second [render] elsewhere in the file.\n\
+             [render]\n",
             toml_string(DEFAULT_RADARGRAM_DIR),
             toml_string("/var/cache/ridal"),
+            toml_string("default"),
         );
         let marker = root.join(MARKER);
         std::fs::write(&marker, text).map_err(|e| ProjectError::Io {
@@ -284,8 +315,93 @@ impl Project {
         &self.root
     }
 
-    pub fn config(&self) -> &ProjectConfig {
-        &self.config
+    /// A snapshot of the current settings.
+    ///
+    /// Cloned rather than borrowed: the config is behind a lock, and
+    /// handing out a guard would make every caller hold it for as long as
+    /// they held the value. It is a handful of short strings.
+    pub fn config(&self) -> ProjectConfig {
+        self.read_config().clone()
+    }
+
+    fn read_config(&self) -> std::sync::RwLockReadGuard<'_, ProjectConfig> {
+        // A poisoned lock means a panic while writing settings. The stored
+        // value is still whatever was last read from disk, which is a
+        // better answer than propagating the panic to every page.
+        self.config
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The render profile to use when a request does not name one.
+    pub fn default_profile(&self) -> Option<String> {
+        self.read_config().render.default_profile.clone()
+    }
+
+    /// Set (or clear) the default render profile, in the file and in memory.
+    ///
+    /// Reached through the settings page, so a CLI-only build never calls
+    /// it -- same situation as the write half of the stores beside this.
+    ///
+    /// Edited with `toml_edit` rather than re-serialised, so the comments
+    /// `ridal project init` writes survive. The file is meant to be
+    /// hand-editable; a settings page that silently stripped a user's notes
+    /// out of it would be a poor trade for one dropdown.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn set_default_profile(&self, profile: Option<&str>) -> Result<(), ProjectError> {
+        let marker = self.root.join(MARKER);
+        let text = std::fs::read_to_string(&marker).map_err(|e| ProjectError::Io {
+            path: marker.clone(),
+            message: e.to_string(),
+        })?;
+        let mut document: toml_edit::DocumentMut =
+            text.parse()
+                .map_err(|e: toml_edit::TomlError| ProjectError::Config {
+                    path: marker.clone(),
+                    message: e.to_string(),
+                })?;
+
+        match profile {
+            Some(name) => {
+                if !document.contains_key("render") {
+                    document["render"] = toml_edit::Item::Table(toml_edit::Table::new());
+                }
+                document["render"]["default_profile"] = toml_edit::value(name);
+            }
+            None => {
+                if let Some(table) = document
+                    .get_mut("render")
+                    .and_then(toml_edit::Item::as_table_mut)
+                {
+                    table.remove("default_profile");
+                }
+            }
+        }
+
+        let updated = document.to_string();
+        // Through the document store for its atomic write and its
+        // process-wide write lock, which also serialises two settings saves
+        // arriving at once.
+        self.documents
+            .write(Path::new(MARKER), &updated, &store::Expectation::Any)
+            .map_err(|e| ProjectError::Io {
+                path: marker.clone(),
+                message: e.to_string(),
+            })?;
+
+        // Re-parsed from what was written rather than patched in memory, so
+        // the two cannot drift.
+        let reparsed: ProjectConfig =
+            toml::from_str(&updated).map_err(|e| ProjectError::Config {
+                path: marker,
+                message: e.to_string(),
+            })?;
+        let mut guard = self
+            .config
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = reparsed;
+        Ok(())
     }
 
     /// The store holding authored documents.
@@ -299,10 +415,11 @@ impl Project {
     /// a project whose `.nc` files sit loose at the top level still works
     /// without configuration.
     pub fn radargram_roots(&self) -> Vec<PathBuf> {
-        if self.config.radargrams.roots.is_empty() {
+        let config = self.read_config();
+        if config.radargrams.roots.is_empty() {
             return vec![self.root.clone()];
         }
-        self.config
+        config
             .radargrams
             .roots
             .iter()
@@ -316,7 +433,7 @@ impl Project {
     /// exist yet, but its location is a project-shaped decision and settling
     /// it here means adding the cache later is not also a layout change.
     pub fn cache_dir(&self) -> PathBuf {
-        match &self.config.cache.dir {
+        match &self.read_config().cache.dir {
             Some(dir) => self.resolve(dir),
             None => self.root.join(DEFAULT_CACHE_DIR),
         }
@@ -483,6 +600,73 @@ mod tests {
         );
         // Idempotent: opening a project twice must not fail on the tag.
         project.ensure_cache_dir().unwrap();
+    }
+
+    #[test]
+    fn the_default_profile_round_trips_and_keeps_the_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), Some("x")).unwrap();
+        assert_eq!(project.default_profile(), None);
+
+        let before = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
+        let comment_lines = before.lines().filter(|l| l.starts_with('#')).count();
+        assert!(comment_lines > 5, "the template should be commented");
+
+        project.set_default_profile(Some("abslog")).unwrap();
+
+        // In memory straight away -- a save that only reached the file
+        // would not take effect until a restart.
+        assert_eq!(project.default_profile().as_deref(), Some("abslog"));
+        // And on disk, for the next process.
+        assert_eq!(
+            Project::open(dir.path())
+                .unwrap()
+                .default_profile()
+                .as_deref(),
+            Some("abslog")
+        );
+
+        let after = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
+        assert_eq!(
+            after.lines().filter(|l| l.starts_with('#')).count(),
+            comment_lines,
+            "editing the file must not strip the comments in it:\n{after}"
+        );
+        // The other settings are untouched.
+        assert!(after.contains("[radargrams]"), "{after}");
+    }
+
+    #[test]
+    fn clearing_the_default_profile_removes_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        project.set_default_profile(Some("abslog")).unwrap();
+        project.set_default_profile(None).unwrap();
+
+        assert_eq!(project.default_profile(), None);
+        let text = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
+        // Only the commented example from the template should remain.
+        let live = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .filter(|l| l.contains("default_profile"))
+            .count();
+        assert_eq!(live, 0, "{text}");
+    }
+
+    #[test]
+    fn a_settings_write_leaves_no_temporary_file_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        project.set_default_profile(Some("positive")).unwrap();
+
+        let strays: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(strays.is_empty(), "{strays:?}");
     }
 
     #[test]

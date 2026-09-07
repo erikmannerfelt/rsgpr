@@ -611,6 +611,146 @@ async fn downloading_before_anything_is_saved_says_so() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn the_default_profile_round_trips_through_the_settings_api() {
+    let (dir, app) = project_app(true);
+
+    let (status, _, body) = get(&app, "/api/v1/project/settings").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["project"], true);
+    assert_eq!(body["writable"], true);
+    assert!(body["default_profile"].is_null(), "unset to begin with");
+    assert!(
+        body["profiles"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("abslog")),
+        "the page needs the list to populate its select: {body}"
+    );
+
+    let (status, _, _) = put(
+        &app,
+        "/api/v1/project/settings",
+        &serde_json::json!({"default_profile": "abslog"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    assert_eq!(body["default_profile"], "abslog");
+
+    // And on disk, so it survives a restart.
+    let marker = std::fs::read_to_string(dir.path().join("ridal.toml")).unwrap();
+    assert!(marker.contains("default_profile = \"abslog\""), "{marker}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_default_profile_is_what_pages_render_with() {
+    // The whole point of the setting: a page opened with no profile in its
+    // address uses the project's, not the built-in one.
+    let (_dir, app) = project_app(true);
+    put(
+        &app,
+        "/api/v1/project/settings",
+        &serde_json::json!({"default_profile": "abslog"}),
+        None,
+    )
+    .await;
+
+    for uri in ["/", "/view/line-01", "/layers", "/settings"] {
+        let (status, html) = page(&app, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(
+            html.contains("?profile=abslog"),
+            "{uri} did not pick up the project default"
+        );
+    }
+
+    // An explicit request still wins.
+    let (_, html) = page(&app, "/?profile=positive").await;
+    assert!(html.contains("value=\"positive\" selected"), "{html}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_unknown_default_profile_is_refused() {
+    // Storing a name nothing renders would leave every page failing with
+    // no obvious cause.
+    let (_dir, app) = project_app(true);
+    let (status, _, body) = put(
+        &app,
+        "/api/v1/project/settings",
+        &serde_json::json!({"default_profile": "nope"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "unknown_profile");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_default_profile_can_be_cleared() {
+    let (_dir, app) = project_app(true);
+    let settings = "/api/v1/project/settings";
+    put(
+        &app,
+        settings,
+        &serde_json::json!({"default_profile": "abslog"}),
+        None,
+    )
+    .await;
+    put(
+        &app,
+        settings,
+        &serde_json::json!({"default_profile": null}),
+        None,
+    )
+    .await;
+
+    let (_, _, body) = get(&app, settings).await;
+    assert!(body["default_profile"].is_null(), "{body}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn settings_are_read_only_where_writes_are() {
+    let (_dir, app) = project_app(false);
+    let (status, _, body) = put(
+        &app,
+        "/api/v1/project/settings",
+        &serde_json::json!({"default_profile": "abslog"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "read_only");
+
+    // Reading still works, and the page says why the form is inert.
+    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    assert_eq!(body["writable"], false);
+    let (status, html) = page(&app, "/settings").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("read-only"), "{html}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_bare_catalog_has_nothing_to_configure() {
+    let (_dir, app) = bare_app();
+    let (status, _, body) = get(&app, "/api/v1/project/settings").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["project"], false);
+
+    let (status, html) = page(&app, "/settings").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("ridal project init"), "{html}");
+    assert!(!html.contains("id=\"settings-form\""), "no form to offer");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn layer_usage_counts_features_and_flags_undefined_labels() {
     let (_dir, app) = project_app(true);
     put(
