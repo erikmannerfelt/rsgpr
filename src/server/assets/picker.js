@@ -732,6 +732,7 @@
       const feature = features[selected];
       const label = feature.properties && feature.properties.label;
       selectedLayer.value = label || "";
+      paintSwatch(selectedSwatch, label);
       const many = feature.geometry.coordinates.length > 2;
       selectionHint.textContent =
         "Drag a vertex to move it, or onto its neighbour to remove it. " +
@@ -1031,7 +1032,18 @@
         ? layers.map((layer) => {
             const option = document.createElement("option");
             option.value = layer.id;
-            option.textContent = layer.name || layer.id;
+            // The colour leads, so the eye finds it in the same place in
+            // the list as in the swatch beside the closed select.
+            //
+            // A square glyph rather than a styled box because an `<option>`
+            // cannot contain markup: its colour has to come from the
+            // option's own text colour, which means the name is tinted too.
+            // Acceptable for saturated colours, and the swatch outside the
+            // dropdown is the reliable reading either way -- some platforms
+            // (notably iOS) render native pickers that ignore this styling
+            // entirely.
+            option.textContent = `\u25A0 ${layer.name || layer.id}`;
+            option.style.color = colorFor(layer.id);
             return option;
           })
         : [new Option("No layers defined - add one on the Layers page", "")];
