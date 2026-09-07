@@ -43,7 +43,16 @@ document.querySelectorAll('.group-map').forEach((el) => {
           // The wide companion goes down first and carries the popup, so a
           // track is as easy to hit as it is to see.
           const hit = RIDAL.hitLine(latlngs)
-            .bindPopup(RIDAL.popupContent(radargramId, info.effective_label))
+            // A function, not a string: evaluated when the popup opens, so
+            // the thumbnail and the link use whatever profile is selected
+            // then.
+            .bindPopup(() =>
+              RIDAL.popupContent(
+                radargramId,
+                info.effective_label,
+                document.getElementById('index-profile-select').value,
+              ),
+            )
             .addTo(map);
           const visible = L.polyline(latlngs, {
             color: RIDAL.trackColor,

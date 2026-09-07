@@ -1114,3 +1114,11 @@ button.danger:hover {
   border-color: var(--color-accent);
   color: var(--color-accent-hover);
 }
+
+/* The picking toast, when it is explaining rather than complaining. Same
+ * element and same fixed position, so it still costs no layout. */
+#pick-error.toast-info {
+  background: var(--color-surface);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}

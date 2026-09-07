@@ -264,7 +264,12 @@ if (GROUP) {
         if (siblingId === RADARGRAM_ID) continue;
         const pairs = trackToLatLngs(info.track).map((latlngs) => {
           const hit = RIDAL.hitLine(latlngs)
-            .bindPopup(RIDAL.popupContent(siblingId, info.effective_label))
+            // A function, not a string: the profile select changes the
+            // radargram without reloading, so the popup has to be built
+            // when it opens rather than when the track is drawn.
+            .bindPopup(() =>
+              RIDAL.popupContent(siblingId, info.effective_label, currentProfile()),
+            )
             .addTo(overviewMap);
           const visible = L.polyline(latlngs, {
             color: RIDAL.siblingColor,

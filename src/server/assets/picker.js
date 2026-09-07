@@ -148,11 +148,23 @@
 
     const showError = (message) => {
       errorBox.textContent = message;
+      errorBox.classList.remove("toast-info");
+      errorBox.hidden = false;
+    };
+    /** Same toast, said calmly.
+     *
+     * Worth having because the toast is `position: fixed` -- it costs no
+     * layout, so an explanation can appear exactly when it is relevant and
+     * vanish when it is not, without moving anything. */
+    const showInfo = (message) => {
+      errorBox.textContent = message;
+      errorBox.classList.add("toast-info");
       errorBox.hidden = false;
     };
     const clearError = () => {
       errorBox.hidden = true;
       errorBox.textContent = "";
+      errorBox.classList.remove("toast-info");
     };
 
     // --- Coordinate conversion ----------------------------------------------
@@ -571,6 +583,11 @@
       saveButton.disabled = !dirty;
       undoButton.disabled = !draft || draft.length === 0;
       finishButton.disabled = !draft || draft.length < 2;
+      // Naming the count ties the button to the line in progress. "Finish
+      // line" on its own reads as a mode switch, which is what made it
+      // hard to guess what it would do.
+      finishButton.textContent =
+        draft && draft.length ? `Finish line (${draft.length})` : "Finish line";
       downloadLink.hidden = dirty || features.length === 0;
     }
 
@@ -586,8 +603,19 @@
       toggleButton.textContent = on ? "Stop picking" : "Start picking";
       toggleButton.setAttribute("aria-pressed", String(on));
       document.getElementById("map").classList.toggle("picking", on);
-      if (on) deselect();
-      else finishLine();
+      if (on) {
+        deselect();
+        // Every tap extends the *same* line until it is finished, which is
+        // not guessable from a toolbar of buttons. Said once, when it
+        // becomes relevant, and cleared by the first tap.
+        showInfo(
+          "Tap the radargram to add points to one line. Finish line ends it, " +
+            "so the next tap starts a separate line.",
+        );
+      } else {
+        finishLine();
+        clearError();
+      }
     }
 
     function finishLine() {
@@ -642,6 +670,8 @@
         );
         return;
       }
+      // Clears the "how this works" hint too, on the first tap that proves
+      // it was read.
       clearError();
       draft = candidate;
       redrawHandles();

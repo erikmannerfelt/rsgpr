@@ -144,11 +144,23 @@ const RIDAL = Object.freeze({
    * beside it. The near-opaque popup background that makes this legible
    * over arbitrary basemap imagery comes from app.css's
    * .leaflet-popup-content-wrapper rule, not from anything here. */
-  popupContent(radargramId, label) {
+  /** A track popup: the radargram's label, a thumbnail, and a link to it.
+   *
+   * `profile` applies to *both* -- the link, so arriving at the radargram
+   * keeps the profile being browsed in, and the thumbnail, which is a
+   * render and otherwise comes back in the default profile regardless of
+   * what the rest of the page is showing.
+   *
+   * Callers should pass this to `bindPopup` as a function rather than a
+   * string, so the profile is read when the popup opens. The viewer's
+   * profile can change without a page reload, and a popup built at load
+   * time would keep showing the profile that was active then. */
+  popupContent(radargramId, label, profile) {
+    const query = profile ? `?profile=${encodeURIComponent(profile)}` : "";
     return (
-      `<a class="popup-link" href="/view/${radargramId}">` +
+      `<a class="popup-link" href="/view/${radargramId}${query}">` +
       `${label}` +
-      `<img class="popup-thumb" src="/api/v1/datasets/${radargramId}/views/standard/overview" ` +
+      `<img class="popup-thumb" src="/api/v1/datasets/${radargramId}/views/standard/overview${query}" ` +
       'loading="lazy" alt="">' +
       '</a>'
     );
