@@ -1028,22 +1028,18 @@
         console.warn(`Could not load layers: ${error.message}`);
         layers = [];
       }
+      // Plain text, deliberately. Putting the colour inside the list was
+      // tried and reverted: an `<option>` cannot contain markup, so the
+      // only ways in are tinting the whole label -- which several platforms
+      // ignore -- or a square glyph, which renders as an empty box wherever
+      // the font lacks it. Both leave the colour *less* legible than not
+      // showing it at all. The swatch beside the select is the one that
+      // works everywhere.
       const options = layers.length
         ? layers.map((layer) => {
             const option = document.createElement("option");
             option.value = layer.id;
-            // The colour leads, so the eye finds it in the same place in
-            // the list as in the swatch beside the closed select.
-            //
-            // A square glyph rather than a styled box because an `<option>`
-            // cannot contain markup: its colour has to come from the
-            // option's own text colour, which means the name is tinted too.
-            // Acceptable for saturated colours, and the swatch outside the
-            // dropdown is the reliable reading either way -- some platforms
-            // (notably iOS) render native pickers that ignore this styling
-            // entirely.
-            option.textContent = `\u25A0 ${layer.name || layer.id}`;
-            option.style.color = colorFor(layer.id);
+            option.textContent = layer.name || layer.id;
             return option;
           })
         : [new Option("No layers defined - add one on the Layers page", "")];
