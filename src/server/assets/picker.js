@@ -220,6 +220,15 @@
         const before = coordinates[index];
         const dropped = marker.getLatLng();
 
+        // Dropped onto one of its own neighbours: the two would be on top
+        // of each other, so the intent is to get rid of this one. Checked
+        // before the join below because a neighbour on the same line is the
+        // nearer, more local target -- joining is about a *different* line.
+        if (droppedOnNeighbour(coordinates, index, dropped)) {
+          removeVertex(coordinates, index);
+          return;
+        }
+
         // Dragging an end of a stored line onto the end of another is how
         // two lines are joined back together -- the inverse of tapping a
         // middle vertex to split one.
@@ -258,6 +267,123 @@
       return marker;
     }
 
+    /** How near, in screen pixels, a vertex has to be dropped to a
+     * neighbour to be removed, and an endpoint to another line's endpoint
+     * to be joined. Screen pixels rather than trace indices: the tolerance
+     * should be a fingertip regardless of zoom or horizontal stretch. */
+    const SNAP_RADIUS_PX = 24;
+
+    /** Above this many vertices, midpoint handles are not drawn. */
+    const MAX_MIDPOINT_VERTICES = 120;
+
+    function pixelsApart(latlng, [trace, sample]) {
+      return map
+        .latLngToContainerPoint(latlng)
+        .distanceTo(map.latLngToContainerPoint(toLatLng(trace, sample)));
+    }
+
+    /** Whether `latlng` lands on the vertex before or after `index`. */
+    function droppedOnNeighbour(coordinates, index, latlng) {
+      return [index - 1, index + 1].some(
+        (i) =>
+          i >= 0 &&
+          i < coordinates.length &&
+          pixelsApart(latlng, coordinates[i]) <= SNAP_RADIUS_PX,
+      );
+    }
+
+    /** Drop a vertex from a line.
+     *
+     * Refused rather than clamped when it would leave fewer than two
+     * vertices: one point is not a line, cannot be exported, and there is
+     * no way back from it. Deleting the whole line is a separate,
+     * deliberate button.
+     *
+     * Says what happened, because a vertex vanishing under a finger is
+     * otherwise indistinguishable from a mis-drag -- and there is no undo. */
+    function removeVertex(coordinates, index) {
+      if (coordinates.length <= 2) {
+        showError(
+          "A line needs at least two vertices, so this one cannot be removed. " +
+            "Use Delete line if you meant to remove the whole line.",
+        );
+        redraw();
+        return;
+      }
+      coordinates.splice(index, 1);
+      markDirty();
+      redraw();
+      showInfo("Vertex removed -- it was dropped onto its neighbour.");
+    }
+
+    /** The small handle between two vertices that inserts a third.
+     *
+     * Leaflet.Draw's pattern, and the reason it works is that one gesture
+     * covers both intents: a tap drops a vertex at the midpoint, while
+     * pressing and dragging creates it and positions it in the same motion,
+     * with no intermediate state to undo.
+     *
+     * The insert itself can never create an overhang -- the midpoint of two
+     * points is strictly between them -- so only the drag needs validating.
+     */
+    function makeMidpoint(coordinates, index, label) {
+      const [aTrace, aSample] = coordinates[index];
+      const [bTrace, bSample] = coordinates[index + 1];
+      const midpoint = [(aTrace + bTrace) / 2, (aSample + bSample) / 2];
+
+      const marker = L.marker(toLatLng(midpoint[0], midpoint[1]), {
+        draggable: true,
+        keyboard: false,
+        icon: L.divIcon({
+          className: "pick-handle pick-handle-midpoint",
+          iconSize: [12, 12],
+          iconAnchor: [6, 6],
+        }),
+      }).addTo(map);
+      marker.setZIndexOffset(900);
+      marker.bindTooltip("Tap to add a vertex here, or drag to place one");
+
+      // Inserted on `dragstart` so the drag is already moving a real
+      // vertex, exactly as if it had been there all along. Deliberately no
+      // redraw until the drag ends -- rebuilding the handles mid-drag would
+      // destroy the marker being dragged.
+      let dragging = false;
+      marker.on("dragstart", () => {
+        dragging = true;
+        coordinates.splice(index + 1, 0, midpoint.slice());
+      });
+
+      marker.on("dragend", () => {
+        const [trace, sample] = toIndex(marker.getLatLng());
+        coordinates[index + 1] = [trace, sample];
+        if (!allowsOverhangs(label) && overhangIndices(coordinates).length > 0) {
+          coordinates.splice(index + 1, 1);
+          showError(
+            "A vertex there would make the line double back, so it would have " +
+              "two depths at one position. Nothing was added.",
+          );
+        } else {
+          clearError();
+          markDirty();
+        }
+        dragging = false;
+        redraw();
+      });
+
+      marker.on("click", (event) => {
+        L.DomEvent.stopPropagation(event);
+        // Leaflet can fire a click after a drag; the drag already did the
+        // work.
+        if (dragging) return;
+        coordinates.splice(index + 1, 0, midpoint.slice());
+        clearError();
+        markDirty();
+        redraw();
+      });
+
+      return marker;
+    }
+
     // --- Editing a stored line ----------------------------------------------
 
     function select(index) {
@@ -270,13 +396,6 @@
       selected = null;
       redraw();
     }
-
-    /** How near, in screen pixels, an endpoint must be dropped to join.
-     *
-     * Screen pixels rather than trace indices because the user is aiming
-     * with a finger: the tolerance should be the size of a fingertip
-     * regardless of how far the radargram is zoomed in or stretched. */
-    const JOIN_RADIUS_PX = 24;
 
     /** The nearest joinable endpoint to `latlng`, or null.
      *
@@ -300,7 +419,7 @@
           const distance = point.distanceTo(
             map.latLngToContainerPoint(toLatLng(trace, sample)),
           );
-          if (distance <= JOIN_RADIUS_PX && (!best || distance < best.distance)) {
+          if (distance <= SNAP_RADIUS_PX && (!best || distance < best.distance)) {
             best = { index, atStart, distance };
           }
         }
@@ -496,6 +615,16 @@
         );
         return handle;
       });
+
+      // One midpoint per segment, so a line already carrying N handles gets
+      // 2N-1. Capped because a heavily clicked horizon can run to hundreds
+      // of vertices, and at that point the markers cost more than the
+      // convenience is worth -- the line can still be split and rejoined.
+      if (coordinates.length <= MAX_MIDPOINT_VERTICES) {
+        for (let index = 0; index < coordinates.length - 1; index++) {
+          handles.push(makeMidpoint(coordinates, index, label));
+        }
+      }
     }
 
     /** A marker at every vertex where a line doubles back.
@@ -551,10 +680,11 @@
       const feature = features[selected];
       const label = feature.properties && feature.properties.label;
       selectedLayer.value = label || "";
+      const many = feature.geometry.coordinates.length > 2;
       selectionHint.textContent =
-        (feature.geometry.coordinates.length > 2
-          ? "Drag a vertex to move it; tap a middle one to split. "
-          : "Drag a vertex to move it. Too few vertices to split. ") +
+        "Drag a vertex to move it, or onto its neighbour to remove it. " +
+        "Tap a small handle between two vertices to add one. " +
+        (many ? "Tap a middle vertex to split. " : "") +
         "Drop an end onto another line's end in the same layer to join them.";
     }
 

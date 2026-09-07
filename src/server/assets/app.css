@@ -1122,3 +1122,24 @@ button.danger:hover {
   border-color: var(--color-border-strong);
   color: var(--color-text);
 }
+
+/* The handle between two vertices that adds a third. Smaller and hollow, so
+ * it reads as "not yet a vertex" rather than competing with the real ones. */
+.pick-handle-midpoint {
+  border-style: dashed;
+  border-width: 2px;
+  background: var(--color-surface);
+  opacity: 0.75;
+}
+
+.pick-handle-midpoint:hover {
+  opacity: 1;
+}
+
+@media (pointer: coarse) {
+  .pick-handle-midpoint {
+    margin: -3px 0 0 -3px;
+    width: 18px !important;
+    height: 18px !important;
+  }
+}
