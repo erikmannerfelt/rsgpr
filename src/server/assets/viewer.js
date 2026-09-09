@@ -454,3 +454,161 @@ document.getElementById('metadata-button').addEventListener('click', () => {
     });
 });
 document.getElementById('metadata-close').addEventListener('click', () => dialog.close());
+
+/* --- Downloads -----------------------------------------------------------
+ *
+ * Owned here rather than in picker.js: three of the five need no project
+ * and no write access, so they have to work on a read-only catalog where
+ * the picker never initialises at all.
+ *
+ * Each is a plain navigation to an endpoint that sets
+ * `Content-Disposition: attachment`, so the browser saves the file and the
+ * page stays where it is -- no blob building, and a failure lands on the
+ * server's own error envelope rather than being swallowed.
+ */
+(function setupDownloads() {
+  const menu = document.getElementById('download-menu');
+  if (!menu) return;
+
+  const datasetUrl = `/api/v1/datasets/${RADARGRAM_ID}`;
+  const picksUrl = `${datasetUrl}/interpretations/${CFG.user}`;
+  const go = (url) => {
+    menu.open = false;
+    window.location.href = url;
+  };
+
+  /* The two pick downloads are derived from what is *saved*. Offering them
+   * over unsaved edits would hand back something that quietly disagrees
+   * with what is on screen, so they say so instead. */
+  function picksAreStale() {
+    if (window.RIDAL_PICKS_DIRTY) {
+      RIDAL.reportError(
+        'map',
+        'Save your picks first -- a download is built from the saved ' +
+          'interpretation, not from what is on screen.',
+      );
+      menu.open = false;
+      return true;
+    }
+    return false;
+  }
+
+  const bind = (id, handler) => {
+    const button = document.getElementById(id);
+    if (button) button.addEventListener('click', handler);
+  };
+
+  bind('dl-track', () => go(`${datasetUrl}/track.geojson`));
+  bind('dl-radargram', () => go(`${datasetUrl}/download`));
+  bind('dl-raw', () => {
+    if (!picksAreStale()) go(`${picksUrl}/raw`);
+  });
+
+  // --- Points (level 2) ---
+  const pointsDialog = document.getElementById('download-dialog');
+  bind('dl-points', () => {
+    if (picksAreStale()) return;
+    menu.open = false;
+    pointsDialog.showModal();
+  });
+  document
+    .getElementById('download-close')
+    .addEventListener('click', () => pointsDialog.close());
+  document.getElementById('download-go').addEventListener('click', () => {
+    const spacing = document.getElementById('download-spacing').value;
+    // One select covers both the file format and its coordinates: "GeoJSON
+    // in native coordinates" is a single choice to a user even though it is
+    // two parameters on the wire.
+    const choice = document.getElementById('download-format').value;
+    const format = choice === 'csv' ? 'csv' : 'geojson';
+    const crs = choice === 'geojson-native' ? '&crs=native' : '';
+    pointsDialog.close();
+    go(
+      `${picksUrl}/level2?spacing=${encodeURIComponent(spacing)}` +
+        `&format=${encodeURIComponent(format)}${crs}`,
+    );
+  });
+
+  // --- Rendered image ---
+  const imageDialog = document.getElementById('image-dialog');
+  const widthSelect = document.getElementById('image-width');
+  const formatSelect = document.getElementById('image-format');
+  const qualityField = document.getElementById('image-quality-field');
+  const qualitySelect = document.getElementById('image-quality');
+  const estimate = document.getElementById('image-estimate');
+
+  /* Offered widths, smallest first, ending at one pixel per trace.
+   *
+   * VIEWER_WIDTH is in there and is the default: this menu item says it
+   * downloads what is in the viewer, and the viewer draws a raster capped
+   * at that width, so it is literally the same image.
+   *
+   * Width is *not* a speed dial. Rendering reads the whole source array
+   * whichever width is asked for, so the time barely moves with it: on a
+   * release build, a 12187x3678 radargram from a 145 MB file took 1.9 s at
+   * 900 px and 2.4 s at full resolution, and 6 ms once cached. The choice
+   * here is about file size and detail, which is what the estimate says. */
+  function widthOptions() {
+    const candidates = new Set([1000, 2000, 4000, 8000, VIEWER_WIDTH]);
+    const presets = [...candidates]
+      .filter((w) => w > 0 && w < SOURCE_WIDTH)
+      .sort((a, b) => a - b);
+    return [
+      ...presets.map(
+        (w) =>
+          new Option(
+            w === VIEWER_WIDTH ? `${w} px - as shown in the viewer` : `${w} px`,
+            String(w),
+          ),
+      ),
+      new Option(`${SOURCE_WIDTH} px - full resolution`, String(SOURCE_WIDTH)),
+    ];
+  }
+
+  function describeChoice() {
+    const width = Number(widthSelect.value) || SOURCE_WIDTH;
+    const height = Math.max(1, Math.round((SOURCE_HEIGHT * width) / SOURCE_WIDTH));
+    const megapixels = (width * height) / 1e6;
+    // Deliberately about size rather than time. An earlier version warned
+    // that large widths were slow, from timings taken on a debug build --
+    // they were 15 to 35 times the real figure, and the warning would have
+    // steered people away from full resolution for no reason.
+    estimate.textContent =
+      `${width} \u00d7 ${height} px (${megapixels.toFixed(1)} MP). ` +
+      (formatSelect.value === 'jpeg'
+        ? 'JPEG is much smaller but lossy, and cannot exceed 65535 px.'
+        : 'PNG is lossless; at this size the file may be tens of megabytes.');
+  }
+
+  widthSelect.replaceChildren(...widthOptions());
+  // What the viewer is showing, if that is one of the options.
+  const viewerOption = [...widthSelect.options].findIndex(
+    (option) => Number(option.value) === VIEWER_WIDTH,
+  );
+  widthSelect.selectedIndex = viewerOption >= 0 ? viewerOption : widthSelect.options.length - 1;
+  describeChoice();
+
+  widthSelect.addEventListener('change', describeChoice);
+  formatSelect.addEventListener('change', () => {
+    qualityField.hidden = formatSelect.value !== 'jpeg';
+    describeChoice();
+  });
+
+  bind('dl-image', () => {
+    menu.open = false;
+    imageDialog.showModal();
+  });
+  document
+    .getElementById('image-close')
+    .addEventListener('click', () => imageDialog.close());
+  document.getElementById('image-go').addEventListener('click', () => {
+    const params = new URLSearchParams({
+      profile: currentProfile(),
+      width: widthSelect.value,
+      format: formatSelect.value,
+    });
+    if (formatSelect.value === 'jpeg') params.set('quality', qualitySelect.value);
+    imageDialog.close();
+    go(`${datasetUrl}/views/${VIEW}/image?${params}`);
+  });
+})();

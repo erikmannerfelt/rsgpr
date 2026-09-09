@@ -36,6 +36,22 @@
       </select>
     </label>
     <button id="metadata-button" type="button">Metadata</button>
+    {#- A menu rather than a button: there are five things to download and
+        they are not variations of one another. Lives in this row, not the
+        picking toolbar, because a radargram, its track and an image are
+        downloadable from a read-only catalog with no project at all. -#}
+    <details class="site-menu download-menu" id="download-menu">
+      <summary>Download</summary>
+      <ul>
+        {% if project %}
+          <li><button type="button" id="dl-points">Points (level 2)&hellip;</button></li>
+          <li><button type="button" id="dl-raw">Raw picks (gprinterp)</button></li>
+        {% endif %}
+        <li><button type="button" id="dl-track">Track (GeoJSON)</button></li>
+        <li><button type="button" id="dl-image">Rendered image&hellip;</button></li>
+        <li><button type="button" id="dl-radargram">Radargram (NetCDF)</button></li>
+      </ul>
+    </details>
     <span id="cursor-readout"></span>
   </div>
 
@@ -59,7 +75,6 @@
               title="Complete the line you are drawing. The next tap starts a separate line instead of extending this one.">Finish line</button>
       <button id="pick-save" type="button" disabled>Save</button>
       <span id="pick-status" class="pick-status"></span>
-      <a id="pick-download" class="pick-download" href="#" hidden>Download points</a>
     {% else %}
       <span class="pick-status">
         {% if project %}
@@ -90,6 +105,36 @@
   {% endif %}
 
   <div id="pick-error" class="warning" role="status" aria-live="polite" hidden></div>
+
+  <dialog id="image-dialog">
+    <h2>Download rendered image</h2>
+    <p class="hint">
+      The whole radargram as one image, in the profile currently selected.
+    </p>
+    <div class="add-layer-fields">
+      <label>Width
+        <select id="image-width"></select>
+      </label>
+      <label>Format
+        <select id="image-format">
+          <option value="png" selected>PNG (lossless)</option>
+          <option value="jpeg">JPEG (smaller)</option>
+        </select>
+      </label>
+      <label id="image-quality-field" hidden>Quality
+        <select id="image-quality">
+          <option value="95">95 (best)</option>
+          <option value="85" selected>85</option>
+          <option value="70">70 (smallest)</option>
+        </select>
+      </label>
+    </div>
+    <p class="hint" id="image-estimate"></p>
+    <p>
+      <button type="button" id="image-go">Download</button>
+      <button type="button" id="image-close">Close</button>
+    </p>
+  </dialog>
 
   <dialog id="download-dialog">
     <h2>Download points</h2>

@@ -291,6 +291,22 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::interp_routes::list_interpretations),
         )
         .route(
+            "/api/v1/datasets/{radargram_id}/download",
+            get(super::routes::dataset_download),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/track.geojson",
+            get(super::routes::dataset_track_geojson),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/views/{view}/image",
+            get(super::routes::dataset_image),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/interpretations/{user}/raw",
+            get(super::interp_routes::get_interpretation_raw),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}/interpretations/{user}/level2",
             get(super::interp_routes::interpretation_level2),
         )

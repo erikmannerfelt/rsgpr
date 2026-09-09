@@ -776,6 +776,268 @@ pub async fn dataset_track(
     Ok(Json(track_to_json(&track)))
 }
 
+/// Widest image this will render.
+///
+/// Not a memory limit on its own -- `MAX_IMAGE_PIXELS` is that -- but a
+/// guard on the one dimension people reach for. JPEG cannot exceed 65535 in
+/// either direction at all, and is rejected separately with that reason.
+const MAX_IMAGE_WIDTH: usize = 32768;
+
+/// Total pixels a single render may produce.
+///
+/// The renderer bands its reads, so the source array is never fully
+/// resident, but the *output* image is: one byte per pixel for the
+/// grayscale buffer plus whatever the encoder holds. 120 MP is roughly
+/// 120 MB of buffer, which is a lot to ask for and still a long way from
+/// falling over.
+const MAX_IMAGE_PIXELS: usize = 120_000_000;
+
+/// JPEG stores its dimensions in 16 bits.
+const MAX_JPEG_DIMENSION: usize = 65_535;
+
+#[derive(Deserialize)]
+pub struct ImageQuery {
+    profile: Option<String>,
+    /// Output width in pixels. Defaults to the radargram's own trace count,
+    /// which is the widest that carries any new information.
+    width: Option<usize>,
+    /// "png" (default) or "jpeg".
+    format: Option<String>,
+    /// JPEG quality, 1-100. Ignored for PNG.
+    quality: Option<u8>,
+}
+
+/// `GET /api/v1/datasets/{id}/views/{view}/image`
+///
+/// The whole radargram as one image, at a caller-chosen width -- what the
+/// viewer shows, composited server-side rather than stitched from chunks in
+/// the browser.
+///
+/// Sizing is the caller's decision because there is no good default: one
+/// pixel per trace is the honest answer for analysis and can be 12000 px
+/// wide, while a figure wants something that fits on a page. Both are
+/// legitimate, so both are offered and the limits are explained when they
+/// are hit.
+pub async fn dataset_image(
+    State(state): State<Arc<AppState>>,
+    Path((radargram_id, view)): Path<(String, String)>,
+    Query(query): Query<ImageQuery>,
+) -> Result<Response, ApiError> {
+    let entry = lookup_dataset(&state, &radargram_id)?;
+    let dataset_view = lookup_view(&view)?;
+    let base = lookup_profile(&resolve_profile(&state, query.profile))?;
+
+    let radargram = state
+        .radargrams
+        .get(entry.radargram_id.as_str())
+        .ok_or_else(|| {
+            ApiError::internal(
+                "dataset_unavailable",
+                "Dataset is cataloged but its render service failed to initialize.",
+            )
+        })?;
+    let (source_height, source_width) = radargram.shape;
+
+    let format = match query.format.as_deref() {
+        None | Some("") | Some("png") => super::render::profile::ImageFormat::Png,
+        Some("jpeg") | Some("jpg") => super::render::profile::ImageFormat::Jpeg {
+            // Clamped rather than rejected: quality is a dial, and every
+            // value outside the range has an obvious nearest meaning.
+            quality: query.quality.unwrap_or(85).clamp(1, 100),
+        },
+        Some(other) => {
+            return Err(ApiError::bad_request(
+                "invalid_format",
+                format!("Unknown image format '{other}'. Use 'png' or 'jpeg'."),
+            ))
+        }
+    };
+
+    let width = query.width.unwrap_or(source_width);
+    if width == 0 {
+        return Err(ApiError::bad_request(
+            "invalid_width",
+            "Width must be at least 1 pixel.",
+        ));
+    }
+    if width > MAX_IMAGE_WIDTH {
+        return Err(ApiError::bad_request(
+            "invalid_width",
+            format!("Width {width} is above the {MAX_IMAGE_WIDTH} px limit."),
+        ));
+    }
+
+    // Derived the same way the viewer's own overview is, so the aspect
+    // ratio matches what is on screen. Never upscaled past the source: an
+    // image wider than the trace count carries no more information, and
+    // asking for one is more likely a mistake than an intent.
+    let spec = OverviewSpec::new(source_width, source_height, width.min(source_width));
+
+    if spec.width.saturating_mul(spec.height) > MAX_IMAGE_PIXELS {
+        return Err(ApiError::bad_request(
+            "image_too_large",
+            format!(
+                "{}x{} is {} megapixels, above the {} MP limit. Ask for a smaller width.",
+                spec.width,
+                spec.height,
+                spec.width * spec.height / 1_000_000,
+                MAX_IMAGE_PIXELS / 1_000_000,
+            ),
+        ));
+    }
+    if matches!(format, super::render::profile::ImageFormat::Jpeg { .. })
+        && (spec.width > MAX_JPEG_DIMENSION || spec.height > MAX_JPEG_DIMENSION)
+    {
+        return Err(ApiError::bad_request(
+            "image_too_large",
+            format!(
+                "JPEG cannot exceed {MAX_JPEG_DIMENSION} px in either direction, and this \
+                 would be {}x{}. Use PNG, or ask for a smaller width.",
+                spec.width, spec.height
+            ),
+        ));
+    }
+
+    let extension = match format {
+        super::render::profile::ImageFormat::Jpeg { .. } => "jpg",
+        super::render::profile::ImageFormat::Png => "png",
+    };
+    let content_type = format.content_type();
+    let profile = super::render::profile::RenderProfile { format, ..base };
+    let id = entry.radargram_id.to_string();
+    let filename = format!(
+        "{id}-{}-{}x{}.{extension}",
+        profile.name, spec.width, spec.height
+    );
+    let render_profile = profile.clone();
+
+    let bytes = render_under_permit(state.clone(), id, move |service| {
+        service.get_or_render_overview(&spec, dataset_view, &render_profile)
+    })
+    .await?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type.to_string()),
+            attachment(&filename),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
+/// A download name built from validated components.
+///
+/// `RadargramId` and `UserId` are slugs, so nothing here can carry a quote,
+/// a newline or a path separator into the header.
+fn attachment(filename: &str) -> (header::HeaderName, String) {
+    (
+        header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"{filename}\""),
+    )
+}
+
+/// `GET /api/v1/datasets/{id}/track.geojson`
+///
+/// The same simplified track the maps draw, as a portable file. One Feature
+/// per segment rather than one MultiLineString, so the per-segment trace
+/// range survives into the properties -- a gap in a track is a real thing
+/// (a standstill or a lifted antenna) and collapsing them loses it.
+///
+/// WGS84, per RFC 7946. The track vertices are already in it: `track.rs`
+/// simplifies in the native projected CRS and reprojects only the vertices
+/// it keeps.
+pub async fn dataset_track_geojson(
+    State(state): State<Arc<AppState>>,
+    Path(radargram_id): Path<String>,
+) -> Result<Response, ApiError> {
+    let entry = lookup_dataset(&state, &radargram_id)?;
+    let path = state
+        .absolute_path(entry)
+        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    let track = super::track::read_track_from_netcdf(&path)
+        .map_err(|e| ApiError::internal("track_read_failed", e))?;
+
+    let id = entry.radargram_id.to_string();
+    let features: Vec<serde_json::Value> = track
+        .segments
+        .iter()
+        .filter(|segment| segment.vertices.len() >= 2)
+        .map(|segment| {
+            let coordinates: Vec<[f64; 2]> = segment
+                .vertices
+                .iter()
+                .map(|vertex| [vertex.lon, vertex.lat])
+                .collect();
+            serde_json::json!({
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": coordinates},
+                "properties": {
+                    "radargram_id": id,
+                    "effective_label": entry.effective_label(),
+                    "group_id": entry.group_id.as_ref().map(|g| g.to_string()),
+                    "segment_index": segment.segment_index,
+                    "trace_start": segment.trace_start,
+                    "trace_end": segment.trace_end,
+                    "n_traces": segment.n_traces,
+                    "length_m": segment.length_m,
+                },
+            })
+        })
+        .collect();
+
+    let body = serde_json::to_string_pretty(&serde_json::json!({
+        "type": "FeatureCollection",
+        "features": features,
+    }))
+    .map_err(|e| ApiError::internal("serialize_failed", e.to_string()))?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/geo+json".to_string()),
+            attachment(&format!("{id}-track.geojson")),
+        ],
+        body,
+    )
+        .into_response())
+}
+
+/// `GET /api/v1/datasets/{id}/download` -- the processed NetCDF itself.
+///
+/// Streamed rather than read into memory: the files this serves run to
+/// hundreds of megabytes, and buffering one per concurrent request is the
+/// kind of thing that works in testing and falls over in the field.
+pub async fn dataset_download(
+    State(state): State<Arc<AppState>>,
+    Path(radargram_id): Path<String>,
+) -> Result<Response, ApiError> {
+    let entry = lookup_dataset(&state, &radargram_id)?;
+    let path = state
+        .absolute_path(entry)
+        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| ApiError::internal("radargram_open_failed", e.to_string()))?;
+    let length = file
+        .metadata()
+        .await
+        .map(|m| m.len())
+        .map_err(|e| ApiError::internal("radargram_stat_failed", e.to_string()))?;
+
+    let stream = tokio_util::io::ReaderStream::new(file);
+    let id = entry.radargram_id.to_string();
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/x-netcdf".to_string()),
+            (header::CONTENT_LENGTH, length.to_string()),
+            attachment(&format!("{id}.nc")),
+        ],
+        axum::body::Body::from_stream(stream),
+    )
+        .into_response())
+}
+
 /// Every radargram's track in one group, for sibling-track display on the
 /// viewer map and the index page's per-group overview map. A track that
 /// fails to read is silently skipped here rather than failing the whole

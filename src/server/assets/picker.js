@@ -121,7 +121,6 @@
     const finishButton = document.getElementById("pick-finish");
     const saveButton = document.getElementById("pick-save");
     const statusEl = document.getElementById("pick-status");
-    const downloadLink = document.getElementById("pick-download");
     const errorBox = document.getElementById("pick-error");
     const selectionBox = document.getElementById("pick-selection");
     const selectedLayer = document.getElementById("pick-selected-layer");
@@ -766,12 +765,15 @@
       saveButton.disabled = !dirty;
       undoButton.disabled = !draft || draft.length === 0;
       finishButton.disabled = !draft || draft.length < 2;
+      // Read by the download menu in viewer.js, which owns downloading now:
+      // a level 2 export is derived from what is *saved*, so offering one
+      // over unsaved edits would hand back the wrong thing silently.
+      window.RIDAL_PICKS_DIRTY = dirty;
       // Naming the count ties the button to the line in progress. "Finish
       // line" on its own reads as a mode switch, which is what made it
       // hard to guess what it would do.
       finishButton.textContent =
         draft && draft.length ? `Finish line (${draft.length})` : "Finish line";
-      downloadLink.hidden = dirty || features.length === 0;
     }
 
     function markDirty() {
@@ -1047,30 +1049,6 @@
       selectedLayer.replaceChildren(...options.map((o) => o.cloneNode(true)));
       paintSwatch(layerSwatch, layerSelect.value);
     }
-
-    // --- Level 2 download ------------------------------------------------------
-
-    const dialog = document.getElementById("download-dialog");
-    downloadLink.addEventListener("click", (event) => {
-      event.preventDefault();
-      dialog.showModal();
-    });
-    document
-      .getElementById("download-close")
-      .addEventListener("click", () => dialog.close());
-    document.getElementById("download-go").addEventListener("click", () => {
-      const spacing = document.getElementById("download-spacing").value;
-      // One select covers both the file format and its coordinates, since
-      // "GeoJSON in native coordinates" is a single choice to a user even
-      // though it is two parameters on the wire.
-      const choice = document.getElementById("download-format").value;
-      const format = choice === "csv" ? "csv" : "geojson";
-      const crs = choice === "geojson-native" ? "&crs=native" : "";
-      window.location.href =
-        `${documentUrl}/level2?spacing=${encodeURIComponent(spacing)}` +
-        `&format=${encodeURIComponent(format)}${crs}`;
-      dialog.close();
-    });
 
     // Layers first: colours and overhang permissions are needed before the
     // stored picks can be drawn correctly.

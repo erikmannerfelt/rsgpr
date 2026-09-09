@@ -1230,3 +1230,50 @@ button.danger:hover {
   margin: 0 var(--space-1) 0 var(--space-2);
   border-color: var(--color-border-strong);
 }
+
+/* The download menu reuses the header menu's disclosure styling, but sits
+ * in a controls row where the surrounding buttons set the type size. */
+.download-menu > summary {
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-2);
+}
+
+.download-menu > summary::before {
+  content: "\2193"; /* downwards arrow, in place of the header's bars */
+}
+
+/* The items are buttons, not links: three of them open a dialog rather than
+ * navigating, and a link that does not navigate is a lie to anyone
+ * middle-clicking it. */
+.download-menu > ul button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.download-menu > ul button:hover,
+.download-menu > ul button:focus-visible {
+  background: var(--color-surface-sunken);
+}
+
+#image-dialog {
+  max-width: 34rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+#image-dialog select {
+  padding: var(--space-1) var(--space-2);
+}

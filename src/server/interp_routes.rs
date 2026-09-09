@@ -304,6 +304,58 @@ pub async fn get_layers(State(state): State<Arc<AppState>>) -> Result<impl IntoR
     ))
 }
 
+/// `GET /api/v1/datasets/{id}/interpretations/{user}/raw`
+///
+/// The stored gprinterp document, byte for byte, as a download. Distinct
+/// from the plain `GET` above, which the viewer uses and which is not a
+/// file: this one is what leaves Ridal for another tool, so it keeps
+/// whatever the file actually contains -- including fields this version
+/// does not model -- rather than a re-serialisation of what was parsed.
+pub async fn get_interpretation_raw(
+    State(state): State<Arc<AppState>>,
+    Path((radargram_id, user)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = readable_project(&state)?;
+    let radargram = parse_radargram(&radargram_id)?;
+    let user = parse_user(&user)?;
+
+    let relative = std::path::Path::new(crate::project::INTERPRETATIONS_DIR)
+        .join(radargram.as_str())
+        .join(format!("{}{}", user.as_str(), interpretations::SUFFIX));
+    let stored = project
+        .documents()
+        .read(&relative)
+        .map_err(|e| store_error(&e))?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "interpretation_not_found",
+                format!(
+                    "'{}' has no saved interpretation of '{}'.",
+                    user.as_str(),
+                    radargram.as_str()
+                ),
+            )
+        })?;
+
+    let filename = format!(
+        "{}-{}{}",
+        radargram.as_str(),
+        user.as_str(),
+        interpretations::SUFFIX
+    );
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/json".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+            (header::ETAG, format!("\"{}\"", stored.version)),
+        ],
+        stored.text,
+    ))
+}
+
 /// `GET /api/v1/datasets/{id}/interpretations/{user}/level2` -- the derived
 /// point product, as a download.
 ///

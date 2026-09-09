@@ -30,7 +30,11 @@ fn write_test_nc(path: &StdPath, radargram_id: &str) {
     file.add_dimension("y", 8).unwrap();
     file.add_dimension("x", 40).unwrap();
     let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
-    var.put_values(&vec![1.0f32; 8 * 40], ..).unwrap();
+    // Varying, not constant: the renderer refuses an array whose amplitude
+    // percentiles collapse to a single value, because there is no contrast
+    // to stretch. A flat fixture is not a realistic radargram anyway.
+    let data: Vec<f32> = (0..(8 * 40)).map(|i| (i % 97) as f32).collect();
+    var.put_values(&data, ..).unwrap();
     file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
         .unwrap();
     file.add_attribute("ridal_version", "ridal version 0.0.0 by test")
@@ -51,8 +55,10 @@ fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str) {
     file.add_dimension("y", n_samples).unwrap();
     file.add_dimension("x", n_traces).unwrap();
     let mut data = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
-    data.put_values(&vec![1.0f32; n_samples * n_traces], ..)
-        .unwrap();
+    let values: Vec<f32> = (0..(n_samples * n_traces))
+        .map(|i| (i % 97) as f32)
+        .collect();
+    data.put_values(&values, ..).unwrap();
 
     // 1 m between traces, running due east, so expected values are obvious.
     let mut put = |name: &str, values: Vec<f64>| {
@@ -70,6 +76,12 @@ fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str) {
         (0..n_traces).map(|i| 15.0 + i as f64 * 1e-5).collect(),
     );
     put("latitude", vec![78.0; n_traces]);
+    // Track reading needs per-trace acquisition time as well as position:
+    // it uses the time gaps to decide where a profile breaks.
+    put(
+        "time",
+        (0..n_traces).map(|i| 1_677_501_559.0 + i as f64).collect(),
+    );
 
     let mut twtt = file.add_variable::<f64>("twtt", &["y"]).unwrap();
     twtt.put_values(
@@ -607,6 +619,154 @@ async fn downloading_before_anything_is_saved_says_so() {
             .contains("Save some picks first"),
         "{body}"
     );
+}
+
+async fn raw(app: &Router, uri: &str) -> (StatusCode, Option<String>, Vec<u8>) {
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let disposition = response
+        .headers()
+        .get(header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, disposition, bytes.to_vec())
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_radargram_downloads_byte_for_byte() {
+    let (dir, app) = project_app(true);
+    let (status, disposition, bytes) = raw(&app, "/api/v1/datasets/line-01/download").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        disposition.as_deref(),
+        Some("attachment; filename=\"line-01.nc\"")
+    );
+
+    let source = std::fs::read(dir.path().join("radargrams").join("line-01.nc")).unwrap();
+    assert_eq!(
+        bytes, source,
+        "the download must be the file, not a re-write"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_track_downloads_as_geojson_naming_its_radargram() {
+    let (_dir, app) = project_app_with_axes();
+    let (status, disposition, bytes) = raw(&app, "/api/v1/datasets/line-01/track.geojson").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        disposition.unwrap().contains("line-01-track.geojson"),
+        "downloads should be named after their radargram"
+    );
+
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["type"], "FeatureCollection");
+    let feature = &body["features"][0];
+    assert_eq!(feature["geometry"]["type"], "LineString");
+    // The field Erik asked for, plus enough to tell segments apart.
+    assert_eq!(feature["properties"]["radargram_id"], "line-01");
+    assert!(feature["properties"]["trace_start"].is_number());
+    assert!(feature["properties"]["n_traces"].is_number());
+    // WGS84, per RFC 7946: longitude first.
+    let first = &feature["geometry"]["coordinates"][0];
+    assert!(first[0].as_f64().unwrap().abs() <= 180.0);
+    assert!(first[1].as_f64().unwrap().abs() <= 90.0);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn raw_picks_download_exactly_what_is_stored() {
+    // Not a re-serialisation: a field this version does not model must
+    // survive a round trip out to another tool.
+    let (_dir, app) = project_app(true);
+    let mut document = document(RADARGRAM);
+    document["from_a_future_version"] = serde_json::json!({"keep": "me"});
+    put(&app, URI, &document, None).await;
+
+    let (status, disposition, bytes) = raw(&app, &format!("{URI}/raw")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(disposition
+        .unwrap()
+        .contains("line-01-default.gprinterp.json"));
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["from_a_future_version"]["keep"], "me");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_image_renders_at_the_requested_width() {
+    let (_dir, app) = project_app(true);
+    // The fixture is 40 traces by 8 samples.
+    let (status, disposition, bytes) = raw(
+        &app,
+        "/api/v1/datasets/line-01/views/standard/image?width=20",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        disposition.unwrap().contains("20x4.png"),
+        "size in the name"
+    );
+    // PNG signature, then width and height from the IHDR chunk.
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+    let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+    assert_eq!((width, height), (20, 4));
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_image_is_never_upscaled_past_the_source() {
+    // A wider image than there are traces carries no more information, and
+    // asking for one is more likely a slip than an intent.
+    let (_dir, app) = project_app(true);
+    let (status, disposition, _) = raw(
+        &app,
+        "/api/v1/datasets/line-01/views/standard/image?width=5000",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(disposition.unwrap().contains("40x8.png"));
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_image_refuses_sizes_it_cannot_produce() {
+    let (_dir, app) = project_app(true);
+    let base = "/api/v1/datasets/line-01/views/standard/image";
+    for (query, code) in [
+        ("?width=0", "invalid_width"),
+        ("?width=99999", "invalid_width"),
+        ("?format=tiff", "invalid_format"),
+    ] {
+        let (status, _, body) = get(&app, &format!("{base}{query}")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(body["error"]["code"], code, "{query}");
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn dataset_downloads_work_without_a_project() {
+    // A radargram, its track and an image belong to the catalog, not to an
+    // interpretation, so a bare directory still serves them.
+    let (_dir, app) = bare_app();
+    for uri in [
+        "/api/v1/datasets/line-01/download",
+        "/api/v1/datasets/line-01/views/standard/image?width=10",
+    ] {
+        let (status, _, _) = raw(&app, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+    }
 }
 
 #[tokio::test]

@@ -57,7 +57,11 @@ gprinterp = { path = "gprinterp" }
 axum = { version = "0.8", optional = true }
 # "time" is for the render-permit acquisition timeout in routes.rs, which
 # turns an overloaded server into a 503 instead of an unbounded queue.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "fs"], optional = true }
+# `ReaderStream`, so downloading a radargram streams the file instead of
+# buffering it. The corpus reaches 145 MB per file, which is not an amount
+# to hold in memory once per concurrent request.
+tokio-util = { version = "0.7", features = ["io"], optional = true }
 minijinja = { version = "2", optional = true }
 # Revision and render identities. Not optional: `RevisionId` is shared by
 # the server's cache invalidation and `ridal interp`'s level 2 provenance,
@@ -102,6 +106,7 @@ python = ["pyo3", "numpy"]
 server = [
     "axum",
     "tokio",
+    "tokio-util",
     "minijinja",
     "walkdir",
     "lru",
