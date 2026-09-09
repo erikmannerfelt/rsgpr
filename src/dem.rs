@@ -4,6 +4,23 @@ use std::path::Path;
 use crate::coords::Coord;
 use std::io::Write;
 
+/// Describe a failure to launch one of GDAL's command-line tools.
+///
+/// GDAL is an external dependency, so "not installed" is an ordinary thing
+/// for a user to hit rather than a bug. The bare io error is
+/// `No such file or directory (os error 2)`, which does not say *which*
+/// file -- easily read as the DEM being missing when it is GDAL itself.
+///
+/// Matches on [`std::io::ErrorKind`] rather than the message text, which is
+/// platform- and locale-dependent.
+fn spawn_error(program: &str, error: &std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        format!("GDAL ({program}) cannot be found / is not installed: {error}")
+    } else {
+        format!("Call error when spawning process: {error}")
+    }
+}
+
 fn run_gdallocationinfo(
     dem_path: &Path,
     coords_wgs84: &[Coord],
@@ -24,7 +41,7 @@ fn run_gdallocationinfo(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Call error when spawning process: {e}"))?;
+        .map_err(|e| spawn_error("gdallocationinfo", &e))?;
 
     {
         let mut stdin = child
@@ -129,6 +146,29 @@ mod tests {
 
     use crate::coords::{Coord, Crs, UtmCrs};
 
+    /// The PATH-manipulating test below can only run on some platforms and
+    /// skips itself if GDAL is still reachable. This pins the same rule
+    /// directly, everywhere.
+    #[test]
+    fn a_missing_gdal_is_reported_by_program_name() {
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let message = super::spawn_error("gdallocationinfo", &missing);
+        assert!(
+            message.contains("GDAL (gdallocationinfo) cannot be found / is not installed"),
+            "{message}"
+        );
+
+        // Anything else is not a missing install, and saying so would send
+        // the reader off installing software they already have.
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let message = super::spawn_error("gdallocationinfo", &denied);
+        assert!(!message.contains("is not installed"), "{message}");
+        assert!(
+            message.contains("Call error when spawning process"),
+            "{message}"
+        );
+    }
+
     fn get_dem_path() -> PathBuf {
         Path::new("assets/test_dem_dtm20_mettebreen.tif").to_path_buf()
     }
@@ -162,13 +202,7 @@ mod tests {
             .stderr(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| {
-                if e.to_string().contains("No such file or directory") {
-                    format!("GDAL (gdalinfo) cannot be found / is not installed: {e}")
-                } else {
-                    format!("Call error when spawning process: {e}")
-                }
-            })?;
+            .map_err(|e| super::spawn_error("gdalinfo", &e))?;
 
         let output = child
             .wait_with_output()
@@ -321,12 +355,16 @@ mod tests {
                 return;
             };
             let res = super::sample_dem(&dem_path, &coords_wgs84);
+            // Names the program Ridal actually tried to run. `sample_dem`
+            // spawns `gdallocationinfo`, not `gdalinfo`, and saying so is
+            // the whole point: "No such file or directory" alone reads as
+            // the DEM being missing.
             assert!(
                 res.as_ref()
                     .err()
                     .unwrap()
-                    .contains("GDAL (gdalinfo) cannot be found / is not installed"),
-                "Error {:?} should contain something about 'gdalinfo'",
+                    .contains("GDAL (gdallocationinfo) cannot be found / is not installed"),
+                "Error {:?} should name the missing GDAL program",
                 res
             );
         });
