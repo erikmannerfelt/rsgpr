@@ -539,9 +539,12 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
 
   /* Offered widths, smallest first, ending at one pixel per trace.
    *
-   * VIEWER_WIDTH is in there and is the default: this menu item says it
-   * downloads what is in the viewer, and the viewer draws a raster capped
-   * at that width, so it is literally the same image.
+   * VIEWER_WIDTH is in there and is the default: it is the width of the
+   * raster the viewer's tiles are cut from (MAX_VIEWER_WIDTH, 8192, unless
+   * the height cap bites first), so downloading it gets exactly the pixels
+   * the viewer can show. It is not the on-screen size of the map element,
+   * which is smaller and changes with the window -- the label has to say
+   * "detail" rather than "as shown" or it reads as a screenshot.
    *
    * Width is *not* a speed dial. Rendering reads the whole source array
    * whichever width is asked for, so the time barely moves with it: on a
@@ -557,7 +560,7 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
       ...presets.map(
         (w) =>
           new Option(
-            w === VIEWER_WIDTH ? `${w} px - as shown in the viewer` : `${w} px`,
+            w === VIEWER_WIDTH ? `${w} px - the viewer's maximum detail` : `${w} px`,
             String(w),
           ),
       ),
