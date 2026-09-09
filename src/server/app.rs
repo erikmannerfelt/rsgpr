@@ -224,6 +224,58 @@ impl AppState {
     }
 }
 
+/// What a merged download covers: one group, or the whole catalog.
+///
+/// The two differ only in which entries they select and what the file is
+/// called. Keeping that difference in one type means every merged product
+/// -- level 2 points, tracks, and whatever is added next -- is implemented
+/// once and offered at both scopes, instead of a catalog copy drifting from
+/// the group original.
+pub enum DownloadScope {
+    /// Every radargram the server knows about, groups and ungrouped alike.
+    Catalog,
+    /// One group id, or [`NO_GROUP_ID`] for the ungrouped pseudo-group.
+    Group(String),
+}
+
+impl DownloadScope {
+    pub fn entries<'a>(&self, state: &'a AppState) -> Vec<&'a super::catalog::CatalogEntry> {
+        match self {
+            Self::Catalog => state.catalog.entries.iter().collect(),
+            Self::Group(id) => state.entries_in_group(id),
+        }
+    }
+
+    /// Leading component of the download's filename. A slug in both cases:
+    /// group ids are validated slugs, and `catalog` is a fixed literal, so
+    /// neither can carry a quote into a `Content-Disposition` header.
+    pub fn slug(&self) -> &str {
+        match self {
+            Self::Catalog => "catalog",
+            Self::Group(id) => id,
+        }
+    }
+
+    /// Names the scope inside a sentence, for error messages.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Catalog => "this catalog".to_string(),
+            Self::Group(id) => format!("group '{id}'"),
+        }
+    }
+
+    /// Error code when the scope selects no radargram at all. Distinct per
+    /// scope because the causes are different: a group id that matches
+    /// nothing is a bad request in spirit, while an empty catalog is a
+    /// server that was pointed at a directory with nothing in it.
+    pub fn empty_code(&self) -> &'static str {
+        match self {
+            Self::Catalog => "catalog_empty",
+            Self::Group(_) => "group_not_found",
+        }
+    }
+}
+
 /// Reserved id for the "Ungrouped" pseudo-group on the index page and its
 /// `/api/v1/groups/{id}/tracks` map. Safe by construction: `GroupId`
 /// validation (`identity.rs::validate_slug`) rejects any id starting with
@@ -289,6 +341,14 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route(
             "/api/v1/datasets/{radargram_id}/interpretations",
             get(super::interp_routes::list_interpretations),
+        )
+        .route(
+            "/api/v1/catalog/track.geojson",
+            get(super::routes::catalog_track_geojson),
+        )
+        .route(
+            "/api/v1/catalog/level2",
+            get(super::interp_routes::catalog_level2),
         )
         .route(
             "/api/v1/groups/{group}/track.geojson",

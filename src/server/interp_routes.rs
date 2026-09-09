@@ -24,7 +24,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 
-use super::app::AppState;
+use super::app::{AppState, DownloadScope};
 use super::routes::{lookup_dataset, ApiError};
 use crate::identity::{RadargramId, UserId};
 use crate::interp::checks;
@@ -535,12 +535,29 @@ pub async fn group_level2(
     Path(group): Path<String>,
     axum::extract::Query(query): axum::extract::Query<Level2Query>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let project = readable_project(&state)?;
-    let entries = state.entries_in_group(&group);
+    merged_level2(&state, &DownloadScope::Group(group), query)
+}
+
+/// `GET /api/v1/catalog/level2` -- every interpreted radargram the server
+/// knows about, merged. The catalog-wide half of [`merged_level2`].
+pub async fn catalog_level2(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<Level2Query>,
+) -> Result<impl IntoResponse, ApiError> {
+    merged_level2(&state, &DownloadScope::Catalog, query)
+}
+
+fn merged_level2(
+    state: &AppState,
+    scope: &DownloadScope,
+    query: Level2Query,
+) -> Result<(HeaderMap, String), ApiError> {
+    let project = readable_project(state)?;
+    let entries = scope.entries(state);
     if entries.is_empty() {
         return Err(ApiError::not_found(
-            "group_not_found",
-            format!("No group with id '{group}'"),
+            scope.empty_code(),
+            format!("Nothing to download in {}.", scope.describe()),
         ));
     }
 
@@ -585,7 +602,8 @@ pub async fn group_level2(
         return Err(ApiError::not_found(
             "interpretation_not_found",
             format!(
-                "Nothing in '{group}' has been interpreted yet ({} radargram(s) checked).",
+                "Nothing in {} has been interpreted yet ({} radargram(s) checked).",
+                scope.describe(),
                 entries.len()
             ),
         ));
@@ -611,7 +629,7 @@ pub async fn group_level2(
         )
     };
 
-    let filename = format!("{group}-level2.{extension}");
+    let filename = format!("{}-level2.{extension}", scope.slug());
     let mut headers = HeaderMap::new();
     let set = |headers: &mut HeaderMap, name: header::HeaderName, value: String| {
         // A header value that will not parse is dropped rather than turned

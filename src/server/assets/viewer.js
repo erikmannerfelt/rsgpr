@@ -504,7 +504,7 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
     if (!picksAreStale()) go(`${picksUrl}/raw`);
   });
 
-  // --- Points (level 2) ---
+  // --- Layer points (the level 2 product) ---
   const pointsDialog = document.getElementById('download-dialog');
   bind('dl-points', () => {
     if (picksAreStale()) return;

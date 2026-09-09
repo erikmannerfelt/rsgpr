@@ -82,42 +82,51 @@ document.querySelectorAll('.group-map').forEach((el) => {
     });
 });
 
-/* --- Per-group downloads -------------------------------------------------
+/* --- Merged downloads ----------------------------------------------------
  *
- * Each group heading carries its own menu; the points dialog is shared,
- * with the group it was opened for remembered while it is up. One dialog
- * rather than one per group because only one can be open at a time and the
- * markup would otherwise repeat per section.
+ * One handler for every scope on the page: the catalog-wide menu and one
+ * per group. Each menu carries the API prefix its items hang off
+ * (`data-download-base`), so a scope is a prefix and nothing else -- adding
+ * a saved-selection scope later needs no change here, and a new merged
+ * product needs one template line rather than one per scope.
+ *
+ * The points dialog is shared, with the base it was opened for remembered
+ * while it is up: only one can be open at a time, so per-scope copies of
+ * the markup would be dead weight.
  *
  * Dismissal (outside click, Escape) comes from app.js, which handles every
  * `.site-menu` on the page.
  */
-(function setupGroupDownloads() {
+(function setupMergedDownloads() {
   const dialog = document.getElementById('group-download-dialog');
-  const menus = [...document.querySelectorAll('.group-heading .download-menu')];
+  const menus = [...document.querySelectorAll('.download-menu[data-download-base]')];
   if (!dialog || menus.length === 0) return;
 
   const title = document.getElementById('group-download-title');
   const spacing = document.getElementById('group-spacing');
   const format = document.getElementById('group-format');
-  let group = null;
+  let base = null;
 
   const go = (url) => {
     window.location.href = url;
   };
 
   for (const menu of menus) {
-    const id = menu.dataset.group;
-    const label = menu.closest('.group-heading').querySelector('h2').textContent.trim();
+    const menuBase = menu.dataset.downloadBase;
+    const label = menu.dataset.downloadLabel || '';
     for (const button of menu.querySelectorAll('button[data-download]')) {
+      const product = button.dataset.download;
       button.addEventListener('click', () => {
         menu.open = false;
-        if (button.dataset.download === 'tracks') {
-          go(`/api/v1/groups/${encodeURIComponent(id)}/track.geojson`);
+        // Everything except level 2 is a plain link: no options to ask for.
+        if (product !== 'level2') {
+          go(`${menuBase}/${product}`);
           return;
         }
-        group = id;
-        title.textContent = `Download points - ${label}`;
+        base = menuBase;
+        title.textContent = label
+          ? `Download layer points - ${label}`
+          : 'Download layer points';
         dialog.showModal();
       });
     }
@@ -128,7 +137,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
     .addEventListener('click', () => dialog.close());
 
   document.getElementById('group-download-go').addEventListener('click', () => {
-    if (!group) return;
+    if (!base) return;
     // Same two-parameters-from-one-choice shape as the viewer's dialog:
     // "GeoJSON in native coordinates" is one decision to a user.
     const choice = format.value;
@@ -136,7 +145,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
     const crs = choice === 'geojson-native' ? '&crs=native' : '';
     dialog.close();
     go(
-      `/api/v1/groups/${encodeURIComponent(group)}/level2` +
+      `${base}/level2` +
         `?spacing=${encodeURIComponent(spacing.value)}` +
         `&format=${encodeURIComponent(fileFormat)}${crs}`,
     );

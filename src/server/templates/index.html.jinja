@@ -55,6 +55,23 @@
   </li>
   {% endmacro %}
 
+  {#- One menu definition for every scope on the page: the catalog-wide one
+      and one per group. `base` is the API prefix the items hang off, so a
+      new merged product is a line here and works at every scope at once.
+      `project` is passed in for the same reason as `profile` above. -#}
+  {% macro download_menu(id, base, label, summary, project) %}
+  <details class="site-menu download-menu" id="download-menu-{{ id }}"
+           data-download-base="{{ base }}" data-download-label="{{ label }}">
+    <summary>{{ summary }}</summary>
+    <ul>
+      {% if project %}
+        <li><button type="button" data-download="level2">Layer points&hellip;</button></li>
+      {% endif %}
+      <li><button type="button" data-download="track.geojson">Tracks (GeoJSON)</button></li>
+    </ul>
+  </details>
+  {% endmacro %}
+
   <h1>Radargram catalog</h1>
   {% if warnings %}
     <div class="warning">
@@ -65,6 +82,9 @@
     </div>
   {% endif %}
 
+  {#- The catalog-wide downloads sit with the catalog-wide control, above
+      the first group heading, so "everything" reads as the outer scope of
+      the per-group menus below rather than as another group. -#}
   <div class="controls">
     <label>Render profile:
       <select id="index-profile-select">
@@ -73,6 +93,8 @@
         {% endfor %}
       </select>
     </label>
+    {{ download_menu("catalog", "/api/v1/catalog", "all radargrams",
+                     "Download all", project) }}
   </div>
 
   {#- "Ungrouped" is just another entry in `groups` (see routes.rs's
@@ -85,16 +107,12 @@
         a page has several. -#}
     <div class="group-heading">
       <h2>{{ group.label }}</h2>
-      <details class="site-menu download-menu" id="group-menu-{{ loop.index }}"
-               data-group="{{ group.id }}">
-        <summary>Download</summary>
-        <ul>
-          {% if project %}
-            <li><button type="button" data-download="level2">All points (level 2)&hellip;</button></li>
-          {% endif %}
-          <li><button type="button" data-download="tracks">All tracks (GeoJSON)</button></li>
-        </ul>
-      </details>
+      {{ download_menu(
+           "group-" ~ loop.index,
+           "/api/v1/groups/" ~ group.id,
+           group.label,
+           "Download",
+           project) }}
     </div>
     <div class="group-map" id="group-map-{{ loop.index }}" data-group="{{ group.id }}"></div>
     <ul class="card-grid">
@@ -104,10 +122,11 @@
   {% endfor %}
 
   <dialog id="group-download-dialog">
-    <h2 id="group-download-title">Download points</h2>
+    <h2 id="group-download-title">Download layer points</h2>
     <p class="hint">
-      Every interpreted radargram in this group, merged into one file. Each
-      point names the radargram it came from, so the merge is reversible.
+      Every interpreted radargram in scope, merged into one file: one row per
+      point along each picked layer, with its depth and position. Each point
+      names the radargram it came from, so the merge is reversible.
       Radargrams nobody has interpreted yet are left out.
     </p>
     <div class="add-layer-fields">

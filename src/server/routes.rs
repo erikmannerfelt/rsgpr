@@ -9,7 +9,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 
-use super::app::{validate_radargram_id, AppState, NO_GROUP_ID};
+use super::app::{validate_radargram_id, AppState, DownloadScope, NO_GROUP_ID};
 use super::render::grid::{ChunkGrid, OverviewSpec, ViewerRaster};
 use super::render::profile::{DatasetView, RenderProfile};
 use super::templates;
@@ -991,11 +991,23 @@ pub async fn group_track_geojson(
     State(state): State<Arc<AppState>>,
     Path(group): Path<String>,
 ) -> Result<Response, ApiError> {
-    let entries = state.entries_in_group(&group);
+    merged_track_geojson(&state, &DownloadScope::Group(group))
+}
+
+/// `GET /api/v1/catalog/track.geojson` -- every track the server knows
+/// about, in one file. The catalog-wide half of [`merged_track_geojson`].
+pub async fn catalog_track_geojson(
+    State(state): State<Arc<AppState>>,
+) -> Result<Response, ApiError> {
+    merged_track_geojson(&state, &DownloadScope::Catalog)
+}
+
+fn merged_track_geojson(state: &AppState, scope: &DownloadScope) -> Result<Response, ApiError> {
+    let entries = scope.entries(state);
     if entries.is_empty() {
         return Err(ApiError::not_found(
-            "group_not_found",
-            format!("No group with id '{group}'"),
+            scope.empty_code(),
+            format!("Nothing to download in {}.", scope.describe()),
         ));
     }
 
@@ -1019,7 +1031,7 @@ pub async fn group_track_geojson(
     Ok((
         [
             (header::CONTENT_TYPE, "application/geo+json".to_string()),
-            attachment(&format!("{group}-tracks.geojson")),
+            attachment(&format!("{}-tracks.geojson", scope.slug())),
         ],
         body,
     )

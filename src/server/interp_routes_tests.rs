@@ -137,6 +137,31 @@ fn group_app() -> (tempfile::TempDir, Router) {
     (dir, build_router(state))
 }
 
+/// A catalog holding both a group and a radargram belonging to no group.
+///
+/// The catalog scope has to cover both, which a fixture where everything is
+/// grouped could not tell apart from "every group, merged".
+fn mixed_catalog_app() -> (tempfile::TempDir, Router) {
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    let radargrams = dir.path().join("radargrams");
+    for id in ["line-01", "line-02"] {
+        write_test_nc_with_axes(&radargrams.join(format!("{id}.nc")), id, Some("survey"));
+    }
+    write_test_nc_with_axes(&radargrams.join("loose-01.nc"), "loose-01", None);
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            true,
+        )
+        .unwrap(),
+    );
+    (dir, build_router(state))
+}
+
 /// A writable project whose radargram carries full coordinate axes.
 fn project_app_with_axes() -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
@@ -778,6 +803,87 @@ async fn a_group_with_nothing_interpreted_says_so() {
     let (status, _, body) = get(&app, "/api/v1/groups/nope/track.geojson").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"]["code"], "group_not_found");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_catalog_track_covers_grouped_and_ungrouped_alike() {
+    let (_dir, app) = mixed_catalog_app();
+    let (status, disposition, bytes) = raw(&app, "/api/v1/catalog/track.geojson").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(disposition.unwrap().contains("catalog-tracks.geojson"));
+
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    let ids: Vec<&str> = body["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["properties"]["radargram_id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"line-01"), "{ids:?}");
+    assert!(ids.contains(&"line-02"), "{ids:?}");
+    // The one that belongs to no group is the point of this test: a catalog
+    // download that only covered groups would silently drop it.
+    assert!(ids.contains(&"loose-01"), "{ids:?}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_catalog_level2_merges_across_group_boundaries() {
+    let (_dir, app) = mixed_catalog_app();
+    for id in ["line-01", "loose-01"] {
+        let uri = format!("/api/v1/datasets/{id}/interpretations/default");
+        let (status, _, _) = put(&app, &uri, &document(id), None).await;
+        assert_eq!(status, StatusCode::CREATED, "{id}");
+    }
+
+    let (status, disposition, bytes) =
+        raw(&app, "/api/v1/catalog/level2?spacing=vertices&format=csv").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(disposition.unwrap().contains("catalog-level2.csv"));
+
+    let csv = String::from_utf8(bytes).unwrap();
+    let rows: Vec<&str> = csv.lines().skip(1).collect();
+    assert!(rows.iter().any(|r| r.starts_with("line-01,")), "{csv}");
+    assert!(rows.iter().any(|r| r.starts_with("loose-01,")), "{csv}");
+    // Same schema as the group and single-radargram products, so the three
+    // are concatenable and tell one story.
+    assert!(csv.starts_with("radargram_id,revision_id,layer,"), "{csv}");
+
+    // line-02 was never picked, and is named rather than silently missing --
+    // the same rule the group scope follows, because it is the same code.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/catalog/level2?spacing=vertices&format=csv")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let warning = response
+        .headers()
+        .get(header::WARNING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(warning.contains("line-02"), "{warning}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_catalog_with_nothing_interpreted_says_so() {
+    let (_dir, app) = mixed_catalog_app();
+    let (status, _, body) = get(&app, "/api/v1/catalog/level2").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("this catalog"),
+        "{body}"
+    );
 }
 
 #[tokio::test]

@@ -44,7 +44,7 @@
       <summary>Download</summary>
       <ul>
         {% if project %}
-          <li><button type="button" id="dl-points">Points (level 2)&hellip;</button></li>
+          <li><button type="button" id="dl-points">Layer points&hellip;</button></li>
           <li><button type="button" id="dl-raw">Raw picks (gprinterp)</button></li>
         {% endif %}
         <li><button type="button" id="dl-track">Track (GeoJSON)</button></li>
@@ -137,7 +137,7 @@
   </dialog>
 
   <dialog id="download-dialog">
-    <h2>Download points</h2>
+    <h2>Download layer points</h2>
     <p class="hint">
       Picked lines resampled to evenly spaced points along the ground track,
       with depth, travel time and position attached. Derived from the saved
