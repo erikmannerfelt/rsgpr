@@ -1232,7 +1232,31 @@ button.danger:hover {
 }
 
 /* The download menu reuses the header menu's disclosure styling, but sits
- * in a controls row where the surrounding buttons set the type size. */
+ * in a controls row where the surrounding buttons set the type size.
+ *
+ * It also has to be anchored differently. The header's menu button is at
+ * the right edge of the page, so a panel hung from its right edge opens
+ * leftward into the page. This one sits partway along a row, so the same
+ * rule ran the panel off the left of a phone screen entirely.
+ *
+ * Anchoring to the row instead of to the button fixes it at every width:
+ * the panel starts at the row's left edge and opens rightward, which is on
+ * screen by construction. That means the row is the containing block, so
+ * the menu itself must not be one. */
+.controls {
+  position: relative;
+}
+
+.download-menu {
+  position: static;
+}
+
+.download-menu > ul {
+  left: 0;
+  right: auto;
+  max-width: 100%;
+}
+
 .download-menu > summary {
   font-size: var(--text-sm);
   padding: var(--space-1) var(--space-2);
