@@ -1314,6 +1314,11 @@ button.danger:hover {
   align-items: center;
   gap: var(--space-4);
   flex-wrap: wrap;
+  /* The h2 below has its margins zeroed so it aligns with the menu button,
+   * which also removed the gap that normally separates a heading from what
+   * it labels -- leaving the button sitting on the map. Put it back on the
+   * row instead, where wrapping cannot lose it. */
+  margin-bottom: var(--space-2);
 }
 
 .group-heading h2 {
