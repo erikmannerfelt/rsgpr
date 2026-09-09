@@ -233,22 +233,41 @@ const RIDAL = Object.freeze({
   },
 });
 
-/* Dismiss the header menu on Escape or a click outside it.
+/* Dismiss any menu on Escape or a click outside it.
  *
  * `<details>` gives the disclosure, the keyboard behaviour and the open
  * state for free, but it stays open until its own summary is clicked again,
  * which is wrong for a menu: tapping the page elsewhere should close it.
- * That is the only reason this file knows the menu exists. */
-(function setupSiteMenu() {
-  const menu = document.getElementById("site-menu");
-  if (!menu) return;
+ * That is the only reason this file knows menus exist.
+ *
+ * Applies to every `.site-menu` rather than one by id, so the header menu
+ * and the viewer's download menu behave the same and a third would too.
+ *
+ * The outside-click listener runs in the capture phase, which no handler
+ * can opt out of. That is insurance rather than a fix for an observed
+ * failure: several handlers in the viewer call `stopPropagation`, and the
+ * obvious worry is that one of them hides a click from the document. In
+ * practice the one most likely to -- the picker's, on every picked line --
+ * does not, measured by counting document listeners in both phases. Capture
+ * costs nothing and removes the question. */
+(function setupMenus() {
+  const menus = [...document.querySelectorAll("details.site-menu")];
+  if (menus.length === 0) return;
 
-  document.addEventListener("click", (event) => {
-    if (menu.open && !menu.contains(event.target)) menu.open = false;
-  });
+  document.addEventListener(
+    "click",
+    (event) => {
+      for (const menu of menus) {
+        if (menu.open && !menu.contains(event.target)) menu.open = false;
+      }
+    },
+    true,
+  );
 
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && menu.open) {
+    if (event.key !== "Escape") return;
+    for (const menu of menus) {
+      if (!menu.open) continue;
       menu.open = false;
       // Return focus to the control that opened it, or the close is
       // invisible to a keyboard user.
