@@ -1306,3 +1306,36 @@ button.danger:hover {
 #image-dialog select {
   padding: var(--space-1) var(--space-2);
 }
+
+/* A group's heading and its download menu on one line. The menu is what
+ * ties the downloads to *this* group rather than the page. */
+.group-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.group-heading h2 {
+  margin: 0;
+}
+
+/* The group menu anchors to the heading rather than to a controls row, so
+ * it needs its own containing block -- unlike the viewer's, which borrows
+ * the row's. Left-aligned for the same reason as that one: the button is
+ * near the left of the page, so opening leftward would run off screen. */
+.group-heading .download-menu {
+  position: relative;
+}
+
+#group-download-dialog {
+  max-width: 34rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+#group-download-dialog select {
+  padding: var(--space-1) var(--space-2);
+}

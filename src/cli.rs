@@ -1063,9 +1063,12 @@ fn interp_export_command(args: &InterpExportArgs) -> Result<(), String> {
         .and_then(|e| e.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
+    // A slice of one: the writers take several so a group download can
+    // concatenate them, and a single export is that with one element.
+    let exports = [export];
     let serialized = match extension.as_str() {
-        "csv" => crate::interp::writer::to_csv(&export),
-        "geojson" | "json" => crate::interp::writer::to_geojson(&export, &output_crs)?,
+        "csv" => crate::interp::writer::to_csv(&exports),
+        "geojson" | "json" => crate::interp::writer::to_geojson(&exports, &output_crs)?,
         other => {
             return Err(format!(
                 "Cannot tell what format to write from the extension '{other}'. \
@@ -1083,6 +1086,7 @@ fn interp_export_command(args: &InterpExportArgs) -> Result<(), String> {
     std::fs::write(&args.output, serialized)
         .map_err(|e| format!("Could not write {:?}: {e}", args.output))?;
 
+    let export = &exports[0];
     let spacing_note = match export.spacing_m {
         Some(step) => format!("{step} m spacing"),
         None => "per-trace spacing".to_string(),

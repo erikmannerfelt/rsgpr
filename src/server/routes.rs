@@ -651,6 +651,7 @@ pub async fn index_page(
             groups => groups,
             profiles => profiles,
             active_profile => active_profile,
+            project => state.project.is_some(),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
@@ -959,7 +960,84 @@ pub async fn dataset_track_geojson(
         .map_err(|e| ApiError::internal("track_read_failed", e))?;
 
     let id = entry.radargram_id.to_string();
-    let features: Vec<serde_json::Value> = track
+    let features = track_features(entry, &track);
+
+    let body = serde_json::to_string_pretty(&serde_json::json!({
+        "type": "FeatureCollection",
+        "features": features,
+    }))
+    .map_err(|e| ApiError::internal("serialize_failed", e.to_string()))?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/geo+json".to_string()),
+            attachment(&format!("{id}-track.geojson")),
+        ],
+        body,
+    )
+        .into_response())
+}
+
+/// `GET /api/v1/groups/{group}/track.geojson` -- every track in a group.
+///
+/// One file rather than one per radargram, because the question a group
+/// answers is "where did we survey", and that is only visible with all of
+/// them together. Each Feature names its radargram, so the merge is
+/// reversible.
+///
+/// A track that fails to read is skipped rather than failing the download,
+/// matching `group_tracks`: one bad member should not deny the rest.
+pub async fn group_track_geojson(
+    State(state): State<Arc<AppState>>,
+    Path(group): Path<String>,
+) -> Result<Response, ApiError> {
+    let entries = state.entries_in_group(&group);
+    if entries.is_empty() {
+        return Err(ApiError::not_found(
+            "group_not_found",
+            format!("No group with id '{group}'"),
+        ));
+    }
+
+    let mut features = Vec::new();
+    for entry in &entries {
+        let Ok(path) = state.absolute_path(entry) else {
+            continue;
+        };
+        let Ok(track) = super::track::read_track_from_netcdf(&path) else {
+            continue;
+        };
+        features.extend(track_features(entry, &track));
+    }
+
+    let body = serde_json::to_string_pretty(&serde_json::json!({
+        "type": "FeatureCollection",
+        "features": features,
+    }))
+    .map_err(|e| ApiError::internal("serialize_failed", e.to_string()))?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/geo+json".to_string()),
+            attachment(&format!("{group}-tracks.geojson")),
+        ],
+        body,
+    )
+        .into_response())
+}
+
+/// One GeoJSON Feature per track segment.
+///
+/// Shared by the single-radargram and group downloads so a merged file is
+/// exactly the concatenation of the individual ones -- if the two ever
+/// disagreed about properties, joining them up downstream would silently
+/// produce ragged records.
+fn track_features(
+    entry: &super::catalog::CatalogEntry,
+    track: &super::track::Track,
+) -> Vec<serde_json::Value> {
+    let id = entry.radargram_id.to_string();
+    track
         .segments
         .iter()
         .filter(|segment| segment.vertices.len() >= 2)
@@ -984,22 +1062,7 @@ pub async fn dataset_track_geojson(
                 },
             })
         })
-        .collect();
-
-    let body = serde_json::to_string_pretty(&serde_json::json!({
-        "type": "FeatureCollection",
-        "features": features,
-    }))
-    .map_err(|e| ApiError::internal("serialize_failed", e.to_string()))?;
-
-    Ok((
-        [
-            (header::CONTENT_TYPE, "application/geo+json".to_string()),
-            attachment(&format!("{id}-track.geojson")),
-        ],
-        body,
-    )
-        .into_response())
+        .collect()
 }
 
 /// `GET /api/v1/datasets/{id}/download` -- the processed NetCDF itself.

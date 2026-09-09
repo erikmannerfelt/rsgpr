@@ -417,10 +417,11 @@ pub async fn interpretation_level2(
         crate::interp::level2::export(&stored.document, &geometry, spacing, user.as_str(), &allows)
             .map_err(|e| ApiError::bad_request("level2_failed", e.to_string()))?;
 
+    let exports = [export];
     let csv = matches!(query.format.as_deref(), Some("csv"));
     let (body, content_type, extension) = if csv {
         (
-            crate::interp::writer::to_csv(&export),
+            crate::interp::writer::to_csv(&exports),
             "text/csv; charset=utf-8",
             "csv",
         )
@@ -430,7 +431,7 @@ pub async fn interpretation_level2(
             Some(name) => crate::interp::writer::OutputCrs::Named(name.to_string()),
         };
         (
-            crate::interp::writer::to_geojson(&export, &output_crs)
+            crate::interp::writer::to_geojson(&exports, &output_crs)
                 // A CRS the projection tools cannot resolve is the caller's
                 // mistake, not a server fault.
                 .map_err(|e| ApiError::bad_request("invalid_crs", e))?,
@@ -517,6 +518,128 @@ pub async fn put_settings(
     Ok(Json(serde_json::json!({
         "default_profile": project.default_profile(),
     })))
+}
+
+/// `GET /api/v1/groups/{group}/level2` -- every interpreted radargram in a
+/// group, merged into one file.
+///
+/// Concatenation, not reconciliation: each point already names its own
+/// radargram and revision, so the merge adds nothing and loses nothing.
+///
+/// Radargrams nobody has interpreted are skipped rather than erroring --
+/// a group is a survey, and part of one being unpicked is its normal
+/// state. If *none* are, that is worth saying rather than handing back an
+/// empty file.
+pub async fn group_level2(
+    State(state): State<Arc<AppState>>,
+    Path(group): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<Level2Query>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = readable_project(&state)?;
+    let entries = state.entries_in_group(&group);
+    if entries.is_empty() {
+        return Err(ApiError::not_found(
+            "group_not_found",
+            format!("No group with id '{group}'"),
+        ));
+    }
+
+    let user = UserId::new(crate::identity::DEFAULT_USER)
+        .map_err(|e| ApiError::internal("invalid_default_user", e))?;
+    let spacing = crate::cli::parse_spacing(query.spacing.as_deref().unwrap_or("auto"))
+        .map_err(|e| ApiError::bad_request("invalid_spacing", e))?;
+    let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
+    let allows = |label: Option<&str>| layer_set.allows_overhangs(label);
+
+    let mut exports = Vec::new();
+    let mut skipped = Vec::new();
+    for entry in &entries {
+        let radargram = &entry.radargram_id;
+        let Some(stored) = interpretations::read(project.documents(), radargram, &user)
+            .map_err(interpretation_error)?
+        else {
+            skipped.push(radargram.to_string());
+            continue;
+        };
+        let path = state
+            .absolute_path(entry)
+            .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+        let geometry = crate::interp::source::read_geometry(&path)
+            .map_err(|e| ApiError::internal("radargram_read_failed", e))?;
+        let export = crate::interp::level2::export(
+            &stored.document,
+            &geometry,
+            spacing,
+            user.as_str(),
+            &allows,
+        )
+        // Named, because in a group export "which one failed?" is the
+        // first thing anyone would ask.
+        .map_err(|e| {
+            ApiError::bad_request("level2_failed", format!("{}: {e}", radargram.as_str()))
+        })?;
+        exports.push(export);
+    }
+
+    if exports.is_empty() {
+        return Err(ApiError::not_found(
+            "interpretation_not_found",
+            format!(
+                "Nothing in '{group}' has been interpreted yet ({} radargram(s) checked).",
+                entries.len()
+            ),
+        ));
+    }
+
+    let csv = matches!(query.format.as_deref(), Some("csv"));
+    let (body, content_type, extension) = if csv {
+        (
+            crate::interp::writer::to_csv(&exports),
+            "text/csv; charset=utf-8",
+            "csv",
+        )
+    } else {
+        let output_crs = match query.crs.as_deref() {
+            None | Some("") => crate::interp::writer::OutputCrs::Wgs84,
+            Some(name) => crate::interp::writer::OutputCrs::Named(name.to_string()),
+        };
+        (
+            crate::interp::writer::to_geojson(&exports, &output_crs)
+                .map_err(|e| ApiError::bad_request("invalid_crs", e))?,
+            "application/geo+json",
+            "geojson",
+        )
+    };
+
+    let filename = format!("{group}-level2.{extension}");
+    let mut headers = HeaderMap::new();
+    let set = |headers: &mut HeaderMap, name: header::HeaderName, value: String| {
+        // A header value that will not parse is dropped rather than turned
+        // into a failed download; every value here is built from validated
+        // slugs, so this is belt and braces.
+        if let Ok(value) = value.parse() {
+            headers.insert(name, value);
+        }
+    };
+    set(&mut headers, header::CONTENT_TYPE, content_type.to_string());
+    set(
+        &mut headers,
+        header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"{filename}\""),
+    );
+    if !skipped.is_empty() {
+        // A header rather than silence: a merged file that quietly omits
+        // half a survey looks complete.
+        set(
+            &mut headers,
+            header::WARNING,
+            format!(
+                "199 ridal \"not yet interpreted, omitted: {}\"",
+                skipped.join(" ")
+            ),
+        );
+    }
+    Ok((headers, body))
 }
 
 /// `GET /api/v1/layers/usage` -- how many picked features use each layer.

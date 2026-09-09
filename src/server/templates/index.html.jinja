@@ -80,13 +80,61 @@
       always shown even when it's the only section on the page. -#}
   {% for group in groups %}
   <section class="group">
-    <h2>{{ group.label }}</h2>
+    {#- The heading and its downloads on one line: the menu acts on this
+        group, and putting it anywhere else would leave that ambiguous once
+        a page has several. -#}
+    <div class="group-heading">
+      <h2>{{ group.label }}</h2>
+      <details class="site-menu download-menu" id="group-menu-{{ loop.index }}"
+               data-group="{{ group.id }}">
+        <summary>Download</summary>
+        <ul>
+          {% if project %}
+            <li><button type="button" data-download="level2">All points (level 2)&hellip;</button></li>
+          {% endif %}
+          <li><button type="button" data-download="tracks">All tracks (GeoJSON)</button></li>
+        </ul>
+      </details>
+    </div>
     <div class="group-map" id="group-map-{{ loop.index }}" data-group="{{ group.id }}"></div>
     <ul class="card-grid">
       {% for e in group.entries %}{{ entry_card(e, active_profile) }}{% endfor %}
     </ul>
   </section>
   {% endfor %}
+
+  <dialog id="group-download-dialog">
+    <h2 id="group-download-title">Download points</h2>
+    <p class="hint">
+      Every interpreted radargram in this group, merged into one file. Each
+      point names the radargram it came from, so the merge is reversible.
+      Radargrams nobody has interpreted yet are left out.
+    </p>
+    <div class="add-layer-fields">
+      <label>Spacing
+        <select id="group-spacing">
+          <option value="auto" selected>Auto (from trace spacing)</option>
+          <option value="1">1 m</option>
+          <option value="5">5 m</option>
+          <option value="10">10 m</option>
+          <option value="25">25 m</option>
+          <option value="per-trace">Every trace</option>
+          <option value="vertices">Picked vertices only</option>
+        </select>
+      </label>
+      <label>Format
+        <select id="group-format">
+          <option value="geojson" selected>GeoJSON (WGS84)</option>
+          <option value="geojson-native">GeoJSON (native CRS)</option>
+          <option value="csv">CSV</option>
+        </select>
+      </label>
+    </div>
+    <p>
+      <button type="button" id="group-download-go">Download</button>
+      <button type="button" id="group-download-close">Close</button>
+    </p>
+  </dialog>
 
   {% if not entries %}
     <p>No radargrams found.</p>

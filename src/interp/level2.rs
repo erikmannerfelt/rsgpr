@@ -124,6 +124,14 @@ pub enum Spacing {
 /// One exported level 2 point.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Level2Point {
+    /// Which radargram this point came from.
+    ///
+    /// On the point rather than only on the export, so a point stays
+    /// self-describing once several radargrams' points are merged into one
+    /// file -- which is the whole reason a group export is useful.
+    pub radargram_id: String,
+    /// The processed revision it was derived from. Same reasoning.
+    pub revision_id: String,
     /// `properties.label` of the source feature: the interpreted layer.
     pub layer: String,
     /// Which physically separate line within that layer, in document order.
@@ -330,6 +338,8 @@ fn sample_vertices(
         .filter_map(|position| Some((position.x()?, position.y()?)))
         .enumerate()
         .map(|(point_index, (trace, sample))| Level2Point {
+            radargram_id: geometry.radargram_id.clone(),
+            revision_id: geometry.revision_id.clone(),
             layer: layer.to_string(),
             line_index,
             point_index,
@@ -440,6 +450,8 @@ impl Line {
             .map(|(point_index, trace)| {
                 let sample = self.sample_at(trace);
                 Level2Point {
+                    radargram_id: geometry.radargram_id.clone(),
+                    revision_id: geometry.revision_id.clone(),
                     layer: layer.to_string(),
                     line_index,
                     point_index,

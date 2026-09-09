@@ -49,7 +49,7 @@ fn write_test_nc(path: &StdPath, radargram_id: &str) {
 /// recognises; deriving level 2 additionally needs distance, travel time,
 /// depth and positions, so those are written here rather than bloating the
 /// fixture every other test uses.
-fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str) {
+fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str, group: Option<&str>) {
     let (n_samples, n_traces) = (8usize, 40usize);
     let mut file = netcdf::create(path).unwrap();
     file.add_dimension("y", n_samples).unwrap();
@@ -106,13 +106,46 @@ fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str) {
     file.add_attribute("ridal_radargram_id", radargram_id)
         .unwrap();
     file.add_attribute("crs", "EPSG:32633").unwrap();
+    // Written while the file is being created. Both attributes are needed:
+    // `resolve_group` treats a bare id as no group at all, since the id only
+    // exists to give the name a URL-safe form.
+    if let Some(group) = group {
+        file.add_attribute("ridal_group_name", group).unwrap();
+        file.add_attribute("ridal_group_id", group).unwrap();
+    }
+}
+
+/// A writable project with two radargrams in one group, both carrying
+/// coordinate axes -- the shape a merged download is about.
+fn group_app() -> (tempfile::TempDir, Router) {
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    let radargrams = dir.path().join("radargrams");
+    for id in ["line-01", "line-02"] {
+        write_test_nc_with_axes(&radargrams.join(format!("{id}.nc")), id, Some("survey"));
+    }
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            true,
+        )
+        .unwrap(),
+    );
+    (dir, build_router(state))
 }
 
 /// A writable project whose radargram carries full coordinate axes.
 fn project_app_with_axes() -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc_with_axes(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    write_test_nc_with_axes(
+        &dir.path().join("radargrams").join("line-01.nc"),
+        RADARGRAM,
+        None,
+    );
     let project = Project::discover(dir.path()).unwrap().unwrap();
     let state = Arc::new(
         AppState::build_with_project(
@@ -602,8 +635,12 @@ async fn the_level2_download_derives_from_the_saved_interpretation() {
         .await
         .unwrap();
     let csv = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(csv.starts_with("layer,line_index,point_index,"), "{csv}");
-    assert!(csv.contains("bed,0,0,f-0001,"), "{csv}");
+    assert!(
+        csv.starts_with("radargram_id,revision_id,layer,line_index,point_index,"),
+        "{csv}"
+    );
+    assert!(csv.contains("line-01,"), "{csv}");
+    assert!(csv.contains(",bed,0,0,f-0001,"), "{csv}");
 }
 
 #[tokio::test]
@@ -637,6 +674,123 @@ async fn raw(app: &Router, uri: &str) -> (StatusCode, Option<String>, Vec<u8>) {
         .await
         .unwrap();
     (status, disposition, bytes.to_vec())
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_group_track_merges_every_member_and_names_each() {
+    let (_dir, app) = group_app();
+    let (status, disposition, bytes) = raw(&app, "/api/v1/groups/survey/track.geojson").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(disposition.unwrap().contains("survey-tracks.geojson"));
+
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    let ids: Vec<&str> = body["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["properties"]["radargram_id"].as_str().unwrap())
+        .collect();
+    // The merge is reversible: every feature says where it came from.
+    assert!(ids.contains(&"line-01"), "{ids:?}");
+    assert!(ids.contains(&"line-02"), "{ids:?}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_group_level2_merges_points_that_name_their_radargram() {
+    let (_dir, app) = group_app();
+    for id in ["line-01", "line-02"] {
+        let uri = format!("/api/v1/datasets/{id}/interpretations/default");
+        let (status, _, _) = put(&app, &uri, &document(id), None).await;
+        assert_eq!(status, StatusCode::CREATED, "{id}");
+    }
+
+    let (status, disposition, bytes) = raw(
+        &app,
+        "/api/v1/groups/survey/level2?spacing=vertices&format=csv",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(disposition.unwrap().contains("survey-level2.csv"));
+
+    let csv = String::from_utf8(bytes).unwrap();
+    let mut lines = csv.lines();
+    // One header for the whole file, radargram first.
+    assert!(lines
+        .next()
+        .unwrap()
+        .starts_with("radargram_id,revision_id,layer,"));
+    let rows: Vec<&str> = lines.collect();
+    assert!(rows.iter().any(|r| r.starts_with("line-01,")), "{csv}");
+    assert!(rows.iter().any(|r| r.starts_with("line-02,")), "{csv}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_group_level2_says_which_members_it_left_out() {
+    // Half a survey being unpicked is normal; a merged file that quietly
+    // omitted it would look complete.
+    let (_dir, app) = group_app();
+    let (status, _, _) = put(
+        &app,
+        "/api/v1/datasets/line-01/interpretations/default",
+        &document("line-01"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/groups/survey/level2?format=csv")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let warning = response
+        .headers()
+        .get(header::WARNING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(warning.contains("line-02"), "{warning}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_group_with_nothing_interpreted_says_so() {
+    let (_dir, app) = group_app();
+    let (status, _, body) = get(&app, "/api/v1/groups/survey/level2").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("has been interpreted yet"),
+        "{body}"
+    );
+
+    let (status, _, body) = get(&app, "/api/v1/groups/nope/track.geojson").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "group_not_found");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn single_level2_points_name_their_radargram_too() {
+    // The same field, from the same place: it is on the point, not on the
+    // file, which is what lets a merged file work at all.
+    let (_dir, app) = project_app_with_axes();
+    put(&app, URI, &document(RADARGRAM), None).await;
+    let (_, _, bytes) = raw(&app, &format!("{URI}/level2?spacing=vertices")).await;
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["features"][0]["properties"]["radargram_id"], RADARGRAM);
+    assert_eq!(body["ridal"]["sources"][0]["radargram_id"], RADARGRAM);
 }
 
 #[tokio::test]

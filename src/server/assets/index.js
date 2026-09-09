@@ -81,3 +81,64 @@ document.querySelectorAll('.group-map').forEach((el) => {
       map.setView([0, 0], 2);
     });
 });
+
+/* --- Per-group downloads -------------------------------------------------
+ *
+ * Each group heading carries its own menu; the points dialog is shared,
+ * with the group it was opened for remembered while it is up. One dialog
+ * rather than one per group because only one can be open at a time and the
+ * markup would otherwise repeat per section.
+ *
+ * Dismissal (outside click, Escape) comes from app.js, which handles every
+ * `.site-menu` on the page.
+ */
+(function setupGroupDownloads() {
+  const dialog = document.getElementById('group-download-dialog');
+  const menus = [...document.querySelectorAll('.group-heading .download-menu')];
+  if (!dialog || menus.length === 0) return;
+
+  const title = document.getElementById('group-download-title');
+  const spacing = document.getElementById('group-spacing');
+  const format = document.getElementById('group-format');
+  let group = null;
+
+  const go = (url) => {
+    window.location.href = url;
+  };
+
+  for (const menu of menus) {
+    const id = menu.dataset.group;
+    const label = menu.closest('.group-heading').querySelector('h2').textContent.trim();
+    for (const button of menu.querySelectorAll('button[data-download]')) {
+      button.addEventListener('click', () => {
+        menu.open = false;
+        if (button.dataset.download === 'tracks') {
+          go(`/api/v1/groups/${encodeURIComponent(id)}/track.geojson`);
+          return;
+        }
+        group = id;
+        title.textContent = `Download points - ${label}`;
+        dialog.showModal();
+      });
+    }
+  }
+
+  document
+    .getElementById('group-download-close')
+    .addEventListener('click', () => dialog.close());
+
+  document.getElementById('group-download-go').addEventListener('click', () => {
+    if (!group) return;
+    // Same two-parameters-from-one-choice shape as the viewer's dialog:
+    // "GeoJSON in native coordinates" is one decision to a user.
+    const choice = format.value;
+    const fileFormat = choice === 'csv' ? 'csv' : 'geojson';
+    const crs = choice === 'geojson-native' ? '&crs=native' : '';
+    dialog.close();
+    go(
+      `/api/v1/groups/${encodeURIComponent(group)}/level2` +
+        `?spacing=${encodeURIComponent(spacing.value)}` +
+        `&format=${encodeURIComponent(fileFormat)}${crs}`,
+    );
+  });
+})();
