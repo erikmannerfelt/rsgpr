@@ -250,6 +250,13 @@ pub mod ridal {
     ///     `return_dataset=True`.
     /// quiet : bool, default False
     ///     Reduce logging and progress output.
+    /// render_profile : str, optional
+    ///     Render profile for `render`: a built-in name, or a path to a TOML
+    ///     file describing one. Defaults to the built-in `"default"`. Distinct
+    ///     from the *processing* profile selected by `default=` and `steps=`.
+    /// render_width : int, optional
+    ///     Output width in pixels for `render`. Defaults to one pixel per
+    ///     trace; a width beyond the trace count is clamped, not upsampled to.
     /// render : path-like, optional
     ///     Output path for a rendered figure. Not allowed when
     ///     `return_dataset=True`.
@@ -316,6 +323,8 @@ pub mod ridal {
         track=None,
         quiet=false,
         render=None,
+        render_profile=None,
+        render_width=None,
         no_export=false,
         override_antenna_mhz=None,
         override_antenna_separation=None,
@@ -337,6 +346,8 @@ pub mod ridal {
         track: Option<Py<PyAny>>,
         quiet: bool,
         render: Option<Py<PyAny>>,
+        render_profile: Option<String>,
+        render_width: Option<usize>,
         no_export: bool,
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
@@ -488,6 +499,8 @@ pub mod ridal {
             steps: resolved_steps,
             no_export,
             render_path,
+            render_profile,
+            render_width,
             override_antenna_mhz,
             override_antenna_separation,
             user_metadata,
@@ -600,6 +613,8 @@ pub mod ridal {
             None,
             true,
             None,
+            None,
+            None,
             false,
             override_antenna_mhz,
             override_antenna_separation,
@@ -651,6 +666,13 @@ pub mod ridal {
     ///     Reduce logging and progress output.
     /// render : path-like, optional
     ///     Existing directory where rendered figures should be written.
+    /// render_profile : str, optional
+    ///     Render profile for `render`: a built-in name, or a path to a TOML
+    ///     file describing one. Defaults to the built-in `"default"`. Distinct
+    ///     from the *processing* profile selected by `default=` and `steps=`.
+    /// render_width : int, optional
+    ///     Output width in pixels for `render`. Defaults to one pixel per
+    ///     trace; a width beyond the trace count is clamped, not upsampled to.
     /// no_export : bool, default False
     ///     Run processing without writing the main dataset outputs. Side outputs
     ///     such as rendered figures or exported tracks may still be produced.
@@ -712,6 +734,8 @@ pub mod ridal {
     track=None,
     quiet=false,
     render=None,
+    render_profile=None,
+    render_width=None,
         no_export=false,
         merge=None,
         override_antenna_mhz=None,
@@ -732,6 +756,8 @@ pub mod ridal {
         track: Option<Py<PyAny>>,
         quiet: bool,
         render: Option<Py<PyAny>>,
+        render_profile: Option<String>,
+        render_width: Option<usize>,
         no_export: bool,
         merge: Option<String>,
         override_antenna_mhz: Option<f32>,
@@ -839,6 +865,8 @@ pub mod ridal {
             steps: resolved_steps,
             no_export,
             render_dir,
+            render_profile,
+            render_width,
             merge,
             override_antenna_mhz,
             override_antenna_separation,
@@ -890,6 +918,83 @@ pub mod ridal {
     /// RuntimeError
     ///     If inspection fails.
     ///
+    /// Render a processed radargram to an image file.
+    ///
+    /// The Python equivalent of `ridal render`, and the same renderer the web
+    /// GUI uses, so an image produced here matches one downloaded from the
+    /// browser for the same file and profile.
+    ///
+    /// Parameters
+    /// ----------
+    /// input : path-like
+    ///     Processed `.nc` file to render.
+    /// output : path-like, optional
+    ///     Output image path. The extension selects the encoding (`.png` or
+    ///     `.jpg`). If omitted, a sidecar beside the input is written, using
+    ///     the profile's own format.
+    /// profile : str, default "default"
+    ///     A built-in render profile name, or a path to a TOML file describing
+    ///     one. Built-in names win, so a file of the same name in the working
+    ///     directory cannot shadow them.
+    /// width : int, optional
+    ///     Output width in pixels. Defaults to one pixel per trace. A width
+    ///     beyond the trace count is clamped rather than upsampled to.
+    /// quality : int, optional
+    ///     JPEG quality, 1-100. Ignored when the output is PNG.
+    ///
+    /// Returns
+    /// -------
+    /// dict
+    ///     `{"path": str, "width": int, "height": int, "profile": str}`.
+    ///
+    /// Raises
+    /// ------
+    /// RuntimeError
+    ///     If the input cannot be read, the profile cannot be resolved, or the
+    ///     image cannot be written.
+    ///
+    /// Notes
+    /// -----
+    /// To render while processing raw data instead, pass `render=` to
+    /// `process()` or `batch_process()`; those accept the same `render_profile`
+    /// and `render_width` and go through this same pipeline.
+    #[pyfunction]
+    #[pyo3(signature = (input, output=None, *, profile=None, width=None, quality=None))]
+    fn render(
+        py: Python<'_>,
+        input: Py<PyAny>,
+        output: Option<Py<PyAny>>,
+        profile: Option<String>,
+        width: Option<usize>,
+        quality: Option<u8>,
+    ) -> PyResult<Py<PyAny>> {
+        use pyo3::exceptions::PyRuntimeError;
+
+        let input = fspath(py, input.bind(py))?;
+        let resolved =
+            crate::render::profile::RenderProfile::resolve(profile.as_deref().unwrap_or("default"))
+                .map_err(PyRuntimeError::new_err)?;
+        let output = match output {
+            Some(value) => fspath(py, value.bind(py))?,
+            None => crate::render::oneshot::sidecar_path(&input, &resolved),
+        };
+
+        let request = crate::render::oneshot::RenderRequest {
+            profile: &resolved,
+            width,
+            quality,
+        };
+        let (w, h) = crate::render::oneshot::render_path_to_file(&input, &output, &request)
+            .map_err(PyRuntimeError::new_err)?;
+
+        let out = pyo3::types::PyDict::new(py);
+        out.set_item("path", output.display().to_string())?;
+        out.set_item("width", w)?;
+        out.set_item("height", h)?;
+        out.set_item("profile", resolved.name)?;
+        Ok(out.into_any().unbind())
+    }
+
     /// Notes
     /// -----
     /// `info()` is intended for lightweight inspection. For loading in-memory data,
