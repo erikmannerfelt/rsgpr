@@ -12,8 +12,17 @@ mod identity;
 mod interp;
 mod io;
 mod project;
+/// Radargram rendering: source window -> view -> resample -> normalize ->
+/// colormap -> encode. Outside the `server` feature because nothing in it
+/// is about HTTP -- the CLI's `ridal render` and the web GUI are two
+/// callers of one pipeline, and `image` was already an unconditional
+/// dependency, so this costs a CLI-only build nothing.
+mod render;
 #[cfg(feature = "server")]
 mod server;
+/// Windowed NetCDF reads for the renderer above. Moved out of `server`
+/// with it: a chunk of a radargram is not a server concept.
+mod source;
 mod tools;
 mod user_metadata;
 

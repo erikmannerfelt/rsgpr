@@ -11,10 +11,10 @@ use serde::Deserialize;
 
 use super::app::{validate_radargram_id, AppState, MergeScope, NO_GROUP_ID};
 use super::auth::Caller;
-use super::render::grid::{ChunkGrid, OverviewSpec, ViewerRaster};
-use super::render::profile::{DatasetView, RenderProfile};
 use super::templates;
 use crate::identity::RadargramId;
+use crate::render::grid::{ChunkGrid, OverviewSpec, ViewerRaster};
+use crate::render::profile::{DatasetView, RenderProfile};
 
 /// Stable JSON error envelope (#120): `{"error": {"code", "message"}}`.
 pub struct ApiError {
@@ -472,7 +472,7 @@ async fn render_under_permit<F>(
     render: F,
 ) -> Result<Vec<u8>, ApiError>
 where
-    F: FnOnce(&mut super::render::service::RenderService) -> Result<Vec<u8>, String>
+    F: FnOnce(&mut crate::server::render_service::RenderService) -> Result<Vec<u8>, String>
         + Send
         + 'static,
 {
@@ -899,7 +899,7 @@ pub async fn viewer_page(
             user => caller.user.as_ref().map(|u| u.as_str()).unwrap_or(""),
             profiles => profiles,
             active_profile => active_profile,
-            chunk_size => super::render::grid::CHUNK_SIZE,
+            chunk_size => crate::render::grid::CHUNK_SIZE,
             n_cols => grid.n_cols,
             n_rows => grid.n_rows,
             viewer_width => raster.width,

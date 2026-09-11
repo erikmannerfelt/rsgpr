@@ -13,9 +13,9 @@ use axum::Router;
 use tokio::sync::Semaphore;
 
 use super::catalog::{Catalog, RevisionId};
-use super::render::service::{RenderService, RenderServiceConfig};
-use super::source::SourceReader;
 use crate::identity::RadargramId;
+use crate::server::render_service::{RenderService, RenderServiceConfig};
+use crate::source::SourceReader;
 
 /// One open radargram: its render service plus the metadata needed to
 /// answer dataset-detail and viewer-page requests without re-inspecting
@@ -723,10 +723,7 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::OK);
             let decoded = image::load_from_memory(&body).unwrap();
-            assert_eq!(
-                decoded.width(),
-                super::super::render::grid::CHUNK_SIZE as u32
-            );
+            assert_eq!(decoded.width(), crate::render::grid::CHUNK_SIZE as u32);
 
             // Structurally invalid chunk coordinate (not a number) -> 400.
             let (status, body) = get(

@@ -8,15 +8,22 @@
 //! themselves, which is what keeps adjacent chunks normalized identically
 //! (the seam problem M4's tests already guard against).
 
+// Cache introspection (RenderService::cache_len/cache_bytes,
+// ByteBoundedCache::len/current_bytes, RenderObjectKey::as_str) exists for
+// API completeness and for eventual cache metrics, and is currently only
+// reached from tests. This allowance came with the file when it moved out
+// of `render/mod.rs`, which carried it for the same reason.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
-use super::colormap;
-use super::grid::{Chunk, OverviewSpec, CHUNK_SIZE};
-use super::profile::{AmplitudeLimits, DatasetView, RenderProfile};
-use super::renderer::Renderer;
-use super::stats::sampled_amplitude_limits;
+use crate::render::colormap;
+use crate::render::grid::{Chunk, OverviewSpec, CHUNK_SIZE};
+use crate::render::profile::{AmplitudeLimits, DatasetView, RenderProfile};
+use crate::render::renderer::Renderer;
+use crate::render::stats::sampled_amplitude_limits;
 use crate::server::catalog::RevisionId;
-use crate::server::source::SourceReader;
+use crate::source::SourceReader;
 
 /// Bumped whenever a change to the resampling implementation would change
 /// rendered pixels for existing content, so cached renders from a previous
@@ -306,7 +313,7 @@ fn seed_from_variant(variant: &RenderVariantId) -> u64 {
 mod tests {
     use super::*;
     use crate::identity::RadargramId;
-    use crate::server::render::grid::ViewerRaster;
+    use crate::render::grid::ViewerRaster;
 
     fn write_test_nc(path: &std::path::Path, height: usize, width: usize) {
         let mut file = netcdf::create(path).unwrap();

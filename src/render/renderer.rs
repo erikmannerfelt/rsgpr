@@ -15,7 +15,7 @@ use super::colormap::{self, encode};
 use super::grid::{Chunk, OverviewSpec, SourceWindow};
 use super::profile::RenderProfile;
 use super::resample::resample;
-use crate::server::source::SourceReader;
+use crate::source::SourceReader;
 
 /// Fill color for pixels with no valid source data: padding beyond the
 /// raster extent, or an empty resampling footprint. Mid-gray reads as
@@ -192,8 +192,8 @@ impl<'a> Renderer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::render::grid::ViewerRaster;
-    use crate::server::render::profile::AmplitudeLimits;
+    use crate::render::grid::ViewerRaster;
+    use crate::render::profile::AmplitudeLimits;
 
     fn write_asymmetric_nc(path: &std::path::Path, height: usize, width: usize) {
         let mut file = netcdf::create(path).unwrap();

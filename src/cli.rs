@@ -620,7 +620,7 @@ pub fn run(arguments: Args) -> Result<(), String> {
 fn render_service_config(
     cache_memory_mb: Option<usize>,
     n_workers: Option<usize>,
-) -> Result<crate::server::render::service::RenderServiceConfig, String> {
+) -> Result<crate::server::render_service::RenderServiceConfig, String> {
     // Rejected rather than silently clamped: n_workers sizes the render
     // permit semaphore, and zero permits would leave every image request
     // waiting until it times out into a 503. A user who typed 0 meant
@@ -628,8 +628,8 @@ fn render_service_config(
     if n_workers == Some(0) {
         return Err("--n-workers must be at least 1".to_string());
     }
-    let default = crate::server::render::service::RenderServiceConfig::default();
-    Ok(crate::server::render::service::RenderServiceConfig {
+    let default = crate::server::render_service::RenderServiceConfig::default();
+    Ok(crate::server::render_service::RenderServiceConfig {
         cache_memory_mb: cache_memory_mb.unwrap_or(default.cache_memory_mb),
         n_workers: n_workers.unwrap_or(default.n_workers),
         ..default
@@ -1226,7 +1226,7 @@ mod tests {
         assert!(super::render_service_config(None, Some(1)).is_ok());
         assert_eq!(
             super::render_service_config(None, None).unwrap().n_workers,
-            crate::server::render::service::RenderServiceConfig::default().n_workers,
+            crate::server::render_service::RenderServiceConfig::default().n_workers,
             "an omitted flag must keep the default, not become an error"
         );
     }

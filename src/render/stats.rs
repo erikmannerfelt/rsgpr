@@ -10,7 +10,7 @@
 
 use super::colormap::to_stats_domain;
 use super::profile::AmplitudeTransform;
-use crate::server::source::SourceReader;
+use crate::source::SourceReader;
 
 /// Spread across the profile. 128 well-separated locations is ample for a
 /// percentile dominated by vertical (not horizontal) structure; the cost
