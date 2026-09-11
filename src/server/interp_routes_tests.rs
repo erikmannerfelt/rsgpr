@@ -1066,6 +1066,80 @@ async fn the_default_profile_round_trips_through_the_settings_api() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn a_write_cannot_target_another_users_interpretation() {
+    // The path parameter must not be the authorisation. Without this,
+    // `PUT .../interpretations/alice` writes Alice's picks for anyone who
+    // asks -- harmless with one user, a hole the moment logins exist.
+    let (dir, app) = project_app(true);
+
+    let (status, _, body) = put(
+        &app,
+        "/api/v1/datasets/line-01/interpretations/someone-else",
+        &document("line-01"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "not_your_interpretation");
+    // Nothing was created for them.
+    assert!(
+        !dir.path()
+            .join("interpretations/line-01/someone-else.gprinterp.json")
+            .exists(),
+        "a refused write must not leave a document behind"
+    );
+
+    // Deleting someone else's is refused the same way.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/datasets/line-01/interpretations/someone-else")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    // Writing as yourself still works, so the guard is not simply refusing
+    // everything.
+    let (status, _, _) = put(
+        &app,
+        "/api/v1/datasets/line-01/interpretations/default",
+        &document("line-01"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn another_users_interpretation_can_still_be_read() {
+    // Per-user means "you cannot change mine", not "you cannot see mine":
+    // reads keep naming the user in the path.
+    let (_dir, app) = project_app(true);
+    put(
+        &app,
+        "/api/v1/datasets/line-01/interpretations/default",
+        &document("line-01"),
+        None,
+    )
+    .await;
+
+    for uri in [
+        "/api/v1/datasets/line-01/interpretations/default",
+        "/api/v1/datasets/line-01/interpretations/default/raw",
+    ] {
+        let (status, _, _) = get(&app, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn the_default_horizontal_scale_round_trips_and_reaches_the_viewer() {
     let (dir, app) = project_app(true);
 

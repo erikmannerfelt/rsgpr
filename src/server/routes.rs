@@ -64,6 +64,13 @@ impl ApiError {
         Self::new(StatusCode::CONFLICT, code, message)
     }
 
+    /// The caller is known but may not do this. Distinct from a 409: the
+    /// server is in a fine state, and distinct from a 401, which would mean
+    /// "authenticate and try again" -- this will not succeed on retry.
+    pub(super) fn forbidden(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, code, message)
+    }
+
     /// A conditional write whose condition no longer holds.
     pub(super) fn precondition_failed(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::PRECONDITION_FAILED, code, message)
@@ -743,6 +750,7 @@ pub async fn viewer_page(
     let (height, width) = radargram.shape;
     let raster = ViewerRaster::new(width, height);
     let grid = ChunkGrid::new(raster);
+    let viewer_user = super::interp_routes::current_user(&state).map_err(PageError)?;
 
     let profiles: Vec<String> = RenderProfile::built_in_profiles()
         .into_iter()
@@ -768,7 +776,9 @@ pub async fn viewer_page(
             shape_width => width,
             project => state.project.is_some(),
             writable => state.writable,
-            user => crate::identity::DEFAULT_USER,
+            // Who the viewer will save as. Resolved rather than assumed,
+            // so the page shows the right name the moment logins exist.
+            user => viewer_user.as_str(),
             profiles => profiles,
             active_profile => active_profile,
             chunk_size => super::render::grid::CHUNK_SIZE,

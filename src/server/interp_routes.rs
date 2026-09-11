@@ -94,6 +94,49 @@ fn parse_user(raw: &str) -> Result<UserId, ApiError> {
     UserId::new(raw).map_err(|e| ApiError::bad_request("invalid_user", e))
 }
 
+/// Who the caller is.
+///
+/// The single place that answers that question, so authentication replaces
+/// this function body rather than being threaded through every route. It
+/// will gain the request headers when sessions land -- a signed cookie is
+/// read from there -- which is a mechanical change to the handful of call
+/// sites below.
+///
+/// Until then, everyone is [`crate::identity::DEFAULT_USER`], which is the
+/// single-user behaviour Ridal has always had.
+pub(super) fn current_user(_state: &AppState) -> Result<UserId, ApiError> {
+    UserId::new(crate::identity::DEFAULT_USER)
+        .map_err(|e| ApiError::internal("invalid_default_user", e))
+}
+
+/// The user a write is allowed to target, given the one named in the path.
+///
+/// Interpretations are per-user by design: one person cannot modify
+/// another's picks, and that is a property of the data rather than a
+/// permission an administrator could grant. Without this check the path
+/// parameter *is* the authorisation -- `PUT .../interpretations/alice`
+/// would write Alice's document for anyone who asked.
+///
+/// The path keeps naming the user rather than being dropped from write
+/// URLs, so reads and writes share one URL shape and adding
+/// authentication changes no route at all.
+fn writing_as(state: &AppState, path_user: &str) -> Result<UserId, ApiError> {
+    let requested = parse_user(path_user)?;
+    let current = current_user(state)?;
+    if requested != current {
+        return Err(ApiError::forbidden(
+            "not_your_interpretation",
+            format!(
+                "Interpretations belong to the user who drew them; \
+                 you are '{}' and cannot write '{}'.",
+                current.as_str(),
+                requested.as_str()
+            ),
+        ));
+    }
+    Ok(current)
+}
+
 /// Map a store conflict to `412`, everything else to `500`.
 fn store_error(error: &StoreError) -> ApiError {
     match error {
@@ -183,7 +226,7 @@ pub async fn put_interpretation(
 ) -> Result<impl IntoResponse, ApiError> {
     let project = writable_project(&state)?;
     let radargram = parse_radargram(&radargram_id)?;
-    let user = parse_user(&user)?;
+    let user = writing_as(&state, &user)?;
 
     // The dataset must be in this catalog. Otherwise a typo in the URL
     // silently creates an interpretation directory for a radargram that does
@@ -258,7 +301,7 @@ pub async fn delete_interpretation(
 ) -> Result<impl IntoResponse, ApiError> {
     let project = writable_project(&state)?;
     let radargram = parse_radargram(&radargram_id)?;
-    let user = parse_user(&user)?;
+    let user = writing_as(&state, &user)?;
 
     let existed = interpretations::remove(project.documents(), &radargram, &user)
         .map_err(interpretation_error)?;
@@ -593,8 +636,11 @@ fn merged_level2(
         ));
     }
 
-    let user = UserId::new(crate::identity::DEFAULT_USER)
-        .map_err(|e| ApiError::internal("invalid_default_user", e))?;
+    // Whose picks a merged download contains. Once several people can
+    // interpret one radargram this becomes a choice rather than a lookup --
+    // "mine", "everyone's", or a named user -- but it resolves through the
+    // same function either way.
+    let user = current_user(state)?;
     let spacing = crate::cli::parse_spacing(query.spacing.as_deref().unwrap_or("auto"))
         .map_err(|e| ApiError::bad_request("invalid_spacing", e))?;
     let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
