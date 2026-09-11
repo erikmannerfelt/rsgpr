@@ -57,16 +57,82 @@ function chunkBounds(x, y, scale) {
   ];
 }
 
+/* One chunk overlay, fetched only once the browser decides it is near the
+ * viewport.
+ *
+ * L.imageOverlay(url, ...) sets `img.src` the moment the layer is added
+ * (`_initImage`), with no viewport test -- so every chunk in the grid used
+ * to be requested on page load whatever the map was looking at, and zooming
+ * in could not prevent it. Leaflet also accepts an existing <img> in place
+ * of a URL, and in that branch it does *not* touch `src`. So the element is
+ * built here instead, with `loading` set before `src` (after, the attribute
+ * has no effect), and handed over ready-made.
+ *
+ * This is what lets the viewer render 1:1 with no resolution cap: cost now
+ * tracks what is on screen rather than how long the radargram is.
+ */
+function chunkImage(x, y, profile) {
+  const img = document.createElement('img');
+  img.loading = 'lazy';
+  img.decoding = 'async';
+  img.alt = '';
+  img.src = chunkUrl(x, y, profile);
+  return img;
+}
+
+/* Which chunks the current view touches, padded by one chunk so a small
+ * pan reveals an already-loaded tile rather than a blank one. */
+function chunksInView(scale) {
+  const bounds = map.getBounds();
+  const west = bounds.getWest() - CHUNK_SIZE;
+  const east = bounds.getEast() + CHUNK_SIZE;
+  const south = bounds.getSouth() - CHUNK_SIZE;
+  const north = bounds.getNorth() + CHUNK_SIZE;
+  const found = [];
+  for (let y = 0; y < N_ROWS; y++) {
+    for (let x = 0; x < N_COLS; x++) {
+      const [[lat0, lng0], [lat1, lng1]] = chunkBounds(x, y, scale);
+      if (lng1 < west || lng0 > east || lat1 < south || lat0 > north) continue;
+      found.push([x, y]);
+    }
+  }
+  return found;
+}
+
+/* Chunks are added as the view reaches them, and then kept.
+ *
+ * Adding the whole grid up front meant opening a radargram rendered every
+ * chunk of it -- the cost of opening a file scaled with its length rather
+ * than with what was being looked at, which is what the old 8192 px cap
+ * was really paying for. `loading="lazy"` alone is not enough to rely on:
+ * it is a browser heuristic (and headless Chromium ignores it outright), so
+ * the decision is made here instead and the attribute is left on as a
+ * second line of defence.
+ *
+ * Kept rather than evicted once loaded: panning back over ground already
+ * visited should not re-fetch it, and what has been looked at is a far
+ * smaller bound than the whole file.
+ */
 let chunkLayers = [];
+const chunksAdded = new Set();
+
+function addChunksInView(profile, scale) {
+  for (const [x, y] of chunksInView(scale)) {
+    const key = `${x},${y}`;
+    if (chunksAdded.has(key)) continue;
+    chunksAdded.add(key);
+    const layer = L.imageOverlay(chunkImage(x, y, profile), chunkBounds(x, y, scale)).addTo(map);
+    chunkLayers.push(layer);
+  }
+}
+
+/* Full rebuild: the profile or the horizontal scale changed, so every
+ * placed chunk is either the wrong image or in the wrong place. */
 function loadChunks(map, profile, scale) {
   chunkLayers.forEach((l) => map.removeLayer(l));
   chunkLayers = [];
-  for (let y = 0; y < N_ROWS; y++) {
-    for (let x = 0; x < N_COLS; x++) {
-      const layer = L.imageOverlay(chunkUrl(x, y, profile), chunkBounds(x, y, scale)).addTo(map);
-      chunkLayers.push(layer);
-    }
-  }
+  chunksAdded.clear();
+  addChunksInView(profile, scale);
 }
 
 const map = L.map('map', { crs: L.CRS.Simple, minZoom: -6, attributionControl: false });
@@ -76,11 +142,25 @@ const map = L.map('map', { crs: L.CRS.Simple, minZoom: -6, attributionControl: f
 // boundary between them (#120: no build step).
 window.RIDAL_MAP = map;
 window.RIDAL_XSCALE = 1;
+/* Open on the start of the radargram at full depth, not on the whole thing.
+ *
+ * Fitting the entire length put every chunk in the viewport at once, which
+ * defeats lazy loading and lands the user on a squashed overview they have
+ * to zoom into anyway. Fitting the *height* gives readable detail
+ * immediately and leaves the rest of the length to load as they pan into
+ * it. A radargram short enough to fit whole still does -- the min() below
+ * means nothing changes for those.
+ */
 function fitToScale(scale) {
-  map.fitBounds([[-VIEWER_HEIGHT, 0], [0, VIEWER_WIDTH * scale]]);
+  const size = map.getSize();
+  // Viewer px that span the container once the full sample range fits it.
+  const widthAtFullHeight = size.y > 0 ? (VIEWER_HEIGHT * size.x) / size.y : VIEWER_WIDTH * scale;
+  const width = Math.min(VIEWER_WIDTH * scale, widthAtFullHeight);
+  map.fitBounds([[-VIEWER_HEIGHT, 0], [0, width]]);
 }
 fitToScale(xScale);
 loadChunks(map, currentProfile(), xScale);
+map.on('moveend zoomend', () => addChunksInView(currentProfile(), xScale));
 
 document.getElementById('profile-select').addEventListener('change', () => {
   loadChunks(map, currentProfile(), xScale);
@@ -539,12 +619,10 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
 
   /* Offered widths, smallest first, ending at one pixel per trace.
    *
-   * VIEWER_WIDTH is in there and is the default: it is the width of the
-   * raster the viewer's tiles are cut from (MAX_VIEWER_WIDTH, 8192, unless
-   * the height cap bites first), so downloading it gets exactly the pixels
-   * the viewer can show. It is not the on-screen size of the map element,
-   * which is smaller and changes with the window -- the label has to say
-   * "detail" rather than "as shown" or it reads as a screenshot.
+   * Full resolution is the default and the last entry. The viewer renders
+   * 1:1, so "what the viewer shows" and "full resolution" are now the same
+   * option; there used to be a separate entry for the viewer's capped
+   * raster, which no longer exists.
    *
    * Width is *not* a speed dial. Rendering reads the whole source array
    * whichever width is asked for, so the time barely moves with it: on a
@@ -552,18 +630,11 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
    * 900 px and 2.4 s at full resolution, and 6 ms once cached. The choice
    * here is about file size and detail, which is what the estimate says. */
   function widthOptions() {
-    const candidates = new Set([1000, 2000, 4000, 8000, VIEWER_WIDTH]);
-    const presets = [...candidates]
+    const presets = [1000, 2000, 4000, 8000, 16000]
       .filter((w) => w > 0 && w < SOURCE_WIDTH)
       .sort((a, b) => a - b);
     return [
-      ...presets.map(
-        (w) =>
-          new Option(
-            w === VIEWER_WIDTH ? `${w} px - the viewer's maximum detail` : `${w} px`,
-            String(w),
-          ),
-      ),
+      ...presets.map((w) => new Option(`${w} px`, String(w))),
       new Option(`${SOURCE_WIDTH} px - full resolution`, String(SOURCE_WIDTH)),
     ];
   }
@@ -584,11 +655,9 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
   }
 
   widthSelect.replaceChildren(...widthOptions());
-  // What the viewer is showing, if that is one of the options.
-  const viewerOption = [...widthSelect.options].findIndex(
-    (option) => Number(option.value) === VIEWER_WIDTH,
-  );
-  widthSelect.selectedIndex = viewerOption >= 0 ? viewerOption : widthSelect.options.length - 1;
+  // Full resolution: the viewer no longer downscales, so defaulting to
+  // anything less would hand back less than what is on screen.
+  widthSelect.selectedIndex = widthSelect.options.length - 1;
   describeChoice();
 
   widthSelect.addEventListener('change', describeChoice);
