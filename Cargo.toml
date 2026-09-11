@@ -70,8 +70,9 @@ argon2 = { version = "0.6", optional = true }
 walkdir = { version = "2", optional = true }  # Recursive catalog discovery
 lru = { version = "0.12", optional = true }  # Wrapped in a byte-bounded cache
 webbrowser = { version = "1", optional = true }  # `ridal gui` browser opening
-# Project marker/config parsing (`ridal.toml`). Not optional: projects are
-# a CLI concept too -- `ridal project init` and interpretation storage must
+# Project marker/config parsing (`ridal.toml`) and render profiles read from
+# a file. Not optional: projects are a CLI concept too -- `ridal project
+# init`, interpretation storage and `ridal render --profile my.toml` must all
 # work in builds without the server.
 toml = "0.8"
 # Editing `ridal.toml` in place from the settings page without destroying

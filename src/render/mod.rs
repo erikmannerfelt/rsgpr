@@ -81,6 +81,7 @@
 
 pub mod colormap;
 pub mod grid;
+pub mod oneshot;
 pub mod profile;
 pub mod renderer;
 pub mod resample;

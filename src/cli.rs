@@ -22,6 +22,8 @@ pub enum Commands {
     Steps(StepsArgs),
     /// Inspect supported formats
     Formats(FormatsArgs),
+    /// Render a processed radargram to an image
+    Render(RenderArgs),
     /// Work with interpretations (picked layers) of processed radargrams
     Interp(InterpArgs),
     /// Create and inspect Ridal projects
@@ -35,6 +37,32 @@ pub enum Commands {
 }
 
 #[derive(Debug, clap::Args)]
+pub struct RenderArgs {
+    /// Processed .nc file to render.
+    pub input: PathBuf,
+
+    /// Output image path. The extension picks the encoding (.png or .jpg);
+    /// if omitted, a sidecar beside the input is used.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Render profile: a built-in name, or a path to a TOML file.
+    #[arg(long, default_value = "default")]
+    pub profile: String,
+
+    /// Output width in pixels. Defaults to one pixel per trace; larger
+    /// than the trace count is not upsampled to.
+    #[arg(long)]
+    pub width: Option<usize>,
+
+    /// JPEG quality, 1-100. Ignored for PNG.
+    #[arg(long)]
+    pub quality: Option<u8>,
+
+    /// Suppress progress messages.
+    #[arg(short, long)]
+    pub quiet: bool,
+
 pub struct ProjectArgs {
     #[command(subcommand)]
     pub command: ProjectCommand,
@@ -595,6 +623,7 @@ pub fn run(arguments: Args) -> Result<(), String> {
         Commands::Info(args) => info_command(args),
         Commands::Steps(args) => steps_command(args),
         Commands::Formats(args) => formats_command(args),
+        Commands::Render(args) => render_command(args),
         Commands::Interp(args) => match args.command {
             InterpCommand::Export(args) => interp_export_command(&args),
         },
@@ -833,6 +862,34 @@ fn steps_command(args: StepsArgs) -> Result<(), String> {
 
     for (name, _) in all_steps {
         println!("{name}");
+    }
+    Ok(())
+}
+
+/// `ridal render <input.nc> [-o out.png] [--profile ...] [--width ...]`
+///
+/// The command-line half of the web GUI's image download. Both go through
+/// `render::oneshot`, so the two produce the same picture from the same
+/// file and profile.
+fn render_command(args: RenderArgs) -> Result<(), String> {
+    let profile = crate::render::profile::RenderProfile::resolve(&args.profile)?;
+    let output = args
+        .output
+        .clone()
+        .unwrap_or_else(|| crate::render::oneshot::sidecar_path(&args.input, &profile));
+
+    let request = crate::render::oneshot::RenderRequest {
+        profile: &profile,
+        width: args.width,
+        quality: args.quality,
+    };
+    let (width, height) = crate::render::oneshot::render_to_file(&args.input, &output, &request)?;
+
+    if !args.quiet {
+        println!(
+            "Rendered {}x{} px with the '{}' profile to {:?}",
+            width, height, profile.name, output
+        );
     }
     Ok(())
 }

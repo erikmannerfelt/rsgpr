@@ -241,6 +241,52 @@ impl RenderProfile {
             .find(|p| p.name == name)
     }
 
+    /// Resolve what a user typed after `--render-profile`: either the name
+    /// of a built-in profile, or a path to a TOML file describing one.
+    ///
+    /// The two are told apart by *looking at the filesystem*, not by
+    /// pattern-matching the string. A name that happens to contain a dot
+    /// or a slash is not automatically a path, and a file called `default`
+    /// in the working directory does not shadow the built-in of that name
+    /// -- built-ins win, so a project cannot silently change what
+    /// `--render-profile default` means by adding a file.
+    ///
+    /// Anything that is neither is an error naming both possibilities,
+    /// since "no such profile" and "no such file" are the same mistake
+    /// from the user's side and they will not know which one they made.
+    pub fn resolve(spec: &str) -> Result<Self, String> {
+        if let Some(profile) = Self::by_name(spec) {
+            return Ok(profile);
+        }
+        let path = std::path::Path::new(spec);
+        if path.is_file() {
+            return Self::from_toml_file(path);
+        }
+        let names: Vec<String> = Self::built_in_profiles()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        Err(format!(
+            "'{spec}' is neither a built-in render profile ({}) nor a readable file.",
+            names.join(", ")
+        ))
+    }
+
+    /// Read a profile from a TOML file.
+    ///
+    /// Every field is required. Profiles that inherit from a built-in and
+    /// override a field or two are the obvious next step and deliberately
+    /// not guessed at here -- whether that is a `base = "default"` key, a
+    /// separate `--render-profile-override`, or serde defaults changes
+    /// what a file means, and getting it wrong later would silently
+    /// re-interpret files people had already written.
+    pub fn from_toml_file(path: &std::path::Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("Could not read render profile {}: {e}", path.display()))?;
+        toml::from_str(&text)
+            .map_err(|e| format!("Could not parse render profile {}: {e}", path.display()))
+    }
+
     /// A stable string identifying everything about this profile that
     /// affects rendered pixels, for folding into the render variant ID
     /// (M5). Deliberately excludes nothing display-affecting and includes
@@ -271,6 +317,60 @@ impl RenderProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_built_in_profile_round_trips_through_toml() {
+        // Also the answer to "what does a profile file look like": every
+        // built-in serialises to a complete, re-readable one.
+        for original in RenderProfile::built_in_profiles() {
+            let text = toml::to_string(&original).unwrap();
+            let parsed: RenderProfile = toml::from_str(&text).unwrap();
+            assert_eq!(parsed, original, "{}:\n{text}", original.name);
+        }
+    }
+
+    #[test]
+    // Changes the process-wide working directory, so it must not overlap
+    // any test that reads a relative path. Same hazard as the tests that
+    // unset PATH.
+    #[serial_test::serial(current_dir)]
+    fn resolve_prefers_a_built_in_name_over_a_file_of_that_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let decoy = dir.path().join("default");
+        std::fs::write(&decoy, "name = 'not this one'").unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let resolved = RenderProfile::resolve("default");
+        std::env::set_current_dir(previous).unwrap();
+        // A file cannot silently redefine what a built-in name means.
+        assert_eq!(resolved.unwrap().name, "default");
+    }
+
+    #[test]
+    fn resolve_reads_a_profile_from_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mine.toml");
+        let mut source = RenderProfile::default_profile();
+        source.name = "mine".to_string();
+        source.contrast = 1.75;
+        std::fs::write(&path, toml::to_string(&source).unwrap()).unwrap();
+
+        let resolved = RenderProfile::resolve(path.to_str().unwrap()).unwrap();
+        assert_eq!(resolved, source);
+    }
+
+    #[test]
+    fn resolve_says_both_things_it_looked_for() {
+        // "No such profile" and "no such file" are the same mistake from
+        // the user's side, and they will not know which one they made.
+        let error = RenderProfile::resolve("noideawhatthisis").unwrap_err();
+        assert!(error.contains("built-in render profile"), "{error}");
+        assert!(error.contains("readable file"), "{error}");
+        assert!(
+            error.contains("abslog"),
+            "should list the real ones: {error}"
+        );
+    }
 
     #[test]
     fn built_in_profiles_have_distinct_names_and_cache_keys() {
