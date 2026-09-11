@@ -16,7 +16,7 @@ use std::path::Path;
 use crate::render::grid::OverviewSpec;
 use crate::render::profile::{AmplitudeLimits, ImageFormat, RenderProfile};
 use crate::render::{colormap, renderer::Renderer, stats};
-use crate::source::SourceReader;
+use crate::source::{AmplitudeSource, SourceReader};
 
 /// Fixed so the same file rendered twice gives byte-identical output.
 ///
@@ -70,14 +70,27 @@ fn format_for(path: &Path, profile: &RenderProfile, quality: Option<u8>) -> Imag
 /// every render -- a 90000-trace radargram is a perfectly good PNG.
 const MAX_JPEG_DIMENSION: usize = 65535;
 
-/// Render `input` to `output`, returning the image's dimensions.
-pub fn render_to_file(
+/// Render a processed `.nc` to `output`, returning the image's dimensions.
+///
+/// The `ridal render` path. `process --render` uses [`render_to_file`]
+/// directly with the array it already has in memory.
+pub fn render_path_to_file(
     input: &Path,
     output: &Path,
     request: &RenderRequest,
 ) -> Result<(usize, usize), String> {
     let reader = SourceReader::open(input)?;
-    let (source_height, source_width) = reader.shape();
+    render_to_file(&reader, output, request)
+}
+
+/// Render any [`AmplitudeSource`] to `output`, returning the image's
+/// dimensions.
+pub fn render_to_file(
+    source: &impl AmplitudeSource,
+    output: &Path,
+    request: &RenderRequest,
+) -> Result<(usize, usize), String> {
+    let (source_height, source_width) = source.shape();
 
     let width = request
         .width
@@ -102,7 +115,7 @@ pub fn render_to_file(
     // entirely rather than estimating and discarding.
     let sampled = match request.profile.limits {
         AmplitudeLimits::Percentile { low, high } => Some(stats::sampled_amplitude_limits(
-            &reader,
+            source,
             request.profile.transform,
             SAMPLE_SEED,
             low,
@@ -120,7 +133,7 @@ pub fn render_to_file(
         format,
         ..request.profile.clone()
     };
-    let bytes = Renderer::new(&reader).render_overview(&spec, &profile, limits)?;
+    let bytes = Renderer::new(source).render_overview(&spec, &profile, limits)?;
 
     if let Some(parent) = output.parent() {
         if !parent.as_os_str().is_empty() {

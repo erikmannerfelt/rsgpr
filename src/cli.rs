@@ -372,6 +372,17 @@ pub struct ProcessArgs {
     #[arg(short, long)]
     pub render: Option<Option<PathBuf>>,
 
+    /// Render profile for --render: a built-in name, or a path to a TOML
+    /// file. Distinct from the *processing* profile selected by --default
+    /// and --steps.
+    #[arg(long)]
+    pub render_profile: Option<String>,
+
+    /// Output width in pixels for --render. Defaults to one pixel per
+    /// trace.
+    #[arg(long)]
+    pub render_width: Option<usize>,
+
     /// Don't export an nc file
     #[arg(long)]
     pub no_export: bool,
@@ -464,6 +475,17 @@ pub struct BatchProcessArgs {
     /// Render images into the given directory.
     #[arg(short, long)]
     pub render: Option<Option<PathBuf>>,
+
+    /// Render profile for --render: a built-in name, or a path to a TOML
+    /// file. Distinct from the *processing* profile selected by --default
+    /// and --steps.
+    #[arg(long)]
+    pub render_profile: Option<String>,
+
+    /// Output width in pixels for --render. Defaults to one pixel per
+    /// trace.
+    #[arg(long)]
+    pub render_width: Option<usize>,
 
     /// Don't export nc files
     #[arg(long)]
@@ -710,6 +732,8 @@ fn process_command(args: &ProcessArgs) -> Result<(), String> {
         steps: resolved_steps,
         no_export: args.no_export,
         render_path: args.render.clone(),
+        render_profile: args.render_profile.clone(),
+        render_width: args.render_width,
         override_antenna_mhz: args.override_antenna_mhz,
         override_antenna_separation: args.override_antenna_separation,
         user_metadata,
@@ -752,6 +776,8 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
         steps: resolved_steps,
         no_export: args.no_export,
         render_dir,
+        render_profile: args.render_profile.clone(),
+        render_width: args.render_width,
         merge: args.merge.clone(),
         override_antenna_mhz: args.override_antenna_mhz,
         override_antenna_separation: args.override_antenna_separation,
@@ -883,7 +909,8 @@ fn render_command(args: RenderArgs) -> Result<(), String> {
         width: args.width,
         quality: args.quality,
     };
-    let (width, height) = crate::render::oneshot::render_to_file(&args.input, &output, &request)?;
+    let (width, height) =
+        crate::render::oneshot::render_path_to_file(&args.input, &output, &request)?;
 
     if !args.quiet {
         println!(

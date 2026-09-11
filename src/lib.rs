@@ -448,6 +448,8 @@ pub mod ridal {
                 steps: resolved_steps,
                 no_export: true,
                 render_path: None,
+                render_profile: None,
+                render_width: None,
                 override_antenna_mhz,
                 override_antenna_separation,
                 user_metadata,

@@ -1,12 +1,11 @@
 /// Functions to handle input and output (I/O) of GPR data files.
 use ndarray::Array2;
-use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use crate::export::ExportAttr;
-use crate::{formats, gpr, tools};
+use crate::{formats, gpr};
 
 /// Load and parse a Malå metadata file (.rad)
 ///
@@ -970,70 +969,6 @@ pub fn export_netcdf(
             _ => continue,
         }
     }
-
-    Ok(())
-}
-
-/// Render an image of the processed GPR data.
-///
-/// # Arguments
-/// - `gpr`: The GPR data to render
-/// - `filepath`: The output filepath of the image
-///
-/// # Errors
-/// - The file could not be written.
-/// - The extension is not understood.
-pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>> {
-    for (dim, value) in [("wide", gpr.width()), ("tall", gpr.height())] {
-        if value >= 65535 {
-            return Err(
-                format!("Radargram too {dim} ({value}, max 65535) to generate a JPG",).into(),
-            );
-        }
-    }
-    let data_to_render = match &gpr.topo_data {
-        Some(d) => d,
-        None => &gpr.data,
-    };
-
-    let data = data_to_render.iter().collect::<Vec<&f32>>();
-
-    // Get quick and dirty quantiles by only looking at a 10th of the data
-    let q = tools::quantiles(&data, &[0.01, 0.99], Some(10));
-    let mut minval = q[0];
-    let maxval = q[1];
-
-    // If unphase has been run, there are no (valid) negative numbers, so it should instead start at 0
-    let unphase_run = gpr.log.iter().any(|s| s.contains("unphase"));
-    if unphase_run {
-        minval = &0.;
-    };
-
-    //let logit99 = (0.99_f32 / (1.0_f32 - 0.99_f32)).log(std::f32::consts::E);
-
-    // Render the pixels into a grayscale image
-    let pixels: Vec<u8> = data
-        .into_par_iter()
-        .map(|f| {
-            (255.0 * {
-                let mut val_norm = ((f - minval) / (maxval - minval)).clamp(0.0, 1.0);
-                if unphase_run {
-                    val_norm = 0.5 * val_norm + 0.5;
-                };
-
-                //0.5 + (val_norm / (1.0_f32 - val_norm)).log(std::f32::consts::E) / logit99
-                val_norm
-            }) as u8
-        })
-        .collect();
-
-    image::save_buffer(
-        filepath,
-        &pixels,
-        data_to_render.shape()[1] as u32,
-        data_to_render.shape()[0] as u32,
-        image::ColorType::L8,
-    )?;
 
     Ok(())
 }

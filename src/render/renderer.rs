@@ -15,7 +15,7 @@ use super::colormap::{self, encode};
 use super::grid::{Chunk, OverviewSpec, SourceWindow};
 use super::profile::RenderProfile;
 use super::resample::resample;
-use crate::source::SourceReader;
+use crate::source::AmplitudeSource;
 
 /// Fill color for pixels with no valid source data: padding beyond the
 /// raster extent, or an empty resampling footprint. Mid-gray reads as
@@ -31,12 +31,12 @@ const PAD_VALUE: u8 = 96;
 /// large enough to stay HDF5-chunk-efficient while bounding the peak.
 const OVERVIEW_READ_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 
-pub struct Renderer<'a> {
-    reader: &'a SourceReader,
+pub struct Renderer<'a, S: AmplitudeSource> {
+    reader: &'a S,
 }
 
-impl<'a> Renderer<'a> {
-    pub fn new(reader: &'a SourceReader) -> Self {
+impl<'a, S: AmplitudeSource> Renderer<'a, S> {
+    pub fn new(reader: &'a S) -> Self {
         Self { reader }
     }
 
@@ -194,6 +194,7 @@ mod tests {
     use super::*;
     use crate::render::grid::ViewerRaster;
     use crate::render::profile::AmplitudeLimits;
+    use crate::source::SourceReader;
 
     fn write_asymmetric_nc(path: &std::path::Path, height: usize, width: usize) {
         let mut file = netcdf::create(path).unwrap();
@@ -516,6 +517,8 @@ mod tests {
             steps: crate::gpr::default_processing_profile(),
             no_export: false,
             render_path: None,
+            render_profile: None,
+            render_width: None,
             override_antenna_mhz: None,
             override_antenna_separation: None,
             user_metadata: Default::default(),

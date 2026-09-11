@@ -806,8 +806,33 @@ impl GPR {
         })
     }
 
-    pub fn render(&self, filepath: &Path) -> Result<(), Box<dyn Error>> {
-        io::render_jpg(self, filepath)
+    /// Render this radargram to an image with a render profile.
+    ///
+    /// Goes through the same pipeline as `ridal render` and the web GUI,
+    /// from the array already in memory -- there may be no file to read
+    /// back, since `--no-export --render` is allowed.
+    ///
+    /// This replaced a separate implementation (`io::render_jpg`) that
+    /// stretched between the 1st and 99th percentile of every tenth sample
+    /// and clamped the floor to zero when `unphase` had run. Two renderers
+    /// that disagree about how to draw the same data is a bad property for
+    /// an instrument display, and the `unphase` case was a fixed rule
+    /// applied regardless of what the amplitudes actually looked like.
+    pub fn render(
+        &self,
+        filepath: &Path,
+        profile: &crate::render::profile::RenderProfile,
+        width: Option<usize>,
+    ) -> Result<(), Box<dyn Error>> {
+        let data = self.topo_data.as_ref().unwrap_or(&self.data);
+        let source = crate::source::ArraySource::new(data.view());
+        let request = crate::render::oneshot::RenderRequest {
+            profile,
+            width,
+            quality: None,
+        };
+        crate::render::oneshot::render_to_file(&source, filepath, &request)?;
+        Ok(())
     }
 
     pub fn zero_corr_max_peak(&mut self) {
@@ -1661,6 +1686,11 @@ pub struct RunParams {
     pub steps: Vec<String>,
     pub no_export: bool,
     pub render_path: Option<Option<PathBuf>>,
+    /// Render profile for `render_path`: a built-in name or a TOML file.
+    /// `None` means the built-in `default`.
+    pub render_profile: Option<String>,
+    /// Output width for `render_path`. `None` means one pixel per trace.
+    pub render_width: Option<usize>,
     pub override_antenna_mhz: Option<f32>,
     pub override_antenna_separation: Option<f32>,
     pub user_metadata: user_metadata::UserMetadata,
@@ -1682,6 +1712,10 @@ pub struct BatchRunParams {
     pub steps: Vec<String>,
     pub no_export: bool,
     pub render_dir: Option<PathBuf>,
+    /// Render profile for `render_dir`, as in [`RunParams::render_profile`].
+    pub render_profile: Option<String>,
+    /// Output width for `render_dir`, as in [`RunParams::render_width`].
+    pub render_width: Option<usize>,
     pub merge: Option<String>,
     pub override_antenna_mhz: Option<f32>,
     pub override_antenna_separation: Option<f32>,
@@ -2140,11 +2174,17 @@ pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn std::error::Error
             }
             None => output_path.with_extension("jpg"),
         };
+        let profile = crate::render::profile::RenderProfile::resolve(
+            params.render_profile.as_deref().unwrap_or("default"),
+        )?;
         if !params.quiet {
-            println!("Rendering image to {:?}", render_filepath);
+            println!(
+                "Rendering image to {:?} with the '{}' profile",
+                render_filepath, profile.name
+            );
         }
-        gpr.render(&render_filepath)
-            .map_err(|e| format!("Error writing JPG: {:?}", e))?;
+        gpr.render(&render_filepath, &profile, params.render_width)
+            .map_err(|e| format!("Error writing image: {:?}", e))?;
     }
 
     if let Some(potential_track_path) = &params.track_path {
@@ -2241,6 +2281,8 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
             steps: params.steps.clone(),
             no_export: params.no_export,
             render_path,
+            render_profile: params.render_profile.clone(),
+            render_width: params.render_width,
             override_antenna_mhz: params.override_antenna_mhz,
             override_antenna_separation: params.override_antenna_separation,
             user_metadata: params.user_metadata.clone(),

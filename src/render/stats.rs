@@ -10,7 +10,7 @@
 
 use super::colormap::to_stats_domain;
 use super::profile::AmplitudeTransform;
-use crate::source::SourceReader;
+use crate::source::AmplitudeSource;
 
 /// Spread across the profile. 128 well-separated locations is ample for a
 /// percentile dominated by vertical (not horizontal) structure; the cost
@@ -35,7 +35,7 @@ const TRACES_PER_RUN: usize = 16;
 /// `RenderProfile::stats_skip_first_samples`). `0` reproduces the original
 /// whole-trace behavior.
 pub fn sampled_amplitude_limits(
-    reader: &SourceReader,
+    reader: &impl AmplitudeSource,
     transform: AmplitudeTransform,
     seed: u64,
     low_pct: f32,
@@ -74,6 +74,7 @@ fn percentile(sorted: &[f32], p: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source::SourceReader;
 
     fn write_test_nc_with(path: &std::path::Path, height: usize, width: usize, values: &[f32]) {
         let mut file = netcdf::create(path).unwrap();

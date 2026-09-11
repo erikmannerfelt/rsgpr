@@ -15,7 +15,7 @@ use tokio::sync::Semaphore;
 use super::catalog::{Catalog, RevisionId};
 use crate::identity::RadargramId;
 use crate::server::render_service::{RenderService, RenderServiceConfig};
-use crate::source::SourceReader;
+use crate::source::{AmplitudeSource, SourceReader};
 
 /// One open radargram: its render service plus the metadata needed to
 /// answer dataset-detail and viewer-page requests without re-inspecting

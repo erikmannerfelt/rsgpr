@@ -67,8 +67,7 @@ pub enum ImageFormat {
     /// (`image-webp` 0.2.4) is lossless-only in every released version:
     /// its own README states "only supports lossless encoding", and its
     /// `EncoderParams` has no `use_lossy` field. JPEG needs no new
-    /// dependency -- `image` 0.24 already encodes it, and `io.rs`'s
-    /// existing `render_jpg` already uses it.
+    /// dependency -- `image` 0.24 already encodes it.
     Jpeg {
         quality: u8,
     },
