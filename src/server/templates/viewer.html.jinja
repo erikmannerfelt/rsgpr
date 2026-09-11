@@ -25,14 +25,14 @@
         {% endfor %}
       </select>
     </label>
+    {#- Options come from the server so the project's default always has an
+        entry to select; a hardcoded list here could drift from the one the
+        settings page validates against. -#}
     <label>Horizontal scale:
       <select id="xscale-select">
-        <option value="0.25">0.25&times;</option>
-        <option value="0.5">0.5&times;</option>
-        <option value="1" selected>1&times;</option>
-        <option value="2">2&times;</option>
-        <option value="4">4&times;</option>
-        <option value="8">8&times;</option>
+        {% for s in x_scales %}
+        <option value="{{ s.text }}" {% if s.value == active_x_scale %}selected{% endif %}>{{ s.label }}</option>
+        {% endfor %}
       </select>
     </label>
     <button id="metadata-button" type="button">Metadata</button>

@@ -163,6 +163,71 @@ fn format_datetime_for_display(raw: &str) -> String {
     }
 }
 
+/// Horizontal stretch factors the viewer offers.
+///
+/// One list, used to build the viewer's dropdown, to build the settings
+/// page's, and to validate a stored default -- three places that would
+/// otherwise drift, leaving a saved value with no option to select it.
+pub const X_SCALES: [f64; 6] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0];
+
+/// Unstretched. Not a preference, so a project that has not chosen one
+/// stores nothing rather than storing this.
+pub const DEFAULT_X_SCALE: f64 = 1.0;
+
+/// `1`, `0.25`, `2` -- no trailing `.0`, since these are shown as `2x`.
+fn format_x_scale(scale: f64) -> String {
+    if scale.fract() == 0.0 {
+        format!("{}", scale as i64)
+    } else {
+        format!("{scale}")
+    }
+}
+
+/// The offered scales for a template or script to render as `<option>`s.
+///
+/// `value` is the number to send back, `text` the canonical string form of
+/// it, and `label` what the user reads. `text` exists because the two pages
+/// build their options differently -- minijinja renders the f64 as `2.0`
+/// while JavaScript's `String(2.0)` gives `2` -- and two pages disagreeing
+/// on an option's value is the kind of difference that only shows up when
+/// something tries to match one against the other.
+pub fn x_scale_options() -> Vec<serde_json::Value> {
+    X_SCALES
+        .iter()
+        .map(|scale| {
+            let text = format_x_scale(*scale);
+            serde_json::json!({
+                "value": scale,
+                "text": text,
+                "label": format!("{text}\u{00d7}"),
+            })
+        })
+        .collect()
+}
+
+/// Whether `scale` is one the viewer can actually select.
+///
+/// Compared with a tolerance rather than by equality: the value arrives as
+/// JSON or TOML and round-trips through f64, and refusing a stored `0.25`
+/// because it came back a bit off would be a baffling failure.
+pub fn is_offered_x_scale(scale: f64) -> bool {
+    X_SCALES.iter().any(|s| (s - scale).abs() < 1e-9)
+}
+
+/// The horizontal stretch a radargram should open at.
+///
+/// The project's default, or 1x. A stored value that is no longer offered
+/// falls back rather than failing: the viewer would otherwise open with a
+/// dropdown showing nothing selected and a stretch nobody could undo.
+fn resolve_x_scale(state: &AppState) -> f64 {
+    state
+        .project
+        .as_ref()
+        .and_then(|p| p.default_xscale())
+        .filter(|s| is_offered_x_scale(*s))
+        .unwrap_or(DEFAULT_X_SCALE)
+}
+
 /// The profile a page should render with.
 ///
 /// The request wins, then the project's configured default, then the
@@ -711,6 +776,8 @@ pub async fn viewer_page(
             n_rows => grid.n_rows,
             viewer_width => raster.width,
             viewer_height => raster.height,
+            x_scales => x_scale_options(),
+            active_x_scale => resolve_x_scale(&state),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))

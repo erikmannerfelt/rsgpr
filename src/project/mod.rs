@@ -111,6 +111,51 @@ pub struct RenderSection {
     /// useful message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_profile: Option<String>,
+
+    /// Horizontal stretch applied when a radargram is opened, as a
+    /// multiplier. Unset means 1x, which is the neutral value rather than a
+    /// preference -- a project that never chose one stays unset in the file.
+    ///
+    /// Plain `f64` for the same reason `default_profile` is a plain string:
+    /// which factors the viewer offers is a server concept, so the value is
+    /// checked at the HTTP boundary where a bad one can be refused clearly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_xscale: Option<f64>,
+}
+
+/// The `[render]` defaults a project can carry, as one value.
+///
+/// `None` on a field clears that key rather than leaving it alone: the
+/// settings page always sends both, so "not set" and "unchanged" never have
+/// to be told apart. A key that is absent from the file is how a project
+/// says it never chose, which is different from storing the built-in value.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RenderDefaults {
+    pub profile: Option<String>,
+    pub xscale: Option<f64>,
+}
+
+/// Write `key` under `[render]`, creating the table, or remove it when the
+/// value is `None`. Keeps `toml_edit`'s formatting-preserving edit in one
+/// place now that there are two keys to apply it to.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+fn set_or_clear(document: &mut toml_edit::DocumentMut, key: &str, value: Option<toml_edit::Item>) {
+    match value {
+        Some(item) => {
+            if !document.contains_key("render") {
+                document["render"] = toml_edit::Item::Table(toml_edit::Table::new());
+            }
+            document["render"][key] = item;
+        }
+        None => {
+            if let Some(table) = document
+                .get_mut("render")
+                .and_then(toml_edit::Item::as_table_mut)
+            {
+                table.remove(key);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -284,10 +329,11 @@ impl Project {
              # [cache]\n\
              # dir = {}\n\
              \n\
-             # Render profile used when a page does not ask for one. Set it\n\
-             # from Project settings in the browser, or add a line here such\n\
-             # as `default_profile = {}`. Left unset, Ridal uses its\n\
-             # built-in \"default\" profile.\n\
+             # Defaults applied when a page does not ask for something else.\n\
+             # Set them from Project settings in the browser, or add lines\n\
+             # here such as `default_profile = {}` and\n\
+             # `default_xscale = 2.0`. Left unset, Ridal uses its built-in\n\
+             # \"default\" profile and no horizontal stretch.\n\
              #\n\
              # A real (empty) table rather than a commented one, so that\n\
              # saving from the browser puts the key under this note instead\n\
@@ -338,7 +384,17 @@ impl Project {
         self.read_config().render.default_profile.clone()
     }
 
-    /// Set (or clear) the default render profile, in the file and in memory.
+    /// The horizontal stretch to open radargrams at. `None` means 1x.
+    pub fn default_xscale(&self) -> Option<f64> {
+        self.read_config().render.default_xscale
+    }
+
+    /// Set (or clear) the project's render defaults, in the file and in
+    /// memory.
+    ///
+    /// Takes them together rather than one call per key: the settings page
+    /// saves them in one go, and two sequential writes could leave the file
+    /// holding half a change.
     ///
     /// Reached through the settings page, so a CLI-only build never calls
     /// it -- same situation as the write half of the stores beside this.
@@ -348,7 +404,7 @@ impl Project {
     /// hand-editable; a settings page that silently stripped a user's notes
     /// out of it would be a poor trade for one dropdown.
     #[cfg_attr(not(feature = "server"), allow(dead_code))]
-    pub fn set_default_profile(&self, profile: Option<&str>) -> Result<(), ProjectError> {
+    pub fn set_render_defaults(&self, defaults: &RenderDefaults) -> Result<(), ProjectError> {
         let marker = self.root.join(MARKER);
         let text = std::fs::read_to_string(&marker).map_err(|e| ProjectError::Io {
             path: marker.clone(),
@@ -361,22 +417,16 @@ impl Project {
                     message: e.to_string(),
                 })?;
 
-        match profile {
-            Some(name) => {
-                if !document.contains_key("render") {
-                    document["render"] = toml_edit::Item::Table(toml_edit::Table::new());
-                }
-                document["render"]["default_profile"] = toml_edit::value(name);
-            }
-            None => {
-                if let Some(table) = document
-                    .get_mut("render")
-                    .and_then(toml_edit::Item::as_table_mut)
-                {
-                    table.remove("default_profile");
-                }
-            }
-        }
+        set_or_clear(
+            &mut document,
+            "default_profile",
+            defaults.profile.as_deref().map(toml_edit::value),
+        );
+        set_or_clear(
+            &mut document,
+            "default_xscale",
+            defaults.xscale.map(toml_edit::value),
+        );
 
         let updated = document.to_string();
         // Through the document store for its atomic write and its
@@ -612,7 +662,7 @@ mod tests {
         let comment_lines = before.lines().filter(|l| l.starts_with('#')).count();
         assert!(comment_lines > 5, "the template should be commented");
 
-        project.set_default_profile(Some("abslog")).unwrap();
+        set_profile(&project, Some("abslog"));
 
         // In memory straight away -- a save that only reached the file
         // would not take effect until a restart.
@@ -636,12 +686,72 @@ mod tests {
         assert!(after.contains("[radargrams]"), "{after}");
     }
 
+    /// Set only the profile, leaving the horizontal scale cleared. Most of
+    /// these tests predate there being a second key and only care about one.
+    fn set_profile(project: &Project, profile: Option<&str>) {
+        project
+            .set_render_defaults(&RenderDefaults {
+                profile: profile.map(str::to_string),
+                xscale: None,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn both_render_defaults_are_written_in_one_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        project
+            .set_render_defaults(&RenderDefaults {
+                profile: Some("abslog".to_string()),
+                xscale: Some(2.0),
+            })
+            .unwrap();
+
+        assert_eq!(project.default_profile().as_deref(), Some("abslog"));
+        assert_eq!(project.default_xscale(), Some(2.0));
+
+        // And for the next process, from the file rather than memory.
+        let reopened = Project::open(dir.path()).unwrap();
+        assert_eq!(reopened.default_profile().as_deref(), Some("abslog"));
+        assert_eq!(reopened.default_xscale(), Some(2.0));
+    }
+
+    #[test]
+    fn clearing_one_render_default_leaves_the_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        project
+            .set_render_defaults(&RenderDefaults {
+                profile: Some("abslog".to_string()),
+                xscale: Some(4.0),
+            })
+            .unwrap();
+        // Back to 1x, which is stored as absence, while the profile stays.
+        project
+            .set_render_defaults(&RenderDefaults {
+                profile: Some("abslog".to_string()),
+                xscale: None,
+            })
+            .unwrap();
+
+        assert_eq!(project.default_xscale(), None);
+        assert_eq!(project.default_profile().as_deref(), Some("abslog"));
+        let text = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
+        let live = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .filter(|l| l.contains("default_xscale"))
+            .count();
+        assert_eq!(live, 0, "{text}");
+    }
+
     #[test]
     fn clearing_the_default_profile_removes_the_key() {
         let dir = tempfile::tempdir().unwrap();
         let project = Project::init(dir.path(), None).unwrap();
-        project.set_default_profile(Some("abslog")).unwrap();
-        project.set_default_profile(None).unwrap();
+        set_profile(&project, Some("abslog"));
+        set_profile(&project, None);
 
         assert_eq!(project.default_profile(), None);
         let text = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
@@ -658,7 +768,7 @@ mod tests {
     fn a_settings_write_leaves_no_temporary_file_behind() {
         let dir = tempfile::tempdir().unwrap();
         let project = Project::init(dir.path(), None).unwrap();
-        project.set_default_profile(Some("positive")).unwrap();
+        set_profile(&project, Some("positive"));
 
         let strays: Vec<String> = std::fs::read_dir(dir.path())
             .unwrap()

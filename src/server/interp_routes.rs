@@ -476,6 +476,8 @@ pub async fn get_settings(State(state): State<Arc<AppState>>) -> impl IntoRespon
         "root": project.map(|p| p.root().display().to_string()),
         "default_profile": project.and_then(|p| p.default_profile()),
         "profiles": profiles,
+        "default_xscale": project.and_then(|p| p.default_xscale()),
+        "xscales": crate::server::routes::x_scale_options(),
     }))
 }
 
@@ -485,6 +487,10 @@ pub struct SettingsUpdate {
     /// clears it, restoring the built-in default.
     #[serde(default)]
     default_profile: Option<String>,
+    /// Horizontal stretch to open radargrams at. `null` (or absent) clears
+    /// it, restoring 1x.
+    #[serde(default)]
+    default_xscale: Option<f64>,
 }
 
 /// `PUT /api/v1/project/settings`
@@ -511,12 +517,38 @@ pub async fn put_settings(
         }
     };
 
+    // Same reasoning as the profile above: which factors the viewer offers
+    // is a server concept. Storing one it does not offer would open every
+    // radargram at a stretch with no dropdown entry to change it back.
+    let xscale = match update.default_xscale {
+        None => None,
+        Some(scale) => {
+            if !crate::server::routes::is_offered_x_scale(scale) {
+                return Err(ApiError::bad_request(
+                    "unknown_xscale",
+                    format!("The viewer does not offer a horizontal scale of {scale}."),
+                ));
+            }
+            // 1x is the neutral value, so choosing it means "no preference"
+            // and leaves the key out of the file entirely.
+            if (scale - crate::server::routes::DEFAULT_X_SCALE).abs() < 1e-9 {
+                None
+            } else {
+                Some(scale)
+            }
+        }
+    };
+
     project
-        .set_default_profile(profile)
+        .set_render_defaults(&crate::project::RenderDefaults {
+            profile: profile.map(str::to_string),
+            xscale,
+        })
         .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
 
     Ok(Json(serde_json::json!({
         "default_profile": project.default_profile(),
+        "default_xscale": project.default_xscale(),
     })))
 }
 

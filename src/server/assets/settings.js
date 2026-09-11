@@ -14,6 +14,7 @@
   if (!form) return; // Not a project: the page is an explanation, not a form.
 
   const select = document.getElementById("default-profile");
+  const xscale = document.getElementById("default-xscale");
   const status = document.getElementById("settings-status");
   const errorBox = document.getElementById("settings-error");
 
@@ -52,6 +53,16 @@
     select.replaceChildren(...options);
     select.value = settings.default_profile || "";
     select.disabled = !writable;
+
+    // Offered factors come from the server, so a stored default always has
+    // an entry to select. No empty option here: unlike a profile name, 1x
+    // *is* the neutral value, so "no preference" and "1x" are the same
+    // choice and offering both would be a distinction without a difference.
+    xscale.replaceChildren(
+      ...(settings.xscales || []).map((s) => new Option(s.label, s.text)),
+    );
+    xscale.value = String(settings.default_xscale || 1);
+    xscale.disabled = !writable;
     setStatus("");
   }
 
@@ -65,7 +76,10 @@
       const response = await fetch("/api/v1/project/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ default_profile: select.value || null }),
+        body: JSON.stringify({
+          default_profile: select.value || null,
+          default_xscale: Number(xscale.value) || null,
+        }),
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
@@ -75,6 +89,8 @@
       }
       const saved = await response.json();
       select.value = saved.default_profile || "";
+      // 1x is stored as absent, so read it back the same way it was sent.
+      xscale.value = String(saved.default_xscale || 1);
       // Naming the file is the point: the change lands somewhere the user
       // can go and look at, which is not obvious from a dropdown.
       setStatus("Saved to ridal.toml");

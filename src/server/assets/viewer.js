@@ -28,7 +28,9 @@ const SOURCE_HEIGHT = CFG.sourceHeight;
 const RASTER_SCALE = VIEWER_WIDTH / SOURCE_WIDTH;
 const VERTICAL_RASTER_SCALE = VIEWER_HEIGHT / SOURCE_HEIGHT;
 
-let xScale = 1;
+// The project's default stretch, already validated against the offered
+// factors server-side, so this is the value the dropdown is showing.
+let xScale = Number(document.getElementById('xscale-select').value) || 1;
 
 function currentProfile() {
   return document.getElementById('profile-select').value;
@@ -141,7 +143,7 @@ const map = L.map('map', { crs: L.CRS.Simple, minZoom: -6, attributionControl: f
 // globals rather than exports: these are classic scripts with no module
 // boundary between them (#120: no build step).
 window.RIDAL_MAP = map;
-window.RIDAL_XSCALE = 1;
+window.RIDAL_XSCALE = xScale;
 /* Open on the start of the radargram at full depth, not on the whole thing.
  *
  * Fitting the entire length put every chunk in the viewport at once, which

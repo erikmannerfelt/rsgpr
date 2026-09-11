@@ -1066,6 +1066,91 @@ async fn the_default_profile_round_trips_through_the_settings_api() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn the_default_horizontal_scale_round_trips_and_reaches_the_viewer() {
+    let (dir, app) = project_app(true);
+
+    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    assert!(body["default_xscale"].is_null(), "unset to begin with");
+    assert!(
+        body["xscales"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["value"] == 2.0),
+        "the page needs the offered factors to populate its select: {body}"
+    );
+
+    let (status, _, _) = put(
+        &app,
+        "/api/v1/project/settings",
+        &serde_json::json!({"default_xscale": 2.0}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    assert_eq!(body["default_xscale"], 2.0);
+    let marker = std::fs::read_to_string(dir.path().join("ridal.toml")).unwrap();
+    assert!(marker.contains("default_xscale = 2.0"), "{marker}");
+
+    // The point of the setting: the viewer opens already stretched, with
+    // that option selected rather than 1x.
+    let (status, html) = page(&app, "/view/line-01").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(r#"<option value="2" selected>"#),
+        "the viewer should preselect the project default"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn one_times_is_stored_as_no_preference_and_odd_scales_are_refused() {
+    let (dir, app) = project_app(true);
+    put(
+        &app,
+        "/api/v1/project/settings",
+        &serde_json::json!({"default_xscale": 4.0}),
+        None,
+    )
+    .await;
+
+    // Back to 1x. It is the neutral value, not a preference, so the key
+    // leaves the file rather than being written as 1.0.
+    let (status, _, body) = put(
+        &app,
+        "/api/v1/project/settings",
+        &serde_json::json!({"default_xscale": 1.0}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["default_xscale"].is_null(), "{body}");
+    // Comment lines only -- `ridal project init` documents the key by name.
+    let marker = std::fs::read_to_string(dir.path().join("ridal.toml")).unwrap();
+    let live = marker
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter(|l| l.contains("default_xscale"))
+        .count();
+    assert_eq!(live, 0, "{marker}");
+
+    // A factor the viewer does not offer would leave every radargram
+    // stretched with no dropdown entry to undo it.
+    let (status, _, body) = put(
+        &app,
+        "/api/v1/project/settings",
+        &serde_json::json!({"default_xscale": 3.7}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "unknown_xscale");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn the_default_profile_is_what_pages_render_with() {
     // The whole point of the setting: a page opened with no profile in its
     // address uses the project's, not the built-in one.

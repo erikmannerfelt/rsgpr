@@ -40,6 +40,18 @@
           back to the built-in <code>default</code> profile.
         </span>
       </label>
+      <label class="settings-field">
+        <span class="settings-label">Default horizontal scale</span>
+        <select id="default-xscale" {% if not writable %}disabled{% endif %}>
+          <option value="">Loading&hellip;</option>
+        </select>
+        <span class="hint">
+          How far radargrams are stretched horizontally when opened. Survey
+          speed decides how much ground a trace covers, so a project whose
+          lines are short or densely sampled often wants more than
+          1&times;. Changeable per radargram in the viewer regardless.
+        </span>
+      </label>
       {% if writable %}
         <button type="submit">Save</button>
         <span id="settings-status" class="pick-status"></span>
