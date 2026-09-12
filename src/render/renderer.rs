@@ -84,9 +84,15 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
     /// the test corpus is ~180 MB of `f32` per call, per profile, and
     /// several concurrent index thumbnails multiply that. Banding caps
     /// the read at [`OVERVIEW_READ_BUDGET_BYTES`] while producing the
-    /// same picture, because area-weighted resampling is separable by
-    /// output row -- each output row draws only on its own contiguous
-    /// source-row footprint, so no row straddles a band boundary.
+    /// same picture.
+    ///
+    /// For the box-footprint methods that is because each output row
+    /// draws only on its own contiguous source-row footprint, so no row
+    /// straddles a band boundary. Lanczos does not have that property --
+    /// its kernel reaches well past the footprint -- so a band reads a
+    /// halo of extra source rows on each side and resamples only the
+    /// middle. Without one, every internal boundary is a false edge the
+    /// kernel truncates against, and the seams are visible.
     pub fn render_overview(
         &self,
         spec: &OverviewSpec,
@@ -127,6 +133,7 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
         let source_rows_per_output_row = src_h as f64 / out_height as f64;
 
         let mut resampled = Array2::from_elem((out_height, spec.width), f32::NAN);
+        let halo = super::resample::halo(profile.resampling, source_rows_per_output_row);
         let band = out_rows_per_band.max(1);
         let mut oy0 = 0usize;
         while oy0 < out_height {
@@ -141,10 +148,23 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
                 col0: 0.0,
                 col1: src_w as f64,
             };
-            let source = self.read_source_for_window(&window, 0)?;
+            // Read wider than the band, resample only the band. The
+            // halo is what the kernel needs either side to see the same
+            // neighbourhood it would in a whole-array render; at the
+            // true top and bottom of the radargram it is clamped away,
+            // which is correct -- those edges are real.
+            let read_row0 = (window.row0.floor() as usize).saturating_sub(halo);
+            let read_row1 = ((window.row1.ceil() as usize) + halo).min(src_h);
+            let source = self.reader.read_window(read_row0, read_row1, 0, src_w)?;
+            let local = SourceWindow {
+                row0: window.row0 - read_row0 as f64,
+                row1: window.row1 - read_row0 as f64,
+                col0: 0.0,
+                col1: src_w as f64,
+            };
             let band_out = resample(
                 source.view(),
-                &self.local_window(&window),
+                &local,
                 spec.width,
                 oy1 - oy0,
                 profile.resampling,
@@ -385,6 +405,58 @@ mod tests {
                 .render_overview_banded(&spec, &profile, limits, band)
                 .unwrap();
             assert_eq!(banded, whole, "band height {band} changed the output");
+        }
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn banding_is_invisible_for_every_resampling_method() {
+        // The test above covers `Mean`, which is safe to band because each
+        // output row reads only its own source rows. Lanczos is not: its
+        // kernel reaches `3 * scale` rows either side, and the resampler
+        // truncates taps at the edge of the array it is handed. Bands were
+        // read to their own extent, so every internal boundary looked like
+        // the top of the radargram and left a seam -- in the server's
+        // `positive` and `abslog` overviews as well as in `ridal render`.
+        //
+        // Parameterised over the methods rather than pinned to the two
+        // profiles that use Lanczos today, so a profile switching method
+        // later cannot quietly reintroduce it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        write_asymmetric_nc(&path, 200, 800);
+        let reader = SourceReader::open(&path).unwrap();
+        let renderer = Renderer::new(&reader);
+
+        let spec = OverviewSpec::new(800, 200, 200);
+        assert_eq!(spec.height, 50, "expected an exact 4x row ratio");
+        let limits = (0.0, (200 * 800) as f32);
+
+        for method in [
+            super::super::profile::ResamplingMethod::Mean,
+            super::super::profile::ResamplingMethod::Peak,
+            super::super::profile::ResamplingMethod::Lanczos,
+            super::super::profile::ResamplingMethod::LanczosRectified,
+        ] {
+            let profile = RenderProfile {
+                format: super::super::profile::ImageFormat::Png,
+                resampling: method,
+                ..RenderProfile::default_profile()
+            };
+            let whole = renderer
+                .render_overview_banded(&spec, &profile, limits, usize::MAX)
+                .unwrap();
+            for band in [1usize, 2, 7, 49] {
+                let banded = renderer
+                    .render_overview_banded(&spec, &profile, limits, band)
+                    .unwrap();
+                assert_eq!(
+                    banded, whole,
+                    "{method:?} at band height {band} differs from the \
+                     whole-array render"
+                );
+            }
         }
     }
 

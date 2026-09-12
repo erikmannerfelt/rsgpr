@@ -2,9 +2,13 @@
 //!
 //! The command-line counterpart to the web GUI's image download, and what
 //! `ridal process --render` produces. Deliberately *not* a second renderer:
-//! it resolves a profile, estimates amplitude limits, and calls the same
-//! [`crate::render::renderer::Renderer`] the server does, so a picture
-//! drawn here and one drawn in the browser are the same picture.
+//! it resolves a profile, estimates amplitude limits and calls the same
+//! [`crate::render::renderer::Renderer`] the server does, from the same
+//! [`stats::SAMPLE_SEED`], so `ridal render` and the browser's download
+//! produce the same picture of the same file at the same width -- and so
+//! does `ridal process --render`, which draws the same `data` array from
+//! memory rather than reading it back. See [`crate::gpr::GPR::render`] for
+//! why that is `data` even when a topographic correction has run.
 //!
 //! Ridal used to have two: `io::render_jpg` stretched between the 1st and
 //! 99th percentile of every tenth sample with a special case for `unphase`,
@@ -15,15 +19,9 @@ use std::path::Path;
 
 use crate::render::grid::OverviewSpec;
 use crate::render::profile::{AmplitudeLimits, ImageFormat, RenderProfile};
+use crate::render::stats::SAMPLE_SEED;
 use crate::render::{colormap, renderer::Renderer, stats};
 use crate::source::{AmplitudeSource, SourceReader};
-
-/// Fixed so the same file rendered twice gives byte-identical output.
-///
-/// Amplitude limits come from a sampled subset of traces, so an arbitrary
-/// seed would make the stretch -- and therefore every pixel -- vary run to
-/// run. The server folds the render variant into its seed to the same end.
-const SAMPLE_SEED: u64 = 0x5249_4441_4c00_0001;
 
 /// What to draw and how, resolved from CLI arguments.
 pub struct RenderRequest<'a> {

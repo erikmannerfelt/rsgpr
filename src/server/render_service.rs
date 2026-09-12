@@ -236,17 +236,14 @@ impl RenderService {
             return Ok(limits);
         }
         let sampled = match profile.limits {
-            AmplitudeLimits::Percentile { low, high } => {
-                let seed = seed_from_variant(variant);
-                Some(sampled_amplitude_limits(
-                    &self.reader,
-                    profile.transform,
-                    seed,
-                    low,
-                    high,
-                    profile.stats_skip_first_samples,
-                )?)
-            }
+            AmplitudeLimits::Percentile { low, high } => Some(sampled_amplitude_limits(
+                &self.reader,
+                profile.transform,
+                crate::render::stats::SAMPLE_SEED,
+                low,
+                high,
+                profile.stats_skip_first_samples,
+            )?),
             AmplitudeLimits::Explicit { .. } => None,
         };
         let limits = colormap::resolve_limits(&profile.limits, sampled)?;
@@ -302,15 +299,81 @@ impl RenderService {
     }
 }
 
-/// Derive a sampling seed from a variant ID rather than the clock, so
-/// amplitude-limit sampling is reproducible across restarts and identical
-/// between repeated calls for the same variant (#119).
-fn seed_from_variant(variant: &RenderVariantId) -> u64 {
-    u64::from_str_radix(&variant.as_str()[..16], 16).unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn the_command_line_and_the_browser_draw_the_same_picture() {
+        // The claim `ridal render` is built on, as an executable
+        // assertion. Both paths resolve the same profile, sample the same
+        // traces and call the same renderer, so one file at one width has
+        // to come out byte for byte the same whether it was drawn on the
+        // command line or downloaded from the browser.
+        //
+        // It did not, until recently: the server derived its sampling seed
+        // from the render variant while the one-shot path used a constant,
+        // so the two estimated amplitude limits from different traces and
+        // disagreed by a shade.
+        //
+        // Checked for the Lanczos profiles as well as the default, since
+        // those are also the ones whose banding had to be fixed for this
+        // to hold at all.
+        use crate::render::oneshot::{render_path_to_file, RenderRequest};
+
+        // Amplitudes that vary sharply *between* traces, which is what
+        // makes this test able to fail: the seed picks the offset of the
+        // sampled trace runs, so two seeds only disagree about the
+        // percentiles when the traces they land on differ in amplitude.
+        // A smooth fixture hides the bug completely -- the first version
+        // of this test used one and passed against the very code it was
+        // written to catch.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        write_trace_varying_nc(&path, 400, 4096);
+
+        for name in ["default", "positive", "abslog"] {
+            let profile = RenderProfile {
+                format: crate::render::profile::ImageFormat::Png,
+                ..RenderProfile::by_name(name).expect("built-in profile")
+            };
+
+            // The browser's path: through the caching render service.
+            let reader = SourceReader::open(&path).unwrap();
+            let mut service = RenderService::new(
+                reader,
+                RevisionId::fingerprint_v1(
+                    &RadargramId::new("same-picture").unwrap(),
+                    "2020-01-01T00:00:00Z",
+                ),
+                &RenderServiceConfig::default(),
+            );
+            let spec = OverviewSpec::new(4096, 400, 300);
+            let from_server = service
+                .get_or_render_overview(&spec, DatasetView::Standard, &profile)
+                .unwrap();
+
+            // The command line's path: straight to a file.
+            let out = dir.path().join(format!("{name}.png"));
+            render_path_to_file(
+                &path,
+                &out,
+                &RenderRequest {
+                    profile: &profile,
+                    width: Some(300),
+                    quality: None,
+                },
+            )
+            .unwrap();
+            let from_cli = std::fs::read(&out).unwrap();
+
+            assert_eq!(
+                from_cli, from_server,
+                "'{name}' renders differently on the command line than in the browser"
+            );
+        }
+    }
+
     use super::*;
     use crate::identity::RadargramId;
     use crate::render::grid::ViewerRaster;
@@ -322,6 +385,71 @@ mod tests {
         let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
         let data: Vec<f32> = (0..(height * width)).map(|i| (i % 1000) as f32).collect();
         var.put_values(&data, ..).unwrap();
+    }
+
+    /// A radargram on which the sampling seed changes the answer.
+    ///
+    /// The shape is deliberate and looks strange on purpose. The sampler
+    /// takes 128 runs of 16 consecutive traces at a fixed stride, and the
+    /// seed only chooses where the first run starts. A gradient is
+    /// therefore averaged over identically wherever the runs begin, and
+    /// hides a seed difference completely -- a first version of the test
+    /// below used one and passed against the very code it was written to
+    /// catch.
+    ///
+    /// Loud traces clustered in the first 6 of every 32 instead, so a run
+    /// of 16 either covers them or misses them entirely depending on the
+    /// offset. `seed_changes_the_limits_on_this_fixture` pins that.
+    fn write_trace_varying_nc(path: &std::path::Path, height: usize, width: usize) {
+        let mut file = netcdf::create(path).unwrap();
+        file.add_dimension("y", height).unwrap();
+        file.add_dimension("x", width).unwrap();
+        let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
+        let data: Vec<f32> = (0..(height * width))
+            .map(|i| {
+                let (row, col) = (i / width, i % width);
+                let quiet = ((row * 7 + col * 13) % 11) as f32 - 5.0;
+                if col % 32 < 6 {
+                    quiet + 5000.0
+                } else {
+                    quiet
+                }
+            })
+            .collect();
+        var.put_values(&data, ..).unwrap();
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn seed_changes_the_limits_on_this_fixture() {
+        // Guards the test below from going quietly vacuous. If the
+        // fixture ever stops being seed-sensitive, an equivalence test
+        // built on it proves nothing about seeds -- and the failure that
+        // matters would pass unnoticed.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sensitive.nc");
+        write_trace_varying_nc(&path, 400, 4096);
+        let reader = SourceReader::open(&path).unwrap();
+
+        let limits = |seed| {
+            crate::render::stats::sampled_amplitude_limits(
+                &reader,
+                crate::render::profile::AmplitudeTransform::Linear,
+                seed,
+                1.0,
+                99.0,
+                0,
+            )
+            .unwrap()
+        };
+        // Offset 1 lands on the loud traces; offset 7 misses them.
+        assert_ne!(
+            limits(1),
+            limits(7),
+            "the fixture is no longer seed-sensitive, so the equivalence \
+             test below can no longer detect a seed difference"
+        );
     }
 
     fn test_revision_id() -> RevisionId {

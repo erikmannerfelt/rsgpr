@@ -153,6 +153,29 @@ pub fn resample(
 /// stays modest.
 const LANCZOS_A: f64 = 3.0;
 
+/// Source rows (or columns) a method reaches beyond the output footprint
+/// it is asked for, at a given downsampling `scale`.
+///
+/// Zero for the box-footprint methods: each output pixel draws only on
+/// its own contiguous source interval, which is what makes them safe to
+/// render in independent bands.
+///
+/// Lanczos is the exception, and the reason this is public. Its taps span
+/// `LANCZOS_A * scale` either side of an output pixel's centre, and
+/// [`resample`] truncates them at the edge of whatever array it is given
+/// -- correct at the real edges of a radargram, wrong at a band boundary
+/// that is merely where one read stopped. A caller rendering in bands has
+/// to fetch this much extra on each side, or every internal boundary
+/// becomes a false edge and shows as a seam.
+pub fn halo(method: ResamplingMethod, scale: f64) -> usize {
+    match method {
+        ResamplingMethod::Lanczos | ResamplingMethod::LanczosRectified => {
+            (LANCZOS_A * scale.max(1.0)).ceil() as usize
+        }
+        ResamplingMethod::Mean | ResamplingMethod::Peak => 0,
+    }
+}
+
 fn sinc(x: f64) -> f64 {
     if x.abs() < 1e-12 {
         1.0

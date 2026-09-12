@@ -808,9 +808,25 @@ impl GPR {
 
     /// Render this radargram to an image with a render profile.
     ///
-    /// Goes through the same pipeline as `ridal render` and the web GUI,
-    /// from the array already in memory -- there may be no file to read
-    /// back, since `--no-export --render` is allowed.
+    /// Goes through the same pipeline as `ridal render` and the web GUI --
+    /// same profiles, same resampling, same amplitude sampling -- from the
+    /// array already in memory, since `--no-export --render` is allowed and
+    /// then there is no file to read back.
+    ///
+    /// # Always `data`, never `data_topocorr`
+    ///
+    /// The renderer this replaced drew the topographically corrected array
+    /// whenever topographic correction had run. That made one output file
+    /// have two pictures: this one, and the different one the browser drew
+    /// from the exported `data` variable.
+    ///
+    /// One array wins instead, and it is `data`, so every way of drawing a
+    /// radargram agrees. Topographic correction is a secondary product
+    /// here; rendering it is a render *profile* and an explicit flag on
+    /// `ridal render`, not a thing `--render` should silently switch to
+    /// because an earlier step happened to run. Until that exists, a
+    /// corrected section cannot be written to a JPG or PNG -- a known and
+    /// accepted gap rather than an oversight.
     ///
     /// This replaced a separate implementation (`io::render_jpg`) that
     /// stretched between the 1st and 99th percentile of every tenth sample
@@ -824,8 +840,7 @@ impl GPR {
         profile: &crate::render::profile::RenderProfile,
         width: Option<usize>,
     ) -> Result<(), Box<dyn Error>> {
-        let data = self.topo_data.as_ref().unwrap_or(&self.data);
-        let source = crate::source::ArraySource::new(data.view());
+        let source = crate::source::ArraySource::new(self.data.view());
         let request = crate::render::oneshot::RenderRequest {
             profile,
             width,
