@@ -25,6 +25,38 @@ pub struct OpenRadargram {
     pub shape: (usize, usize),
 }
 
+/// What this server permits, independent of who is asking.
+///
+/// A struct rather than two bare `bool` parameters, which would be
+/// adjacent, same-typed and easy to transpose at a call site -- and one of
+/// them decides whether passwords may cross a network in the clear.
+#[derive(Debug, Clone, Copy)]
+pub struct AccessOptions {
+    /// `--read-only`: cap every caller at `viewer`, whatever their account
+    /// says.
+    pub read_only: bool,
+    /// Whether a password may be sent to this server at all.
+    ///
+    /// Decided from the bind address (see [`super::launch`]) and carried
+    /// here rather than checked once at startup, because "does this
+    /// project have accounts" can become true while the server is running
+    /// -- an administrator created on the machine takes effect on the next
+    /// request, so a guard sampled at boot would be bypassed by exactly
+    /// the sequence that makes it matter.
+    pub allow_password_login: bool,
+}
+
+impl Default for AccessOptions {
+    /// Writable, and logins permitted. The loopback case, and what tests
+    /// want: a bind that is either genuinely local or behind a proxy.
+    fn default() -> Self {
+        Self {
+            read_only: false,
+            allow_password_login: true,
+        }
+    }
+}
+
 pub struct AppState {
     pub root: PathBuf,
     /// Whether `root` itself names a single NetCDF file rather than a
@@ -47,14 +79,14 @@ pub struct AppState {
     /// directory of `.nc` files, or a single file, with nowhere to save
     /// anything. Every write route checks this rather than assuming.
     pub project: Option<crate::project::Project>,
-    /// `--read-only`: cap every caller at `viewer`, whatever their account
-    /// says.
+    /// What this server permits regardless of who is asking.
     ///
-    /// A cap rather than a separate switch on the write routes, because
-    /// "what may this request do" now has exactly one answer -- the caller's
-    /// effective role -- and a second, parallel gate is how the two drift
-    /// apart. See [`super::auth::Caller`].
-    pub read_only: bool,
+    /// `read_only` is a cap on the caller's role rather than a separate
+    /// switch on the write routes, because "what may this request do" has
+    /// exactly one answer -- the caller's effective role -- and a second,
+    /// parallel gate is how the two drift apart. See
+    /// [`super::auth::Caller`].
+    pub access: AccessOptions,
     /// The key that signs session cookies, loaded on first use.
     ///
     /// Lazy so a project that never authenticates never grows a
@@ -97,13 +129,12 @@ impl AppState {
     /// (this function's own containment check below) is symlink-resolved
     /// and consistent.
     /// `project` is `None` for a bare directory or single file, which has
-    /// nowhere to write and is therefore read-only whatever `read_only`
-    /// says.
+    /// nowhere to write and is therefore read-only whatever `access` says.
     pub fn build_with_project(
         root: &StdPath,
         config: &RenderServiceConfig,
         project: Option<crate::project::Project>,
-        read_only: bool,
+        access: AccessOptions,
     ) -> Result<Self, String> {
         let root = root
             .canonicalize()
@@ -151,7 +182,7 @@ impl AppState {
             root_is_file,
             catalog,
             radargrams,
-            read_only,
+            access,
             session_key: Mutex::new(None),
             project,
             // `.max(1)`: a zero-permit semaphore would deadlock every
@@ -572,8 +603,9 @@ mod tests {
 
     fn test_app(dir: &StdPath) -> Router {
         let config = RenderServiceConfig::default();
-        let state =
-            std::sync::Arc::new(AppState::build_with_project(dir, &config, None, false).unwrap());
+        let state = std::sync::Arc::new(
+            AppState::build_with_project(dir, &config, None, AccessOptions::default()).unwrap(),
+        );
         build_router(state)
     }
 
@@ -584,8 +616,9 @@ mod tests {
             n_workers,
             ..RenderServiceConfig::default()
         };
-        let state =
-            std::sync::Arc::new(AppState::build_with_project(dir, &config, None, false).unwrap());
+        let state = std::sync::Arc::new(
+            AppState::build_with_project(dir, &config, None, AccessOptions::default()).unwrap(),
+        );
         (build_router(state.clone()), state)
     }
 

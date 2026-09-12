@@ -18,7 +18,7 @@ use axum::Router;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use super::app::{build_router, AppState};
+use super::app::{build_router, AccessOptions, AppState};
 use super::render::service::RenderServiceConfig;
 use crate::identity::UserId;
 use crate::project::store::Expectation;
@@ -94,7 +94,7 @@ fn app_with_set(set: UserSet) -> (tempfile::TempDir, Router) {
             dir.path(),
             &RenderServiceConfig::default(),
             Some(project),
-            false,
+            AccessOptions::default(),
         )
         .unwrap(),
     );
@@ -349,6 +349,60 @@ async fn a_wrong_password_and_an_unknown_name_are_refused_identically() {
     assert_eq!(unknown.status, StatusCode::UNAUTHORIZED);
     assert_eq!(wrong.body, unknown.body, "the two refusals must not differ");
     assert!(wrong.cookie.is_none(), "a refused login must set no cookie");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_unknown_name_costs_the_same_as_a_wrong_password() {
+    // The identical response was only half of it. An unknown name used to
+    // return before Argon2id ran at all while a real one paid for a
+    // verification, and that gap is measurable from outside -- which turns
+    // the login form back into the account enumerator the unified message
+    // was meant to close.
+    //
+    // Argon2id dominates both paths by design, so "same order of
+    // magnitude" is the assertion that means something; a tight bound
+    // would flake on a shared CI runner.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![
+        activated("erik", Role::Admin, DownloadScope::All, &hash),
+        // Created but never activated: the third path, which must also not
+        // stand out.
+        User::new(id("invited"), Role::Picker, DownloadScope::All),
+    ]);
+
+    let time = |name: &'static str| {
+        let app = app.clone();
+        async move {
+            let start = std::time::Instant::now();
+            let response = post(
+                &app,
+                "/api/v1/auth/login",
+                &json!({"name": name, "password": format!("{}x", password())}),
+                None,
+            )
+            .await;
+            assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+            start.elapsed()
+        }
+    };
+
+    // Warm anything lazy -- the decoy hash is built once per process, and
+    // paying for it inside a measurement would look like a difference.
+    time("nobody").await;
+
+    let real = time("erik").await;
+    let missing = time("nobody").await;
+    let unactivated = time("invited").await;
+
+    for (label, measured) in [("unknown name", missing), ("unactivated", unactivated)] {
+        let ratio = measured.as_secs_f64() / real.as_secs_f64();
+        assert!(
+            (0.2..5.0).contains(&ratio),
+            "{label} took {measured:?} against {real:?} for a real account \
+             (ratio {ratio:.2}); one path is skipping the hash"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1080,7 +1134,7 @@ async fn a_session_survives_a_restart() {
                 dir.path(),
                 &RenderServiceConfig::default(),
                 Some(project),
-                false,
+                AccessOptions::default(),
             )
             .unwrap(),
         );
@@ -1122,7 +1176,7 @@ async fn a_project_with_no_accounts_offers_no_login_and_still_writes() {
             dir.path(),
             &RenderServiceConfig::default(),
             Some(project),
-            false,
+            AccessOptions::default(),
         )
         .unwrap(),
     );
@@ -1166,6 +1220,280 @@ async fn a_project_with_no_accounts_offers_no_login_and_still_writes() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn the_first_account_takes_effect_without_a_restart() {
+    // What lets `ridal project user add` say there is nothing to restart.
+    // The account file is read per request, so a server already serving an
+    // open project becomes an authenticated one the moment the file
+    // appears beneath it.
+    let hash = users::hash_password(password()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions::default(),
+        )
+        .unwrap(),
+    );
+    let app = build_router(state);
+
+    // Open to begin with: everyone is the local default user and can write.
+    let before = get(&app, "/api/v1/auth/me", None).await;
+    assert_eq!(before.body["user"], "default");
+    assert_eq!(before.body["role"], "operator");
+
+    // An administrator appears, as the command line would create one --
+    // without this server being told.
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    users::write(
+        project.documents(),
+        &UserSet {
+            users: vec![activated("erik", Role::Admin, DownloadScope::All, &hash)],
+            ..UserSet::default()
+        },
+        &Expectation::Any,
+    )
+    .unwrap();
+    drop(project);
+
+    let after = get(&app, "/api/v1/auth/me", None).await;
+    assert_eq!(
+        after.body["user"],
+        Value::Null,
+        "no longer the default user"
+    );
+    assert_eq!(after.body["role"], "viewer");
+    assert_eq!(after.body["authentication_configured"], true);
+
+    // And the same running server can sign that account in.
+    let session = sign_in(&app, "erik").await;
+    assert_eq!(
+        get(&app, "/api/v1/auth/me", Some(&session)).await.body["user"],
+        "erik"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_damaged_user_file_denies_everything_rather_than_opening_it() {
+    // The failure mode worth naming: `UserSet::default()` looks like a
+    // safe fallback and is the permissive one -- public read, anonymous
+    // downloads of everything. A project that had required a login would
+    // have started serving its catalog to anyone the moment its policy
+    // file was damaged.
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    users::write(project.documents(), &UserSet::default(), &Expectation::Any).unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions::default(),
+        )
+        .unwrap(),
+    );
+    let app = build_router(state);
+
+    // Readable while the file is intact.
+    assert_eq!(
+        get(&app, "/api/v1/datasets", None).await.status,
+        StatusCode::OK
+    );
+
+    std::fs::write(dir.path().join("users.json"), "{ not json at all").unwrap();
+
+    // And closed once it is not: no public read, and no downloads.
+    assert_eq!(
+        get(&app, "/api/v1/datasets", None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        get(
+            &app,
+            &format!("/api/v1/datasets/{RADARGRAM}/views/standard/image?width=20"),
+            None
+        )
+        .await
+        .status,
+        StatusCode::UNAUTHORIZED
+    );
+    // The way in still renders, so the server is visibly refusing rather
+    // than simply broken.
+    assert_eq!(get(&app, "/login", None).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_bind_that_cannot_carry_a_password_refuses_one_per_request() {
+    // Sampling this at startup was not enough: a public --read-only server
+    // with no accounts starts legitimately, and the first administrator
+    // can be created while it runs. The guard has to be asked on the
+    // request, not remembered from boot.
+    let hash = users::hash_password(password()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    users::write(
+        project.documents(),
+        &UserSet {
+            users: vec![activated("erik", Role::Admin, DownloadScope::All, &hash)],
+            ..UserSet::default()
+        },
+        &Expectation::Any,
+    )
+    .unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions {
+                allow_password_login: false,
+                ..AccessOptions::default()
+            },
+        )
+        .unwrap(),
+    );
+    let app = build_router(state);
+
+    let refused = post(
+        &app,
+        "/api/v1/auth/login",
+        &json!({"name": "erik", "password": password()}),
+        None,
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.body["error"]["code"], "insecure_transport");
+    assert!(refused.text.contains("reverse proxy"), "{}", refused.text);
+    assert!(refused.cookie.is_none(), "no session may be issued");
+
+    // Redeeming an invite sends a password too, so it is guarded the same.
+    let redeem = post(
+        &app,
+        "/api/v1/auth/invite",
+        &json!({"token": "whatever", "password": format!("{}-new", password())}),
+        None,
+    )
+    .await;
+    assert_eq!(redeem.status, StatusCode::FORBIDDEN);
+    assert_eq!(redeem.body["error"]["code"], "insecure_transport");
+
+    // Reading is unaffected -- the guard is about passwords on the wire,
+    // not about who may look.
+    assert_eq!(
+        get(&app, "/api/v1/datasets", None).await.status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_invalid_invite_is_refused_without_hashing_the_password() {
+    // Argon2id is deliberately expensive, so hashing before checking the
+    // token let an unauthenticated caller spend a hash of the server's CPU
+    // per request. Timed rather than asserted structurally, because the
+    // property *is* the cost.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![activated(
+        "erik",
+        Role::Admin,
+        DownloadScope::All,
+        &hash,
+    )]);
+
+    let start = std::time::Instant::now();
+    let refused = post(
+        &app,
+        "/api/v1/auth/invite",
+        &json!({"token": "not-a-real-token", "password": format!("{}-new", password())}),
+        None,
+    )
+    .await;
+    let rejecting = start.elapsed();
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+
+    // What one hash actually costs on this machine, measured rather than
+    // assumed -- the parameters are the crate's defaults and will change.
+    let start = std::time::Instant::now();
+    users::hash_password(&format!("{}-cost", password())).unwrap();
+    let hashing = start.elapsed();
+
+    assert!(
+        rejecting < hashing,
+        "rejecting a bad token took {rejecting:?}, which is not comfortably \
+         less than the {hashing:?} one hash costs -- the token is probably \
+         being checked after the hash again"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_read_only_server_tells_an_anonymous_caller_the_truth() {
+    // Signing in cannot make a write succeed on a read-only server, so
+    // answering "sign in and try again" sends someone down a road with no
+    // end. The refusal has to name the flag even for a caller who has no
+    // account at all.
+    let hash = users::hash_password(password()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    users::write(
+        project.documents(),
+        &UserSet {
+            users: vec![activated("erik", Role::Picker, DownloadScope::All, &hash)],
+            ..UserSet::default()
+        },
+        &Expectation::Any,
+    )
+    .unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions {
+                read_only: true,
+                ..AccessOptions::default()
+            },
+        )
+        .unwrap(),
+    );
+    let app = build_router(state);
+
+    let refused = put(
+        &app,
+        &interpretation_uri("erik"),
+        &document(RADARGRAM),
+        None,
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.body["error"]["code"], "read_only");
+
+    // Reading is untouched: `require` checks the effective role before it
+    // looks at why that role is what it is.
+    assert_eq!(
+        get(&app, "/api/v1/datasets", None).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        get(&app, &format!("/view/{RADARGRAM}"), None).await.status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_read_only_server_caps_even_an_administrator() {
     let hash = users::hash_password(password()).unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -1186,7 +1514,10 @@ async fn a_read_only_server_caps_even_an_administrator() {
             dir.path(),
             &RenderServiceConfig::default(),
             Some(project),
-            true,
+            AccessOptions {
+                read_only: true,
+                ..AccessOptions::default()
+            },
         )
         .unwrap(),
     );

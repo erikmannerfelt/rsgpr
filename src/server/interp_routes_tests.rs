@@ -19,7 +19,7 @@ use axum::Router;
 use serde_json::Value;
 use tower::ServiceExt;
 
-use super::app::{build_router, AppState};
+use super::app::{build_router, AccessOptions, AppState};
 use super::render::service::RenderServiceConfig;
 use crate::project::Project;
 
@@ -130,7 +130,7 @@ fn group_app() -> (tempfile::TempDir, Router) {
             dir.path(),
             &RenderServiceConfig::default(),
             Some(project),
-            false,
+            AccessOptions::default(),
         )
         .unwrap(),
     );
@@ -155,7 +155,7 @@ fn mixed_catalog_app() -> (tempfile::TempDir, Router) {
             dir.path(),
             &RenderServiceConfig::default(),
             Some(project),
-            false,
+            AccessOptions::default(),
         )
         .unwrap(),
     );
@@ -177,7 +177,7 @@ fn project_app_with_axes() -> (tempfile::TempDir, Router) {
             dir.path(),
             &RenderServiceConfig::default(),
             Some(project),
-            false,
+            AccessOptions::default(),
         )
         .unwrap(),
     );
@@ -200,7 +200,10 @@ fn project_app(writable: bool) -> (tempfile::TempDir, Router) {
             dir.path(),
             &RenderServiceConfig::default(),
             Some(project),
-            !writable,
+            AccessOptions {
+                read_only: !writable,
+                ..AccessOptions::default()
+            },
         )
         .unwrap(),
     );
@@ -212,8 +215,13 @@ fn bare_app() -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     write_test_nc(&dir.path().join("line-01.nc"), RADARGRAM);
     let state = Arc::new(
-        AppState::build_with_project(dir.path(), &RenderServiceConfig::default(), None, false)
-            .unwrap(),
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            None,
+            AccessOptions::default(),
+        )
+        .unwrap(),
     );
     (dir, build_router(state))
 }

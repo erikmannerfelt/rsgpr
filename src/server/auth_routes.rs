@@ -144,6 +144,7 @@ pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(body): Json<LoginBody>,
 ) -> Result<impl IntoResponse, ApiError> {
+    password_login_allowed(&state)?;
     let set = accounts(&state)?;
     let refused = || {
         ApiError::unauthorized(
@@ -154,11 +155,31 @@ pub async fn login(
         )
     };
 
-    let name = UserId::new(&body.name).map_err(|_| refused())?;
-    let user = set.get(&name).ok_or_else(refused)?;
-    if !users::verify_password(user, &body.password) {
+    let user = UserId::new(&body.name).ok().and_then(|name| set.get(&name));
+
+    // The identical *response* is only half of it: an unknown name would
+    // otherwise return before Argon2id ran at all, while a real one paid
+    // for a verification, and that difference is measurable from outside.
+    // It turns the login form back into the account enumerator the unified
+    // message was meant to close. So a miss verifies against a throwaway
+    // hash instead of skipping the work.
+    let verified = match user {
+        Some(user) if user.is_activated() => users::verify_password(user, &body.password),
+        // Two ways to get here, and both must cost what a real
+        // verification costs: no such name, and an account whose invite
+        // has not been redeemed. The second is the subtler one --
+        // `verify_password` short-circuits when there is no stored hash,
+        // so it returns in microseconds and says "this person exists but
+        // has not signed up yet" to anyone holding a stopwatch.
+        _ => {
+            burn_a_verification(&body.password);
+            false
+        }
+    };
+    if !verified {
         return Err(refused());
     }
+    let user = user.expect("verified implies an account");
 
     Ok((
         issue_session(&state, user)?,
@@ -167,6 +188,59 @@ pub async fn login(
             "role": user.role.as_str(),
             "download": user.download.as_str(),
         })),
+    ))
+}
+
+/// Do the work a real verification would, and discard the answer.
+///
+/// For the paths where there is no stored hash to check against -- an
+/// unknown name, or an account whose invite has not been redeemed -- so
+/// that "wrong password" and "no such person" cost the same.
+///
+/// The decoy hash is computed once per process from a random passphrase
+/// rather than written into the source. A constant would be a hard-coded
+/// credential in a binary that ships, and one whose Argon2 parameters
+/// would silently stop matching the real ones the day the defaults change,
+/// which is exactly when the timings would start to differ again.
+#[cfg(feature = "server")]
+fn burn_a_verification(candidate: &str) {
+    static DECOY: std::sync::OnceLock<Option<User>> = std::sync::OnceLock::new();
+    let decoy = DECOY.get_or_init(|| {
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes).ok()?;
+        let hash = users::hash_password(&users::to_hex(&bytes)).ok()?;
+        let mut user = User::new(
+            UserId::new("decoy").ok()?,
+            Role::Viewer,
+            DownloadScope::None,
+        );
+        user.password_hash = Some(hash);
+        Some(user)
+    });
+    if let Some(decoy) = decoy {
+        // The result is deliberately unused: this exists for its cost.
+        let _ = users::verify_password(decoy, candidate);
+    }
+}
+
+/// Refuse a password on a bind where it would travel in the clear.
+///
+/// Checked per request rather than once at startup. "Does this project
+/// have accounts" can become true while the server is running -- an
+/// administrator created from the command line takes effect on the next
+/// request -- so a public `--read-only` server that started with none
+/// would otherwise begin accepting cleartext logins the moment one
+/// appeared, which is precisely the sequence the guard exists for.
+fn password_login_allowed(state: &AppState) -> Result<(), ApiError> {
+    if state.access.allow_password_login {
+        return Ok(());
+    }
+    Err(ApiError::forbidden(
+        "insecure_transport",
+        "This server is bound to a network address and does not terminate \
+         TLS, so a password sent to it would travel in the clear. Reach it \
+         through a TLS-terminating reverse proxy, or restart it with \
+         --allow-insecure-login to accept that.",
     ))
 }
 
@@ -255,8 +329,33 @@ pub async fn redeem_invite(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RedeemBody>,
 ) -> Result<impl IntoResponse, ApiError> {
+    password_login_allowed(&state)?;
     let project = project(&state)?;
     users::check_password(&body.password).map_err(user_error)?;
+
+    // The token is checked *before* the hash is computed, and checked again
+    // inside the update below.
+    //
+    // The second check is the correct one -- it runs under the store's lock,
+    // so two redemptions of the same link cannot both win. This first one is
+    // purely about cost: Argon2id is deliberately expensive, and without it
+    // an unauthenticated caller could spend a hash of the server's CPU per
+    // request by posting a password with a token that was never valid. A
+    // bare existence check costs a file read and a blake3.
+    let stale_link = || {
+        UserError::Rejected(
+            "This link is not valid. It may already have been used, or it \
+             may have expired -- ask an administrator for a new one."
+                .to_string(),
+        )
+    };
+    let (set, _) = users::read(project.documents())
+        .map_err(user_error)?
+        .ok_or_else(|| user_error(stale_link()))?;
+    if users::user_for_invite(&set, &body.token, auth::now()).is_none() {
+        return Err(user_error(stale_link()));
+    }
+    drop(set);
 
     // Hashed once, outside the update, because `update` retries on a version
     // conflict and Argon2id is deliberately expensive.
@@ -265,13 +364,7 @@ pub async fn redeem_invite(
     let user = users::update(project.documents(), |set| {
         let name = users::user_for_invite(set, &body.token, auth::now())
             .map(|user| user.name.clone())
-            .ok_or_else(|| {
-                UserError::Rejected(
-                    "This link is not valid. It may already have been used, or it \
-                     may have expired -- ask an administrator for a new one."
-                        .to_string(),
-                )
-            })?;
+            .ok_or_else(stale_link)?;
         let user = set
             .get_mut(&name)
             .ok_or_else(|| UserError::NotFound(name.to_string()))?;

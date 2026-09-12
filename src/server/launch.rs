@@ -30,10 +30,20 @@ async fn serve(
     // subdirectory or at a single file inside a project still saves
     // interpretations to the right place.
     let project = crate::project::Project::discover(root).map_err(|e| e.to_string())?;
+    // Parsed here, not merely stat-ed. An access policy that will not parse
+    // is refused at startup, where an operator is watching, rather than
+    // turning every later request into a silent denial -- which is what
+    // `auth::resolve` correctly does with it, and is a miserable thing to
+    // debug from the outside.
     let accounts = match project.as_ref() {
-        Some(project) => {
-            crate::project::users::is_configured(project.documents()).map_err(|e| e.to_string())?
-        }
+        Some(project) => crate::project::users::read(project.documents())
+            .map_err(|e| {
+                format!(
+                    "Refusing to serve {}: its access policy cannot be read. {e}",
+                    project.root().display()
+                )
+            })?
+            .is_some(),
         None => false,
     };
     let writable = project.is_some() && !options.read_only;
@@ -49,7 +59,14 @@ async fn serve(
         root,
         &config,
         project,
-        options.read_only,
+        super::app::AccessOptions {
+            read_only: options.read_only,
+            // Decided from the bind address once, and then consulted per
+            // request. `accounts` above cannot serve for this: it is a
+            // snapshot, and the first administrator may be created while
+            // this server is running.
+            allow_password_login: options.host.is_loopback() || options.allow_insecure_login,
+        },
     )?);
     if !state.catalog.warnings.is_empty() {
         for w in &state.catalog.warnings {
@@ -61,7 +78,7 @@ async fn serve(
         state.catalog.entries.len(),
         root.display()
     );
-    match (state.project.as_ref(), !state.read_only) {
+    match (state.project.as_ref(), !state.access.read_only) {
         (Some(project), true) => {
             if accounts {
                 println!("Project {} (authenticated)", project.root().display());

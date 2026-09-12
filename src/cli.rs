@@ -1019,6 +1019,29 @@ mod tests {
     }
 
     #[test]
+    fn the_first_account_must_be_able_to_administer_the_project() {
+        // Creating any account switches authentication on for the whole
+        // project. Typing the default role would otherwise produce a
+        // project nobody can manage from the browser, reachable by
+        // omitting a flag.
+        let dir = project_dir();
+        let error = add(&dir, "student", "picker").unwrap_err();
+        assert!(
+            error.contains("only account") || error.contains("first account"),
+            "{error}"
+        );
+        assert!(error.contains("--role admin"), "{error}");
+        // And nothing was written, so the project is still open rather
+        // than half-converted.
+        assert!(!dir.path().join("users.json").exists());
+
+        // With an administrator in place, the same command is fine.
+        add(&dir, "erik", "admin").unwrap();
+        add(&dir, "student", "picker").unwrap();
+        assert_eq!(accounts(&dir).users.len(), 2);
+    }
+
+    #[test]
     fn a_duplicate_name_is_refused_rather_than_replacing_the_account() {
         let dir = project_dir();
         add(&dir, "erik", "admin").unwrap();
@@ -1612,6 +1635,25 @@ fn project_user_add_command(args: &ProjectUserAddArgs) -> Result<(), String> {
                 name.to_string(),
             ));
         }
+        // Creating any account switches authentication on for the whole
+        // project. If that first one cannot administer, the project becomes
+        // one where nobody can manage accounts or access policy from the
+        // browser -- recoverable only by coming back to this command, which
+        // is a strange state to reach by typing the default role.
+        if role < crate::project::users::Role::Admin
+            && !set
+                .users
+                .iter()
+                .any(|user| user.role == crate::project::users::Role::Admin)
+        {
+            return Err(crate::project::users::UserError::Rejected(format!(
+                "'{name}' would be the first account, and a {role} cannot manage \
+                 accounts or access settings. Creating it would switch \
+                 authentication on for this project with nobody able to \
+                 administer it. Create an administrator first:\n  \
+                 ridal project user add {name} --role admin"
+            )));
+        }
         let mut user = crate::project::users::User::new(name.clone(), role, download);
         user.invite = Some(invite.clone());
         set.users.push(user);
@@ -1630,9 +1672,16 @@ fn project_user_add_command(args: &ProjectUserAddArgs) -> Result<(), String> {
         println!(
             "This project now requires authentication. Anyone who was writing as \
              '{}' will need an account; their existing interpretations are \
-             untouched and still stored under that name. Restart the server for \
-             the change to take effect.",
+             untouched and still stored under that name.",
             crate::identity::DEFAULT_USER
+        );
+        // Deliberately *not* "restart the server". A running server reads
+        // the account file on every request, so this has already taken
+        // effect -- and telling an operator to restart invites them to
+        // believe it has not and go looking for why.
+        println!(
+            "A server already running on this project picks that up on its next \
+             request; there is nothing to restart."
         );
     }
     Ok(())

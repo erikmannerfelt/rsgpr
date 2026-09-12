@@ -340,13 +340,29 @@ pub fn resolve(state: &AppState, headers: &HeaderMap, now: i64) -> Caller {
         };
     };
 
-    // A user file that will not parse is treated as "authentication is on
-    // and nobody matches", which fails closed. Falling back to the
-    // unconfigured path would turn a damaged file into an open server.
+    // A user file that will not parse must fail *closed*, and closed here
+    // means more than "nobody is signed in".
+    //
+    // `UserSet::default()` was the obvious answer and the wrong one: its
+    // defaults are the permissive ones -- public read, anonymous downloads
+    // of everything -- which are right for a project that chose them and
+    // exactly backwards for one whose policy just became unreadable. A
+    // project that had required a login would have started serving its
+    // catalog to anyone the moment the file was damaged.
+    //
+    // So a damaged file denies everything until it is fixed: no accounts to
+    // match, no public read, no anonymous download. `launch` refuses to
+    // start on an unparseable file for the same reason, which is where an
+    // operator will actually see it; this covers the file being damaged
+    // under a running server.
     let configured = match users::read(project.documents()) {
         Ok(Some((set, _))) => Some(set),
         Ok(None) => None,
-        Err(_) => Some(UserSet::default()),
+        Err(_) => Some(UserSet {
+            require_auth_to_read: true,
+            anonymous_download: DownloadScope::None,
+            users: Vec::new(),
+        }),
     };
 
     let (user, account_role, download) = match &configured {
@@ -365,8 +381,18 @@ pub fn resolve(state: &AppState, headers: &HeaderMap, now: i64) -> Caller {
         },
     };
 
-    let (role, cap) = if state.read_only && account_role > Role::Viewer {
-        (Role::Viewer, Some(RoleCap::ReadOnlyServer))
+    // The cap is recorded whenever the server is read-only, not only when
+    // it actually lowers this caller's role. An anonymous caller is already
+    // a viewer, so the cap changes nothing about what they may do -- but it
+    // changes what they are *told*: without it, asking to write answers
+    // "sign in and try again", and signing in cannot make a write succeed
+    // on a read-only server. Reads are unaffected either way, because
+    // `require` checks the effective role before it looks at the cap.
+    let (role, cap) = if state.access.read_only {
+        (
+            account_role.min(Role::Viewer),
+            Some(RoleCap::ReadOnlyServer),
+        )
     } else {
         (account_role, None)
     };
