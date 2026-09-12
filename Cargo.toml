@@ -39,15 +39,9 @@ enterpolation = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# The level 1 interpretation format (`ridal interp`).
-#
-# A separate repository, pinned to an exact revision rather than a branch so
-# a build is reproducible and cannot change under us.
-#
-# Must become a published version before the next `cargo publish` of ridal:
-# crates.io rejects git dependencies, so `cargo publish --dry-run` will fail
-# until gprinterp is released and this reads `gprinterp = "0.1"`.
-gprinterp = { git = "https://github.com/erikmannerfelt/gprinterp", rev = "7447f5120f8a7a41b246004a31cf782c130b3863" }
+# The level 1 interpretation format (`ridal interp`). Developed alongside
+# ridal in its own repository; see github.com/erikmannerfelt/gprinterp.
+gprinterp = "0.1"
 
 # Web server and browser GUI (feature "server"). See tracking issue #115.
 axum = { version = "0.8", optional = true }

@@ -615,7 +615,8 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 [[package]]
 name = "gprinterp"
 version = "0.1.0"
-source = "git+https://github.com/erikmannerfelt/gprinterp?rev=7447f5120f8a7a41b246004a31cf782c130b3863#7447f5120f8a7a41b246004a31cf782c130b3863"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "010d58d008897254685aeb87af420785b01710d473e4ff3855f23e1da9586324"
 dependencies = [
  "serde",
  "serde_json",
