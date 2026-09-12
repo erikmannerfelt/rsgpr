@@ -9,7 +9,9 @@ mod filters;
 mod formats;
 mod gpr;
 mod identity;
+mod interp;
 mod io;
+mod project;
 #[cfg(feature = "server")]
 mod server;
 mod tools;

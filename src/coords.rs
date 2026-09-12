@@ -839,6 +839,14 @@ mod tests {
         }
     }
     #[test]
+    // Runs `projinfo`, so it must not overlap the tests that unset `PATH`
+    // process-wide to simulate a machine without PROJ or GDAL
+    // (`test_crs_noproj` here, `dem::tests::test_no_gdal_failure`). Those
+    // are `serial`, but that only excludes each other -- an unmarked test
+    // still runs alongside them and finds no `projinfo` on `PATH`. That is
+    // the "random failure" the cfg above blames on macOS: it is a race, not
+    // a platform.
+    #[serial_test::parallel]
     #[cfg(not(any(target_os = "windows", target_os = "macos")))] // Added windows 2026-04-6, macos 2026-04-13 (random failure)
     fn test_projinfo_to_wkt() {
         let retval = super::projinfo_to_wkt("EPSG:32633").unwrap();

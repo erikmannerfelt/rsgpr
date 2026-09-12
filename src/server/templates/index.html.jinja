@@ -18,21 +18,58 @@
       </span>
       <span class="card-title">{{ e.effective_label }}</span>
     </a>
+    {#- Interpretation progress takes the front row and the shape moves
+        behind the toggle: the shape is the same on every card of a survey
+        and answers no question anyone is asking of a catalog, while "has
+        this been worked on?" is the reason to scan one.
+
+        Only when the catalog is a project. "No picks yet" and "there is
+        nowhere to save picks" are different states, and a card that says
+        nothing at all is the honest rendering of the second. -#}
     <dl class="card-meta">
       <dt>ID</dt><dd><code>{{ e.radargram_id }}</code></dd>
-      <dt>Size</dt><dd>{{ e.shape[1] }} traces &times; {{ e.shape[0] }} samples</dd>
+      {% if e.line_count is not none %}
+      <dt>Picked</dt>
+      <dd>
+        {%- if e.line_count == 0 -%}
+          <span class="meta-none">None yet</span>
+        {%- elif e.line_count == 1 -%}
+          1 line
+        {%- else -%}
+          {{ e.line_count }} lines
+        {%- endif -%}
+      </dd>
+      {% endif %}
     </dl>
-    {#- Path and processed-datetime are secondary lookup info, not
+    {#- Shape, path and processed-datetime are secondary lookup info, not
         scanning info -- tucked behind a details toggle so the card grid
         stays scannable. -#}
     <details class="meta-details card-more">
       <summary>More info</summary>
       <dl class="card-meta">
+        <dt>Size</dt><dd>{{ e.shape[1] }} traces &times; {{ e.shape[0] }} samples</dd>
         <dt>Path</dt><dd class="path">{{ e.relative_path }}</dd>
         <dt>Processed</dt><dd>{{ e.processing_datetime_display }}</dd>
       </dl>
     </details>
   </li>
+  {% endmacro %}
+
+  {#- One menu definition for every scope on the page: the catalog-wide one
+      and one per group. `base` is the API prefix the items hang off, so a
+      new merged product is a line here and works at every scope at once.
+      `project` is passed in for the same reason as `profile` above. -#}
+  {% macro download_menu(id, base, label, summary, project) %}
+  <details class="site-menu download-menu" id="download-menu-{{ id }}"
+           data-download-base="{{ base }}" data-download-label="{{ label }}">
+    <summary>{{ summary }}</summary>
+    <ul>
+      {% if project %}
+        <li><button type="button" data-download="level2">Layer points</button></li>
+      {% endif %}
+      <li><button type="button" data-download="track.geojson">Tracks (GeoJSON)</button></li>
+    </ul>
+  </details>
   {% endmacro %}
 
   <h1>Radargram catalog</h1>
@@ -45,6 +82,9 @@
     </div>
   {% endif %}
 
+  {#- The catalog-wide downloads sit with the catalog-wide control, above
+      the first group heading, so "everything" reads as the outer scope of
+      the per-group menus below rather than as another group. -#}
   <div class="controls">
     <label>Render profile:
       <select id="index-profile-select">
@@ -53,6 +93,8 @@
         {% endfor %}
       </select>
     </label>
+    {{ download_menu("catalog", "/api/v1/catalog", "all radargrams",
+                     "Download all", project) }}
   </div>
 
   {#- "Ungrouped" is just another entry in `groups` (see routes.rs's
@@ -60,13 +102,58 @@
       always shown even when it's the only section on the page. -#}
   {% for group in groups %}
   <section class="group">
-    <h2>{{ group.label }}</h2>
+    {#- The heading and its downloads on one line: the menu acts on this
+        group, and putting it anywhere else would leave that ambiguous once
+        a page has several. -#}
+    <div class="group-heading">
+      <h2>{{ group.label }}</h2>
+      {{ download_menu(
+           "group-" ~ loop.index,
+           "/api/v1/groups/" ~ group.id,
+           group.label,
+           "Download",
+           project) }}
+    </div>
     <div class="group-map" id="group-map-{{ loop.index }}" data-group="{{ group.id }}"></div>
     <ul class="card-grid">
       {% for e in group.entries %}{{ entry_card(e, active_profile) }}{% endfor %}
     </ul>
   </section>
   {% endfor %}
+
+  <dialog id="group-download-dialog">
+    <h2 id="group-download-title">Download layer points</h2>
+    <p class="hint">
+      Every interpreted radargram in scope, merged into one file: one row per
+      point along each picked layer, with its depth and position. Each point
+      names the radargram it came from, so the merge is reversible.
+      Radargrams nobody has interpreted yet are left out.
+    </p>
+    <div class="add-layer-fields">
+      <label>Spacing
+        <select id="group-spacing">
+          <option value="auto" selected>Auto (from trace spacing)</option>
+          <option value="1">1 m</option>
+          <option value="5">5 m</option>
+          <option value="10">10 m</option>
+          <option value="25">25 m</option>
+          <option value="per-trace">Every trace</option>
+          <option value="vertices">Picked vertices only</option>
+        </select>
+      </label>
+      <label>Format
+        <select id="group-format">
+          <option value="geojson" selected>GeoJSON (WGS84)</option>
+          <option value="geojson-native">GeoJSON (native CRS)</option>
+          <option value="csv">CSV</option>
+        </select>
+      </label>
+    </div>
+    <p>
+      <button type="button" id="group-download-go">Download</button>
+      <button type="button" id="group-download-close">Close</button>
+    </p>
+  </dialog>
 
   {% if not entries %}
     <p>No radargrams found.</p>

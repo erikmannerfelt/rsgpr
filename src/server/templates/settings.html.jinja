@@ -1,0 +1,72 @@
+{% extends "base.html.jinja" %}
+{% block title %}Project settings - Ridal{% endblock %}
+{% block content %}
+  <h1>Project settings</h1>
+
+  {% if not project %}
+    <div class="warning">
+      <p>
+        This catalog is not a Ridal project, so there is nothing to
+        configure. Run <code>ridal project init</code> in the directory
+        being served and restart.
+      </p>
+    </div>
+  {% else %}
+    <dl class="card-meta settings-summary">
+      {% if project_name %}<dt>Project</dt><dd>{{ project_name }}</dd>{% endif %}
+      <dt>Location</dt><dd class="path">{{ project_root }}</dd>
+    </dl>
+
+    {% if not writable %}
+      <div class="warning">
+        <p>This server is read-only. Settings are shown but cannot be changed.</p>
+      </div>
+    {% endif %}
+  {% endif %}
+
+  <div id="settings-error" class="warning" role="status" aria-live="polite" hidden></div>
+
+  {% if project %}
+    <form id="settings-form" class="settings-form" novalidate>
+      <h2>Rendering</h2>
+      <label class="settings-field">
+        <span class="settings-label">Default render profile</span>
+        <select id="default-profile" {% if not writable %}disabled{% endif %}>
+          <option value="">Loading&hellip;</option>
+        </select>
+        <span class="hint">
+          Used whenever a page is opened without a profile in its address.
+          Choosing &ldquo;Ridal default&rdquo; leaves it unset, which falls
+          back to the built-in <code>default</code> profile.
+        </span>
+      </label>
+      <label class="settings-field">
+        <span class="settings-label">Default horizontal scale</span>
+        <select id="default-xscale" {% if not writable %}disabled{% endif %}>
+          <option value="">Loading&hellip;</option>
+        </select>
+        <span class="hint">
+          How far radargrams are stretched horizontally when opened. Survey
+          speed decides how much ground a trace covers, so a project whose
+          lines are short or densely sampled often wants more than
+          1&times;. Changeable per radargram in the viewer regardless.
+        </span>
+      </label>
+      {% if writable %}
+        <button type="submit">Save</button>
+        <span id="settings-status" class="pick-status"></span>
+      {% endif %}
+    </form>
+
+    {#- Said plainly rather than left to be discovered: this page writes to
+        a file people are invited to edit by hand. -#}
+    <p class="hint">
+      These settings are stored in <code>ridal.toml</code> at the location
+      above. Saving here rewrites only the value being changed, so comments
+      and anything you have edited by hand are kept.
+    </p>
+  {% endif %}
+{% endblock %}
+{% block extrascript %}
+  <script src="/static/settings.js"></script>
+{% endblock %}

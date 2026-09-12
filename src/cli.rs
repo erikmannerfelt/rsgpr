@@ -22,12 +22,100 @@ pub enum Commands {
     Steps(StepsArgs),
     /// Inspect supported formats
     Formats(FormatsArgs),
+    /// Work with interpretations (picked layers) of processed radargrams
+    Interp(InterpArgs),
+    /// Create and inspect Ridal projects
+    Project(ProjectArgs),
     /// Open a local browser GUI for one radargram or a directory of them
     #[cfg(feature = "server")]
     Gui(GuiArgs),
     /// Run the web server explicitly (for remote or persistent deployment)
     #[cfg(feature = "server")]
     Server(ServerArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProjectArgs {
+    #[command(subcommand)]
+    pub command: ProjectCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectCommand {
+    /// Create a project so interpretations have somewhere to live
+    Init(ProjectInitArgs),
+    /// Show what a project contains
+    Info(ProjectInfoArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProjectInitArgs {
+    /// Directory to create the project in. Created if it does not exist.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+
+    /// Human-facing project name. Cosmetic.
+    #[arg(long)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProjectInfoArgs {
+    /// A path inside the project. The project is found by searching upwards.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct InterpArgs {
+    #[command(subcommand)]
+    pub command: InterpCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum InterpCommand {
+    /// Derive the level 2 point product from a level 1 interpretation
+    Export(InterpExportArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct InterpExportArgs {
+    /// The processed radargram (.nc) the interpretation was drawn on.
+    pub radargram: PathBuf,
+
+    /// The level 1 interpretation (a gprinterp JSON document).
+    pub interpretation: PathBuf,
+
+    /// Where to write the level 2 product. The format follows the
+    /// extension: ".geojson"/".json" for GeoJSON, ".csv" for CSV.
+    #[arg(short, long)]
+    pub output: PathBuf,
+
+    /// Point spacing along the ground track. A distance in metres ("5",
+    /// "2.5"), "auto" to derive one from the radargram's own trace spacing,
+    /// "per-trace" for one point per native trace, or "vertices" for the
+    /// picked vertices exactly as drawn.
+    ///
+    /// Spacing is always measured in metres along the track, never in
+    /// traces: trace spacing varies with survey speed, so a fixed trace
+    /// stride produces unevenly spaced ground positions.
+    #[arg(long, default_value = "auto")]
+    pub spacing: String,
+
+    /// CRS for the output geometry. WGS84 by default, which is what RFC 7946
+    /// requires of GeoJSON. Accepts "native" for the radargram's own
+    /// projected CRS, or any CRS string PROJ understands.
+    ///
+    /// Note that projected GeoJSON is not portable: readers that follow
+    /// RFC 7946 will interpret the coordinates as degrees. Native
+    /// easting/northing are always present as properties regardless.
+    #[arg(long)]
+    pub crs: Option<String>,
+
+    /// The author recorded on every exported point. Ridal has no
+    /// multi-user support yet, so this is a label rather than an identity.
+    #[arg(long, default_value = crate::interp::level2::DEFAULT_USER)]
+    pub user: String,
 }
 
 #[cfg(feature = "server")]
@@ -43,6 +131,10 @@ pub struct GuiArgs {
     /// Number of worker threads for CPU-heavy rendering.
     #[arg(long)]
     pub n_workers: Option<usize>,
+
+    /// Serve a project without accepting any writes.
+    #[arg(long)]
+    pub read_only: bool,
 }
 
 #[cfg(feature = "server")]
@@ -78,6 +170,18 @@ pub struct ServerStartArgs {
     /// Open a browser after starting (off by default in this mode).
     #[arg(long)]
     pub open_browser: bool,
+
+    /// Serve a project without accepting any writes.
+    #[arg(long)]
+    pub read_only: bool,
+
+    /// Accept writes while bound to a non-loopback address.
+    ///
+    /// Ridal has no authentication yet, so this makes interpretations
+    /// editable by anyone who can reach the address. Prefer binding loopback
+    /// behind a reverse proxy that authenticates.
+    #[arg(long)]
+    pub allow_remote_writes: bool,
 
     /// In-memory cache budget for encoded chunk/overview images, in MB.
     #[arg(long)]
@@ -394,6 +498,13 @@ pub fn run(arguments: Args) -> Result<(), String> {
         Commands::Info(args) => info_command(args),
         Commands::Steps(args) => steps_command(args),
         Commands::Formats(args) => formats_command(args),
+        Commands::Interp(args) => match args.command {
+            InterpCommand::Export(args) => interp_export_command(&args),
+        },
+        Commands::Project(args) => match args.command {
+            ProjectCommand::Init(args) => project_init_command(&args),
+            ProjectCommand::Info(args) => project_info_command(&args),
+        },
         #[cfg(feature = "server")]
         Commands::Gui(args) => gui_command(args),
         #[cfg(feature = "server")]
@@ -424,7 +535,7 @@ fn render_service_config(
 #[cfg(feature = "server")]
 fn gui_command(args: GuiArgs) -> Result<(), String> {
     let config = render_service_config(args.cache_memory_mb, args.n_workers)?;
-    crate::server::launch::run_gui(&args.path, config)
+    crate::server::launch::run_gui(&args.path, args.read_only, config)
 }
 
 #[cfg(feature = "server")]
@@ -441,6 +552,8 @@ fn server_command(args: ServerArgs) -> Result<(), String> {
                 host,
                 start_args.port,
                 start_args.open_browser,
+                start_args.read_only,
+                start_args.allow_remote_writes,
                 config,
             )
         }
@@ -833,4 +946,243 @@ mod tests {
         let steps = choose_steps(false, true, None).unwrap();
         assert!(steps.iter().any(|step| step == "correct_topography"));
     }
+}
+
+/// Parse the `--spacing` value.
+///
+/// Accepts a bare number of metres, "auto", or "per-trace". A bare number is
+/// metres rather than traces by design: see [`InterpExportArgs::spacing`].
+pub fn parse_spacing(text: &str) -> Result<crate::interp::level2::Spacing, String> {
+    use crate::interp::level2::Spacing;
+    match text.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(Spacing::Auto),
+        "per-trace" | "per_trace" | "pertrace" => Ok(Spacing::PerTrace),
+        "vertices" | "vertex" => Ok(Spacing::Vertices),
+        other => {
+            // Tolerate a trailing "m" so `--spacing 5m` does not fail on
+            // something that obviously means five metres.
+            let numeric = other.strip_suffix('m').unwrap_or(other);
+            let step: f64 = numeric.parse().map_err(|_| {
+                format!(
+                    "Could not read --spacing '{text}'. Expected a distance in metres \
+                     (e.g. '5' or '2.5'), 'auto', 'per-trace', or 'vertices'."
+                )
+            })?;
+            if !step.is_finite() || step <= 0.0 {
+                return Err(format!("--spacing must be greater than zero, got '{text}'"));
+            }
+            Ok(Spacing::ArcLength(step))
+        }
+    }
+}
+
+fn interp_export_command(args: &InterpExportArgs) -> Result<(), String> {
+    let spacing = parse_spacing(&args.spacing)?;
+
+    let text = std::fs::read_to_string(&args.interpretation)
+        .map_err(|e| format!("Could not read {:?}: {e}", args.interpretation))?;
+    let document = gprinterp::Document::from_json(&text).map_err(|e| {
+        format!(
+            "Could not parse {:?} as gprinterp: {e}",
+            args.interpretation
+        )
+    })?;
+
+    // Validation warnings are surfaced but not fatal: the format is
+    // deliberately permissive, and a document missing a stable feature id
+    // still exports correctly.
+    let report = gprinterp::validate(&document);
+    if !report.errors.is_empty() {
+        // All of them, not just the first: a hand-written document usually
+        // has several problems at once, and fixing them one round trip at a
+        // time is needless.
+        let errors: Vec<String> = report.errors.iter().map(|e| format!("  - {e}")).collect();
+        return Err(format!(
+            "{:?} is not a valid gprinterp document:\n{}",
+            args.interpretation,
+            errors.join("\n")
+        ));
+    }
+    for warning in &report.warnings {
+        eprintln!("warning: {warning}");
+    }
+
+    let geometry = crate::interp::source::read_geometry(&args.radargram)?;
+
+    // Shared with the HTTP download routes, which previously skipped this
+    // and produced a plausible, wrong file from the same inputs.
+    let identity = crate::interp::checks::check_identity(&document, &geometry)
+        .map_err(|e| format!("{:?}: {e}", args.interpretation))?;
+    if let Some(warning) = identity.warning {
+        eprintln!("warning: {warning}");
+    }
+
+    // Overhang permission is a property of the project's layer vocabulary.
+    // An export from outside a project has no vocabulary, so nothing has
+    // opted out and the guardrail applies everywhere -- the safe default.
+    let layer_set =
+        match crate::project::Project::discover(&args.radargram).map_err(|e| e.to_string())? {
+            Some(project) => {
+                crate::project::layers::read(project.documents())
+                    .map_err(|e| e.to_string())?
+                    .0
+            }
+            None => crate::project::layers::LayerSet::default(),
+        };
+    let allows_overhangs = |label: Option<&str>| layer_set.allows_overhangs(label);
+
+    let export =
+        crate::interp::level2::export(&document, &geometry, spacing, &args.user, &allows_overhangs)
+            .map_err(|e| format!("{e}"))?;
+
+    let output_crs = match &args.crs {
+        None => crate::interp::writer::OutputCrs::Wgs84,
+        Some(name) => crate::interp::writer::OutputCrs::Named(name.clone()),
+    };
+
+    let extension = args
+        .output
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    // A slice of one: the writers take several so a group download can
+    // concatenate them, and a single export is that with one element.
+    let exports = [export];
+    let serialized = match extension.as_str() {
+        "csv" => crate::interp::writer::to_csv(&exports),
+        "geojson" | "json" => crate::interp::writer::to_geojson(&exports, &output_crs)?,
+        other => {
+            return Err(format!(
+                "Cannot tell what format to write from the extension '{other}'. \
+                 Use '.geojson' or '.csv'."
+            ))
+        }
+    };
+    if extension == "csv" && args.crs.is_some() {
+        eprintln!(
+            "warning: --crs is ignored for CSV output, which always carries both native \
+             easting/northing and WGS84 longitude/latitude as columns."
+        );
+    }
+
+    std::fs::write(&args.output, serialized)
+        .map_err(|e| format!("Could not write {:?}: {e}", args.output))?;
+
+    let export = &exports[0];
+    let spacing_note = match export.spacing_m {
+        Some(step) => format!("{step} m spacing"),
+        None => "per-trace spacing".to_string(),
+    };
+    println!(
+        "Wrote {} point(s) from {} layer(s) at {spacing_note} to {:?}",
+        export.points.len(),
+        document.layers().len(),
+        args.output
+    );
+    Ok(())
+}
+
+fn project_init_command(args: &ProjectInitArgs) -> Result<(), String> {
+    let project = crate::project::Project::init(&args.path, args.name.as_deref())
+        .map_err(|e| e.to_string())?;
+    println!("Created project at {}", project.root().display());
+    println!(
+        "  {} names it; interpretations go in {}/, layer definitions in {}/",
+        crate::project::MARKER,
+        crate::project::INTERPRETATIONS_DIR,
+        crate::project::LAYERS_DIR,
+    );
+    println!(
+        "  Put processed radargrams in {}/ (or point [radargrams] roots elsewhere).",
+        crate::project::DEFAULT_RADARGRAM_DIR
+    );
+    Ok(())
+}
+
+fn project_info_command(args: &ProjectInfoArgs) -> Result<(), String> {
+    let Some(project) = crate::project::Project::discover(&args.path).map_err(|e| e.to_string())?
+    else {
+        return Err(format!(
+            "No Ridal project at or above {}. Run `ridal project init` to create one.",
+            args.path.display()
+        ));
+    };
+
+    println!("Project: {}", project.root().display());
+    if let Some(name) = &project.config().project.name {
+        println!("Name: {name}");
+    }
+    for root in project.radargram_roots() {
+        println!("Radargram root: {}", root.display());
+    }
+    println!("Cache: {}", project.cache_dir().display());
+    println!(
+        "Default render profile: {}",
+        project
+            .default_profile()
+            .unwrap_or_else(|| "(unset, Ridal's built-in default)".to_string())
+    );
+
+    let (layers, _) =
+        crate::project::layers::read(project.documents()).map_err(|e| e.to_string())?;
+    println!("Layers: {}", layers.layers.len());
+    for layer in &layers.layers {
+        println!("  {} ({})", layer.id, layer.name);
+    }
+
+    // Listed from the interpretations directory rather than from the
+    // catalog: an interpretation whose radargram is missing is exactly the
+    // thing worth noticing, and inspecting must not need the server feature.
+    let interpretations = project.root().join(crate::project::INTERPRETATIONS_DIR);
+    let mut total = 0usize;
+    if let Ok(entries) = std::fs::read_dir(&interpretations) {
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        for name in names {
+            let Ok(radargram) = crate::identity::RadargramId::new(&name) else {
+                continue;
+            };
+            let users =
+                crate::project::interpretations::list_users(project.documents(), &radargram)
+                    .map_err(|e| e.to_string())?;
+            if !users.is_empty() {
+                println!("Interpretations: {name} <- {}", users.join(", "));
+                total += users.len();
+            }
+            for user in &users {
+                let Ok(user_id) = crate::identity::UserId::new(user.as_str()) else {
+                    continue;
+                };
+                let Some(stored) = crate::project::interpretations::read(
+                    project.documents(),
+                    &radargram,
+                    &user_id,
+                )
+                .map_err(|e| e.to_string())?
+                else {
+                    continue;
+                };
+                // Labels with no definition are worth surfacing: the picks
+                // are real, the vocabulary just does not describe them, and
+                // the viewer will draw them with no colour.
+                let labels = stored.document.features.iter().filter_map(|f| f.label());
+                let unknown = layers.unknown_ids(labels);
+                if !unknown.is_empty() {
+                    println!(
+                        "  warning: {name}/{user} uses undefined layer(s): {}",
+                        unknown.join(", ")
+                    );
+                }
+            }
+        }
+    }
+    if total == 0 {
+        println!("Interpretations: none yet");
+    }
+    Ok(())
 }

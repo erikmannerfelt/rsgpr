@@ -118,6 +118,31 @@ A rudimentary profile renderer is available with the `-r` argument.
 This will be saved in the same location as the output file as a JPG if another filename is not given.
 
 
+### Interpreting layers
+
+Reflectors can be picked in the GUI and exported as evenly spaced geographic points.
+Picking needs somewhere to save, which means a project — a directory with a `ridal.toml` in it:
+```bash
+ridal project init my-survey
+ridal gui my-survey
+```
+Pointing the GUI at a plain directory still works exactly as before; it is simply read-only.
+
+Layers are defined once per project, with a name and a colour, and picked lines refer to them rather than carrying their own.
+Renaming a layer therefore orphans nothing.
+Picks themselves are stored as [gprinterp](https://github.com/erikmannerfelt/gprinterp) documents, one per user per radargram, and those are the source of truth.
+The point product is derived from them on demand rather than stored alongside them, so reprocessing a radargram does not invalidate the picks drawn on it.
+
+Points are spaced by arc length along the ground track in metres, not by trace number.
+Trace spacing varies with survey speed and GPS noise perturbs it further, so "every 10th trace" and "every 25 m" are different products, and only the second still means something once the points leave the radargram.
+
+The same export is available without a browser:
+```bash
+ridal interp export line.nc picks.gprinterp.json -o points.geojson --spacing 25
+```
+Each point carries its layer, trace and sample, distance along the profile, two-way travel time, depth, and both projected and WGS84 coordinates — along with which radargram and which processing revision it came from, since depth depends on how the radargram was processed.
+
+
 ## Papers using Ridal
 
 - [Kleber et al. (2023): Groundwater springs formed during glacial retreat are a large source of methane in the high Arctic](https://doi.org/10.1038/s41561-023-01210-6)

@@ -106,11 +106,23 @@ Fixed order, enforced by module structure rather than just convention:
 **source amplitude → dataset view → resample → normalize → colormap →
 encode.** Everything lives under `src/server/render/`.
 
-- **Geometry** (`grid.rs`) is pure, with no I/O: `ViewerRaster` maps a
-  source array's shape to a display raster (downscaled if larger than
-  the viewer's cap — `MAX_VIEWER_WIDTH`/`MAX_VIEWER_HEIGHT`),
-  `ChunkGrid` divides that into addressable 256×256 chunks, and
-  `OverviewSpec` describes a whole-radargram thumbnail (~512 px wide).
+- **Geometry** (`grid.rs`) is pure, with no I/O: `ViewerRaster` is the
+  source array at 1:1 — **the viewer does not resample** — `ChunkGrid`
+  divides it into addressable 256×256 chunks, and `OverviewSpec`
+  describes a whole-radargram thumbnail (~512 px wide), which does
+  downscale.
+
+  The viewer raster used to be capped at 8192×4096, with anything
+  larger scaled down to fit. That silently cost a 12187-trace radargram
+  a third of its trace resolution *and* a third of its sample
+  resolution, since one scale factor was applied to both axes. The cap
+  was bounding client cost — every chunk is a decoded 256×256 bitmap in
+  the browser — which is now handled by loading chunks only as the view
+  reaches them (see Frontend). Removing it took the server from 320 to
+  720 chunks on that file but cold render time only from 34.3 s to
+  37.9 s: total work is dominated by reading the source array either
+  way, and 1:1 chunks each read exactly one storage chunk instead of a
+  window spanning several.
 - **Reading** (`renderer.rs`, via `source.rs`) never materializes a
   full-resolution image. A chunk reads exactly its source window; an
   overview reads the source in bounded-size horizontal bands (a 64 MB
@@ -217,6 +229,14 @@ catalog (12187×3678):
 - The warm/cold ratio is **~9000×**, which is why persisting renders
   across restarts (an on-disk cache) matters more than any further
   rendering optimisation.
+
+Measured again when the viewer cap was removed, on the same file: a
+cold overview costs 13.9 s, the full 720-chunk grid 37.7 s, and the
+360 chunks an opening viewport actually requests 24.0 s (debug build,
+ratios only). Per-chunk marginal cost is ~38 ms against a ~10 s fixed
+cost for opening and estimating amplitude limits, so viewport culling
+saves 36% here — and proportionally far more the longer the radargram,
+which is what makes an uncapped raster affordable.
 
 **This settles that multiresolution server-side `(z, x, y)` tiling is
 not currently justified and should not be started speculatively.** The

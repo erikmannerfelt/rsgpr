@@ -10,42 +10,46 @@
 //! (traces) and `y` selects source rows (samples) -- physical axis labels
 //! (distance, TWTT) never enter this module.
 
-/// The viewer never renders larger than this in either dimension; larger
-/// source arrays are downscaled to fit (`scale < 1`), matching or smaller
-/// arrays render at `scale == 1` (an identity resampling pass).
-pub const MAX_VIEWER_WIDTH: usize = 8192;
-pub const MAX_VIEWER_HEIGHT: usize = 4096;
-
 /// Fixed chunk size in pixels, matching the HDF5 storage chunking chosen in
-/// M1 so that at `scale == 1` one render chunk is exactly one storage
-/// chunk.
+/// M1, so one render chunk is exactly one storage chunk.
 pub const CHUNK_SIZE: usize = 256;
 
-/// The logical (never-materialized) raster that chunks are drawn from.
+/// The logical (never-materialized) raster that chunks are drawn from: the
+/// source array, one viewer pixel per sample.
+///
+/// **The viewer does not resample.** It used to: the raster was capped at
+/// 8192x4096 and anything larger was downscaled to fit, which silently cost
+/// a 12187-trace radargram a third of both its trace *and* its sample
+/// resolution (one scale factor was applied to both axes, so a long survey
+/// lost vertical detail it had no need to lose). Showing two thirds of the
+/// data without saying so is the wrong default for an instrument display.
+///
+/// The cap bounded client cost, not server cost -- every chunk is a decoded
+/// 256x256 bitmap in the browser, and `loadChunks` creates one overlay per
+/// chunk. Measured on that radargram, uncapping took the server from 320 to
+/// 720 chunks and 10.6 MB to 26.2 MB, but cold render time only from 34.3 s
+/// to 37.9 s (debug build): total work is dominated by reading the source
+/// array, which happens either way, and 1:1 chunks each read exactly one
+/// storage chunk instead of a window spanning several. The client side is
+/// handled by loading chunks lazily instead of by discarding resolution.
+///
+/// A radargram long enough for that to stop being true wants a genuine
+/// multiresolution tiled renderer -- see ARCHITECTURE.md, which asks for
+/// measurements before starting one. Reinstating a cap is not that.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ViewerRaster {
-    pub source_width: usize,
-    pub source_height: usize,
     pub width: usize,
     pub height: usize,
-    pub scale: f64,
 }
 
 impl ViewerRaster {
-    /// Compute the viewer raster for a `source_width x source_height`
-    /// array. `scale` is at most 1: this never upsamples.
+    /// The viewer raster for a `source_width x source_height` array, which
+    /// is that array. `max(1)` so a degenerate source still yields one
+    /// addressable chunk rather than an empty grid.
     pub fn new(source_width: usize, source_height: usize) -> Self {
-        let scale = 1.0_f64
-            .min(MAX_VIEWER_WIDTH as f64 / source_width.max(1) as f64)
-            .min(MAX_VIEWER_HEIGHT as f64 / source_height.max(1) as f64);
-        let width = ((source_width as f64 * scale).round() as usize).max(1);
-        let height = ((source_height as f64 * scale).round() as usize).max(1);
         Self {
-            source_width,
-            source_height,
-            width,
-            height,
-            scale,
+            width: source_width.max(1),
+            height: source_height.max(1),
         }
     }
 
@@ -129,14 +133,14 @@ impl ChunkGrid {
         let valid_width = CHUNK_SIZE.min(self.raster.width - px0);
         let valid_height = CHUNK_SIZE.min(self.raster.height - py0);
 
-        // Source window: divide viewer pixel bounds by scale to get back
-        // into source array coordinates. Half-open, float -- the resampler
-        // owns rounding/footprint behavior at the edges.
+        // Viewer pixels are source samples, so the window is the chunk's
+        // own extent. Still half-open floats: the resampler owns edge
+        // rounding, and overviews (which do downscale) share the type.
         let source_window = SourceWindow {
-            col0: px0 as f64 / self.raster.scale,
-            col1: (px0 + valid_width) as f64 / self.raster.scale,
-            row0: py0 as f64 / self.raster.scale,
-            row1: (py0 + valid_height) as f64 / self.raster.scale,
+            col0: px0 as f64,
+            col1: (px0 + valid_width) as f64,
+            row0: py0 as f64,
+            row1: (py0 + valid_height) as f64,
         };
 
         // Leaflet CRS.Simple: (0,0) upper-left, lat decreases downward.
@@ -193,28 +197,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn identity_scale_for_small_arrays() {
+    fn the_raster_is_the_source_array() {
         let raster = ViewerRaster::new(2494, 1988);
-        assert_eq!(raster.scale, 1.0);
-        assert_eq!(raster.width, 2494);
-        assert_eq!(raster.height, 1988);
+        assert_eq!((raster.width, raster.height), (2494, 1988));
     }
 
     #[test]
-    fn downscales_large_arrays_preserving_aspect_within_rounding() {
-        let raster = ViewerRaster::new(20000, 4000);
-        assert!(raster.scale < 1.0);
-        assert!(raster.width <= MAX_VIEWER_WIDTH);
-        assert!(raster.height <= MAX_VIEWER_HEIGHT);
-        // width-bound case: 8192/20000
-        assert_eq!(raster.scale, MAX_VIEWER_WIDTH as f64 / 20000.0);
-    }
+    fn a_large_array_is_not_downscaled() {
+        // Past the 8192x4096 cap this used to carry. Pinned in both axes
+        // because the old cap applied one scale factor to both, so a wide
+        // radargram lost vertical resolution as well.
+        let raster = ViewerRaster::new(20000, 5000);
+        assert_eq!((raster.width, raster.height), (20000, 5000));
 
-    #[test]
-    fn height_bound_case_is_also_handled() {
         let raster = ViewerRaster::new(4000, 20000);
-        assert_eq!(raster.scale, MAX_VIEWER_HEIGHT as f64 / 20000.0);
-        assert!(raster.height <= MAX_VIEWER_HEIGHT);
+        assert_eq!((raster.width, raster.height), (4000, 20000));
+    }
+
+    #[test]
+    fn a_chunk_reads_exactly_its_own_pixels() {
+        // The 1:1 consequence: no chunk reads a source window wider than
+        // itself, which is what makes one render chunk one storage chunk.
+        let grid = ViewerRaster::new(20000, 5000).grid();
+        let c = grid.chunk(3, 2).unwrap();
+        assert_eq!(c.source_window.col0, (3 * CHUNK_SIZE) as f64);
+        assert_eq!(c.source_window.col1, (4 * CHUNK_SIZE) as f64);
+        assert_eq!(c.source_window.row0, (2 * CHUNK_SIZE) as f64);
+        assert_eq!(c.source_window.row1, (3 * CHUNK_SIZE) as f64);
     }
 
     #[test]

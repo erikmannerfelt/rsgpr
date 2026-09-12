@@ -10,6 +10,13 @@
 //! - [`DisplayName`]: an optional human-facing label. No identity semantics;
 //!   must never affect revision or render identity.
 //!
+//! - [`UserId`]: who authored an interpretation. Ridal has no authentication
+//!   yet, so today this is always the literal `default`; it exists as a
+//!   validated type from the start because it is used as a *filename* inside
+//!   a project (`interpretations/<radargram>/<user>.gprinterp.json`), and a
+//!   name that arrives over HTTP must never be able to escape that
+//!   directory.
+//!
 //! `RadargramId` and `GroupId` share validation rules because both are used
 //! in path-like ways by the web server (#116): ASCII lowercase,
 //! `[a-z0-9_-]`, 1-128 characters, no leading/trailing separator, and not a
@@ -176,6 +183,14 @@ macro_rules! slug_newtype {
 
 slug_newtype!(RadargramId, "radargram ID");
 slug_newtype!(GroupId, "group");
+slug_newtype!(UserId, "user");
+
+/// The author recorded when Ridal has no authentication to ask.
+///
+/// Defined here rather than in the interpretation store or the level 2
+/// exporter because both need it and they must agree: the filename a pick is
+/// saved under and the `user` column it exports as are the same identity.
+pub const DEFAULT_USER: &str = "default";
 
 /// An optional human-facing label with no identity semantics. An empty or
 /// whitespace-only value is treated as absent by [`DisplayName::from_input`]
@@ -328,6 +343,51 @@ pub fn resolve_group(
         GroupId::from_fallback(name.as_str())?
     };
     Ok(Some((name, id)))
+}
+
+/// A derived identity for one processed revision (#117). Changes when
+/// reprocessing produces new output.
+///
+/// Lives here rather than in `server::catalog` because it has two consumers
+/// with different feature requirements: the server invalidates cached
+/// renders with it, and `ridal interp` records it as the provenance of a
+/// level 2 export. Those two *must* produce the same string for the same
+/// file -- an interpretation written by the GUI and one written by the CLI
+/// naming different revisions for one radargram would be worse than naming
+/// none -- so it cannot sit behind the `server` feature, and `blake3` is
+/// consequently an unconditional dependency.
+///
+/// Still deliberately *not* computed by `io::inspect_ridal_netcdf` (#123,
+/// M2), which stays a pure metadata recogniser.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RevisionId(String);
+
+impl RevisionId {
+    /// `FastRevisionFingerprintV1`: a declared processing-revision
+    /// identifier, not a content-integrity checksum. Deliberately excludes
+    /// path, filesystem timestamps, filesize and display name -- see #117
+    /// for the full list of what must *not* change the revision.
+    pub fn fingerprint_v1(radargram_id: &RadargramId, processing_datetime: &str) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"ridal-revision-v1");
+        hasher.update(radargram_id.as_str().as_bytes());
+        hasher.update(processing_datetime.as_bytes());
+        // First 16 bytes (32 hex chars): a revision identifier needs to be
+        // collision-resistant among one user's radargrams, not
+        // cryptographically unforgeable, and the full 32-byte hex digest
+        // would make already-long chunk/overview URLs harder to read.
+        Self(hasher.finalize().to_hex()[..32].to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for RevisionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 #[cfg(test)]

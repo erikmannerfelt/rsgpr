@@ -41,6 +41,15 @@ pub struct AppState {
     root_is_file: bool,
     pub catalog: Catalog,
     pub radargrams: HashMap<String, OpenRadargram>,
+    /// The project this catalog belongs to, when it belongs to one.
+    ///
+    /// `None` is the read-only case Ridal has always supported: a bare
+    /// directory of `.nc` files, or a single file, with nowhere to save
+    /// anything. Every write route checks this rather than assuming.
+    pub project: Option<crate::project::Project>,
+    /// Whether write routes are enabled. Requires a project, and can be
+    /// switched off for one that has one (`--read-only`).
+    pub writable: bool,
     /// Bounds how many renders may be in flight at once, across every
     /// radargram, sized from `--n-workers`.
     ///
@@ -75,7 +84,14 @@ impl AppState {
     /// producing an empty catalog, and every later comparison against it
     /// (this function's own containment check below) is symlink-resolved
     /// and consistent.
-    pub fn build(root: &StdPath, config: &RenderServiceConfig) -> Result<Self, String> {
+    /// `project` is `None` for a bare directory or single file, which is
+    /// the read-only case; `writable` is ignored unless a project is present.
+    pub fn build_with_project(
+        root: &StdPath,
+        config: &RenderServiceConfig,
+        project: Option<crate::project::Project>,
+        writable: bool,
+    ) -> Result<Self, String> {
         let root = root
             .canonicalize()
             .map_err(|e| format!("Invalid catalog root {}: {e}", root.display()))?;
@@ -122,6 +138,10 @@ impl AppState {
             root_is_file,
             catalog,
             radargrams,
+            // Writes need somewhere to go, so a catalog with no project is
+            // read-only no matter what the caller asked for.
+            writable: writable && project.is_some(),
+            project,
             // `.max(1)`: a zero-permit semaphore would deadlock every
             // render forever. The CLI rejects `--n-workers 0` with a
             // clear message, so this only guards programmatic callers.
@@ -204,6 +224,58 @@ impl AppState {
     }
 }
 
+/// What a merged download covers: one group, or the whole catalog.
+///
+/// The two differ only in which entries they select and what the file is
+/// called. Keeping that difference in one type means every merged product
+/// -- level 2 points, tracks, and whatever is added next -- is implemented
+/// once and offered at both scopes, instead of a catalog copy drifting from
+/// the group original.
+pub enum DownloadScope {
+    /// Every radargram the server knows about, groups and ungrouped alike.
+    Catalog,
+    /// One group id, or [`NO_GROUP_ID`] for the ungrouped pseudo-group.
+    Group(String),
+}
+
+impl DownloadScope {
+    pub fn entries<'a>(&self, state: &'a AppState) -> Vec<&'a super::catalog::CatalogEntry> {
+        match self {
+            Self::Catalog => state.catalog.entries.iter().collect(),
+            Self::Group(id) => state.entries_in_group(id),
+        }
+    }
+
+    /// Leading component of the download's filename. A slug in both cases:
+    /// group ids are validated slugs, and `catalog` is a fixed literal, so
+    /// neither can carry a quote into a `Content-Disposition` header.
+    pub fn slug(&self) -> &str {
+        match self {
+            Self::Catalog => "catalog",
+            Self::Group(id) => id,
+        }
+    }
+
+    /// Names the scope inside a sentence, for error messages.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Catalog => "this catalog".to_string(),
+            Self::Group(id) => format!("group '{id}'"),
+        }
+    }
+
+    /// Error code when the scope selects no radargram at all. Distinct per
+    /// scope because the causes are different: a group id that matches
+    /// nothing is a bad request in spirit, while an empty catalog is a
+    /// server that was pointed at a directory with nothing in it.
+    pub fn empty_code(&self) -> &'static str {
+        match self {
+            Self::Catalog => "catalog_empty",
+            Self::Group(_) => "group_not_found",
+        }
+    }
+}
+
 /// Reserved id for the "Ungrouped" pseudo-group on the index page and its
 /// `/api/v1/groups/{id}/tracks` map. Safe by construction: `GroupId`
 /// validation (`identity.rs::validate_slug`) rejects any id starting with
@@ -229,6 +301,7 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/static/app.js", get(super::assets::app_js))
         .route("/static/index.js", get(super::assets::index_js))
         .route("/static/viewer.js", get(super::assets::viewer_js))
+        .route("/static/picker.js", get(super::assets::picker_js))
         .route(
             "/static/images/marker-icon.png",
             get(super::assets::marker_icon),
@@ -249,6 +322,68 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/static/images/logo.svg", get(super::assets::logo_svg))
         .route("/favicon.ico", get(super::assets::favicon))
         .route("/api/v1/health", get(super::routes::health))
+        .route("/layers", get(super::routes::layers_page))
+        .route("/settings", get(super::routes::settings_page))
+        .route("/static/settings.js", get(super::assets::settings_js))
+        .route(
+            "/api/v1/project/settings",
+            get(super::interp_routes::get_settings).put(super::interp_routes::put_settings),
+        )
+        .route("/static/layers.js", get(super::assets::layers_js))
+        .route(
+            "/api/v1/layers",
+            get(super::interp_routes::get_layers).put(super::interp_routes::put_layers),
+        )
+        .route(
+            "/api/v1/layers/usage",
+            get(super::interp_routes::layer_usage),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/interpretations",
+            get(super::interp_routes::list_interpretations),
+        )
+        .route(
+            "/api/v1/catalog/track.geojson",
+            get(super::routes::catalog_track_geojson),
+        )
+        .route(
+            "/api/v1/catalog/level2",
+            get(super::interp_routes::catalog_level2),
+        )
+        .route(
+            "/api/v1/groups/{group}/track.geojson",
+            get(super::routes::group_track_geojson),
+        )
+        .route(
+            "/api/v1/groups/{group}/level2",
+            get(super::interp_routes::group_level2),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/download",
+            get(super::routes::dataset_download),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/track.geojson",
+            get(super::routes::dataset_track_geojson),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/views/{view}/image",
+            get(super::routes::dataset_image),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/interpretations/{user}/raw",
+            get(super::interp_routes::get_interpretation_raw),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/interpretations/{user}/level2",
+            get(super::interp_routes::interpretation_level2),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/interpretations/{user}",
+            get(super::interp_routes::get_interpretation)
+                .put(super::interp_routes::put_interpretation)
+                .delete(super::interp_routes::delete_interpretation),
+        )
         .route("/api/v1/profiles", get(super::routes::list_profiles))
         .route("/api/v1/datasets", get(super::routes::list_datasets))
         .route(
@@ -353,7 +488,8 @@ mod tests {
 
     fn test_app(dir: &StdPath) -> Router {
         let config = RenderServiceConfig::default();
-        let state = std::sync::Arc::new(AppState::build(dir, &config).unwrap());
+        let state =
+            std::sync::Arc::new(AppState::build_with_project(dir, &config, None, false).unwrap());
         build_router(state)
     }
 
@@ -364,7 +500,8 @@ mod tests {
             n_workers,
             ..RenderServiceConfig::default()
         };
-        let state = std::sync::Arc::new(AppState::build(dir, &config).unwrap());
+        let state =
+            std::sync::Arc::new(AppState::build_with_project(dir, &config, None, false).unwrap());
         (build_router(state.clone()), state)
     }
 

@@ -59,10 +59,24 @@
   --radius-md: 6px;
   --table-cell-pad: 2px var(--space-3) 2px 0;
   --map-height-group: 320px;
+  /* `vh` is the fallback; the `@supports` block below prefers `svh`. See
+     the note there -- this is what stops the viewer jumping on a phone. */
   --map-height-viewer: 70vh;
   --map-min-height: 400px;
   --card-min: 18rem;
   --thumb-aspect: 5 / 2;
+}
+
+/* A phone's address bar hides on the first interaction, which grows `vh`
+   and therefore the map, which re-lays the radargram under the finger that
+   caused it -- the "jump" on placing a first vertex. `svh` is resolved
+   against the viewport *with* the bar visible and stays put when it hides,
+   trading ~10% of map height for a view that does not move. `dvh` would be
+   the worst choice here: it tracks the bar continuously. */
+@supports (height: 1svh) {
+  :root {
+    --map-height-viewer: 70svh;
+  }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -402,9 +416,22 @@ section.group {
  * and it hides again. That feedback loop made the viewer flicker rapidly
  * right at the wrap threshold. Keeping the box in flow makes the
  * measurement the ResizeObserver takes independent of the toggle. */
+/* When stacked, the handle takes a whole row of zero height rather than 8px
+ * of the overview map's row. Hidden with `visibility` it still occupied its
+ * flex slot plus a gap, which left the overview map 24px right of the
+ * radargram with their right edges aligned -- visibly askew.
+ *
+ * `display: none` is still the wrong fix, for the reason the note above
+ * gives: it shortens the row, which can let the two maps fit side by side
+ * again, which re-shows the handle, which lengthens the row. Taking a full
+ * row instead *reinforces* the stacked state, so it settles immediately. */
 #split-resizer.is-hidden {
   visibility: hidden;
   pointer-events: none;
+  flex-basis: 100%;
+  height: 0;
+  min-height: 0;
+  align-self: auto;
 }
 
 /* ---------- Leaflet popup ---------- */
@@ -447,6 +474,20 @@ table.meta th {
   font-weight: 600;
 }
 
+/* `hidden` must actually hide.
+ *
+ * The UA stylesheet's `[hidden] { display: none }` loses to any author rule
+ * that sets `display`, so an element carrying both `hidden` and a class
+ * like `.controls` (which is `display: flex`) stays fully visible and
+ * clickable. That is not hypothetical: the picker's "Selected line" panel
+ * was permanently on screen for exactly this reason, which meant its Delete
+ * button could be pressed with nothing selected.
+ *
+ * `!important` is warranted here -- `hidden` is not a hint. */
+[hidden] {
+  display: none !important;
+}
+
 .controls {
   display: flex;
   gap: var(--space-4);
@@ -475,11 +516,42 @@ table.meta th {
   color: var(--color-accent);
 }
 
+/* Its own row, always exactly one line tall, scrolled horizontally.
+ *
+ * `flex-basis: 100%` is what makes populating it a no-op for layout: on a
+ * narrow screen the text is long enough to wrap onto a new row anyway, so
+ * reserving that row permanently costs one line and removes the shift
+ * entirely.
+ *
+ * The height is *fixed*, not a minimum, and that is the load-bearing part.
+ * A horizontal scrollbar appearing inside a fixed-height box eats into the
+ * content area rather than growing the box, so the row cannot change height
+ * whether the reading overflows or not -- which is the whole reason this
+ * element was pinned down in the first place.
+ *
+ * `touch-action: pan-x` keeps a sideways swipe here scrolling the reading
+ * rather than the page. The scrollbar is thin rather than hidden: on a
+ * desktop it is the only clue that there is more to read. */
 #cursor-readout {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   color: var(--color-text-muted);
-  min-height: 1.2em;
+  flex-basis: 100%;
+  height: 1.6em;
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  touch-action: pan-x;
+  scrollbar-width: thin;
+}
+
+#cursor-readout::-webkit-scrollbar {
+  height: 3px;
+}
+
+#cursor-readout::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: var(--radius-sm);
 }
 
 /* ---------- metadata dialog ---------- */
@@ -556,4 +628,719 @@ dialog th {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   padding: var(--space-2);
+}
+
+/* --- Layer management page (/layers) ------------------------------------
+ *
+ * The vocabulary is small -- a handful of rows -- so this is a plain table
+ * rather than a card grid: the columns invite comparison across layers,
+ * which is exactly what someone reviewing a vocabulary is doing.
+ */
+
+.site-nav {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-4);
+}
+
+.lede {
+  color: var(--color-text-muted);
+  max-width: 60ch;
+}
+
+.hint {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  max-width: 70ch;
+}
+
+.empty {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* Screen-reader-only: the actions column needs a name for table semantics
+ * but a visible header would just be noise above two buttons. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.layers-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: var(--space-4) 0;
+}
+
+.layers-table th,
+.layers-table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3) var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+.layers-table th {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+/* Text inputs sit inside cells, so they get no border until focused --
+ * a table of bordered boxes reads as a form, not as data. */
+.layers-table input[type="text"] {
+  width: 100%;
+  min-width: 8rem;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.layers-table input[type="text"]:hover {
+  border-color: var(--color-border);
+}
+
+.layers-table input[type="text"]:focus {
+  border-color: var(--color-accent);
+  background: var(--color-surface);
+  outline: none;
+}
+
+.layers-table input[type="color"] {
+  width: 2.5rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: none;
+}
+
+.layer-swatch {
+  display: inline-block;
+  width: 1.6rem;
+  height: 1.6rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.add-layer {
+  margin-top: var(--space-6);
+  padding: var(--space-4);
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-md);
+}
+
+.add-layer h2 {
+  margin-top: 0;
+  font-size: var(--text-lg);
+}
+
+.add-layer-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin: var(--space-3) 0;
+}
+
+.add-layer-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.add-layer-fields label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.add-layer-fields input[type="text"] {
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+}
+
+button.danger {
+  border-color: var(--color-warning-border);
+  color: var(--color-warning-text);
+  background: var(--color-warning-bg);
+}
+
+.add-layer button,
+button.danger {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.add-layer button:hover,
+button.danger:hover {
+  border-color: var(--color-accent);
+}
+
+/* --- Picking toolbar (viewer page) --------------------------------------- */
+
+.picker-controls {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-2);
+}
+
+.pick-status {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* Unsaved work is the one thing on this toolbar that must be noticeable
+ * without being read. */
+.pick-status.dirty {
+  color: var(--color-warning-text);
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
+  font-weight: 600;
+}
+
+.pick-download {
+  font-size: var(--text-sm);
+}
+
+/* A crosshair says "this click places something" in a way a label cannot.
+ * Applied to the radargram pane only while picking is active. */
+#map.picking {
+  cursor: crosshair;
+}
+
+#map.picking .leaflet-interactive {
+  cursor: crosshair;
+}
+
+#download-dialog {
+  max-width: 32rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+#download-dialog select {
+  padding: var(--space-1) var(--space-2);
+}
+
+.picker-selection {
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+}
+
+/* --- Vertex handles and overhang markers ---------------------------------
+ *
+ * Handles are Leaflet divIcons, so they are styled here rather than through
+ * path options. Sized for a finger first: 16px is already near the lower
+ * bound for a touch target, and coarse pointers get more below.
+ */
+
+.pick-handle {
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 2px solid var(--color-text);
+  background: var(--color-surface);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 35%);
+  cursor: grab;
+}
+
+.pick-handle:active {
+  cursor: grabbing;
+}
+
+/* Hollow means splittable: it is the only visual difference between a
+ * vertex that will split the line and one that will not, so it has to be
+ * legible at a glance. */
+.pick-handle-interior {
+  background: var(--color-surface);
+}
+
+.pick-handle-end,
+.pick-handle-draft {
+  background: var(--color-text);
+}
+
+/* An overhang marker sits on top of a handle, so it must read as a warning
+ * without hiding what is underneath. */
+.pick-overhang {
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 3px solid #d7263d;
+  background: rgb(215 38 61 / 22%);
+  pointer-events: auto;
+}
+
+/* Allowed on this layer: still shown, because it changes how the layer
+ * exports, but muted so it does not read as an error. */
+.pick-overhang-allowed {
+  border-color: var(--color-warning-border);
+  background: rgb(224 178 60 / 22%);
+}
+
+/* Marker sizes are set in picker.js, not here: Leaflet derives each icon's
+ * anchor from its size, and overriding the size in CSS left the anchor
+ * behind -- every handle sat a few pixels below its line. */
+
+/* The status text changes on every vertex, and must not resize the toolbar
+ * when it does: a toolbar that grows pushes the map down mid-tap.
+ *
+ * It takes the remaining space on its row and truncates, rather than
+ * wrapping or claiming a row of its own. An earlier attempt gave it
+ * `flex-basis: 100%`, which did stop the reflow but made the toolbar a line
+ * taller -- enough to make the page scroll on a phone, where the first tap
+ * then goes to collapsing the address bar instead of to the control under
+ * it. Stability has to come from *not changing size*, not from more space. */
+.picker-controls .pick-status {
+  flex: 1 1 0;
+  min-width: 6rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 40rem) {
+  .picker-controls,
+  .picker-selection {
+    gap: var(--space-2);
+  }
+
+  .picker-controls button,
+  .picker-selection button {
+    min-height: 2.75rem;
+  }
+}
+
+/* The picking error is a fixed toast rather than a block in the flow.
+ *
+ * In flow it changed the page height every time it appeared or cleared,
+ * which on a phone moves the map and the toolbar under the finger that
+ * triggered it -- and picking errors appear and clear constantly, once per
+ * refused tap. Taking it out of the flow means no picking interaction can
+ * reflow the page at all.
+ *
+ * Bottom rather than top: on a phone the top of the screen is the furthest
+ * point from the thumb, and the toolbar it refers to is at the bottom of
+ * the controls anyway. */
+#pick-error {
+  position: fixed;
+  left: var(--space-3);
+  right: var(--space-3);
+  bottom: var(--space-3);
+  z-index: 1000;
+  margin: 0;
+  max-width: 44rem;
+  margin-inline: auto;
+  box-shadow: 0 2px 12px rgb(0 0 0 / 30%);
+}
+
+/* The invisible companion that makes a line tappable -- picked reflectors
+ * on the radargram, and radargram tracks on the geographic maps.
+ *
+ * `pointer-events: stroke` hit-tests the stroke area regardless of whether
+ * it is painted, so a fully transparent line still receives taps. Chrome
+ * happens to hit-test a `stroke-opacity: 0` path anyway; saying so
+ * explicitly is what makes it portable. */
+.hit-line {
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+/* --- Narrow screens ------------------------------------------------------
+ *
+ * Two problems, one cause: the radargram and the overview map both used the
+ * full viewer height, so at almost any scroll position the screen was
+ * entirely map. Leaflet claims touch drags inside a map for panning, which
+ * left only a sliver of page to scroll with -- and the sliver was at the
+ * edge, where a thumb cannot reach reliably.
+ *
+ * So: neither map takes the whole screen, and the picking toolbar sticks to
+ * the top. Between them there is always a band of ordinary page to drag,
+ * and the controls you need while drawing never scroll away in the first
+ * place. */
+@media (max-width: 40rem) {
+  :root {
+    --map-height-viewer: 52svh;
+    --map-min-height: 240px;
+  }
+
+  /* Shorter still: it is context, not the thing being worked on. */
+  #overview-map {
+    height: 30svh;
+    min-height: 180px;
+  }
+
+  .picker-controls {
+    position: sticky;
+    top: 0;
+    z-index: 500;
+    background: var(--color-bg);
+    border-bottom: 1px solid var(--color-border);
+    padding-bottom: var(--space-2);
+  }
+}
+
+/* `svh` is the stable unit (see the note on --map-height-viewer); this is
+   the fallback for browsers without it. */
+@media (max-width: 40rem) {
+  @supports not (height: 1svh) {
+    :root {
+      --map-height-viewer: 52vh;
+    }
+
+    #overview-map {
+      height: 30vh;
+    }
+  }
+}
+
+/* --- Header menu ---------------------------------------------------------
+ *
+ * A `<details>` disclosure, so it opens and closes with no JavaScript and is
+ * keyboard-operable for free. app.js only adds dismissal on Escape or an
+ * outside click, which `<details>` does not do on its own. */
+
+.site-menu {
+  position: relative;
+}
+
+.site-menu > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  user-select: none;
+}
+
+/* Safari still paints the default triangle without this. */
+.site-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.site-menu > summary::before {
+  content: "\2261"; /* identical-to: three bars, without needing an icon font */
+  margin-right: var(--space-2);
+  font-size: 1.1em;
+  line-height: 1;
+}
+
+.site-menu > summary:hover,
+.site-menu[open] > summary {
+  border-color: var(--color-accent);
+}
+
+/* Above Leaflet's control corners, which sit at 1000 and would otherwise
+ * win on DOM order alone -- the map comes after this row in the document,
+ * so its zoom buttons painted straight through the open panel. Below
+ * nothing in particular: this is the topmost thing on the page while it is
+ * open, which is what a menu should be. */
+.site-menu > ul {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--space-1));
+  z-index: 1200;
+  margin: 0;
+  padding: var(--space-1);
+  min-width: 12rem;
+  list-style: none;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 22%);
+}
+
+.site-menu > ul a {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.site-menu > ul a:hover,
+.site-menu > ul a:focus-visible {
+  background: var(--color-surface-sunken);
+}
+
+/* --- Back link -----------------------------------------------------------
+ *
+ * Styled as a control rather than a bare link: it sits alone above the
+ * heading, where an unstyled anchor reads as leftover markup. */
+.back-link {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.back-link:hover,
+.back-link:focus-visible {
+  border-color: var(--color-accent);
+  color: var(--color-accent-hover);
+}
+
+/* The picking toast, when it is explaining rather than complaining. Same
+ * element and same fixed position, so it still costs no layout. */
+#pick-error.toast-info {
+  background: var(--color-surface);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+/* The handle between two vertices that adds a third.
+ *
+ * Two elements, on purpose: the outer one is the touch target and is
+ * invisible, the inner dot is what is seen. They used to be the same
+ * element, which forced a choice between a dot small enough to read as
+ * "not yet a vertex" and a target big enough to drag -- and the small dot
+ * won, so it could be tapped but not dragged. */
+.pick-midpoint {
+  background: none;
+  border: none;
+  display: grid;
+  place-items: center;
+  cursor: grab;
+}
+
+.pick-midpoint:active {
+  cursor: grabbing;
+}
+
+.pick-midpoint-dot {
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border: 2px dashed var(--color-text);
+  border-radius: 50%;
+  background: var(--color-surface);
+  opacity: 0.75;
+}
+
+.pick-midpoint:hover .pick-midpoint-dot {
+  opacity: 1;
+}
+
+@media (pointer: coarse) {
+  /* The dot only -- the target around it is sized in picker.js. */
+  .pick-midpoint-dot {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+/* A metadata value that is an absence rather than a number. Muted so a
+ * grid of cards can be scanned for the ones carrying a real count, without
+ * the row itself looking different from its neighbours. */
+.meta-none {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* --- Project settings ---------------------------------------------------- */
+
+.settings-summary {
+  margin-bottom: var(--space-5);
+}
+
+.settings-form {
+  padding: var(--space-4);
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-md);
+  max-width: 44rem;
+}
+
+.settings-form h2 {
+  margin-top: 0;
+  font-size: var(--text-lg);
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-4);
+}
+
+.settings-label {
+  font-weight: 600;
+}
+
+.settings-field select {
+  align-self: flex-start;
+  min-width: 14rem;
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.settings-form button {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.settings-form button:hover {
+  border-color: var(--color-accent);
+}
+
+/* A layer swatch sitting beside a select rather than in a table cell.
+ *
+ * Sized in `em` so it tracks the control it labels, and vertically centred
+ * against the select's text. Kept under the row height on purpose: this
+ * toolbar must not change size when the picker updates it, and a swatch
+ * taller than the buttons beside it would set a new row height. */
+.layer-swatch-inline {
+  width: 1.1em;
+  height: 1.1em;
+  vertical-align: -0.2em;
+  margin: 0 var(--space-1) 0 var(--space-2);
+  border-color: var(--color-border-strong);
+}
+
+/* The download menu reuses the header menu's disclosure styling, but sits
+ * in a controls row where the surrounding buttons set the type size.
+ *
+ * It also has to be anchored differently. The header's menu button is at
+ * the right edge of the page, so a panel hung from its right edge opens
+ * leftward into the page. This one sits partway along a row, so the same
+ * rule ran the panel off the left of a phone screen entirely.
+ *
+ * Anchoring to the row instead of to the button fixes it at every width:
+ * the panel starts at the row's left edge and opens rightward, which is on
+ * screen by construction. That means the row is the containing block, so
+ * the menu itself must not be one. */
+.controls {
+  position: relative;
+}
+
+.download-menu {
+  position: static;
+}
+
+.download-menu > ul {
+  left: 0;
+  right: auto;
+  max-width: 100%;
+}
+
+.download-menu > summary {
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-2);
+}
+
+.download-menu > summary::before {
+  content: "\2193"; /* downwards arrow, in place of the header's bars */
+}
+
+/* The items are buttons, not links: three of them open a dialog rather than
+ * navigating, and a link that does not navigate is a lie to anyone
+ * middle-clicking it. */
+.download-menu > ul button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.download-menu > ul button:hover,
+.download-menu > ul button:focus-visible {
+  background: var(--color-surface-sunken);
+}
+
+#image-dialog {
+  max-width: 34rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+#image-dialog select {
+  padding: var(--space-1) var(--space-2);
+}
+
+/* A group's heading and its download menu on one line. The menu is what
+ * ties the downloads to *this* group rather than the page. */
+.group-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  /* The h2 below has its margins zeroed so it aligns with the menu button,
+   * which also removed the gap that normally separates a heading from what
+   * it labels -- leaving the button sitting on the map. Put it back on the
+   * row instead, where wrapping cannot lose it. */
+  margin-bottom: var(--space-2);
+}
+
+.group-heading h2 {
+  margin: 0;
+}
+
+/* The group menu anchors to the heading rather than to a controls row, so
+ * it needs its own containing block -- unlike the viewer's, which borrows
+ * the row's. Left-aligned for the same reason as that one: the button is
+ * near the left of the page, so opening leftward would run off screen. */
+.group-heading .download-menu {
+  position: relative;
+}
+
+#group-download-dialog {
+  max-width: 34rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+#group-download-dialog select {
+  padding: var(--space-1) var(--space-2);
 }

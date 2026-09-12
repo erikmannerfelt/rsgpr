@@ -9,10 +9,11 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 
-use super::app::{validate_radargram_id, AppState, NO_GROUP_ID};
+use super::app::{validate_radargram_id, AppState, DownloadScope, NO_GROUP_ID};
 use super::render::grid::{ChunkGrid, OverviewSpec, ViewerRaster};
 use super::render::profile::{DatasetView, RenderProfile};
 use super::templates;
+use crate::identity::RadargramId;
 
 /// Stable JSON error envelope (#120): `{"error": {"code", "message"}}`.
 pub struct ApiError {
@@ -44,16 +45,35 @@ impl ApiError {
         self
     }
 
-    fn not_found(code: &'static str, message: impl Into<String>) -> Self {
+    pub(super) fn not_found(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, code, message)
     }
 
-    fn bad_request(code: &'static str, message: impl Into<String>) -> Self {
+    pub(super) fn bad_request(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, code, message)
     }
 
-    fn internal(code: &'static str, message: impl Into<String>) -> Self {
+    pub(super) fn internal(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, code, message)
+    }
+
+    /// The request is well-formed but the server is not in a state that can
+    /// serve it -- no project, or started read-only. Distinct from a 400:
+    /// nothing about the request needs fixing.
+    pub(super) fn conflict(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, code, message)
+    }
+
+    /// The caller is known but may not do this. Distinct from a 409: the
+    /// server is in a fine state, and distinct from a 401, which would mean
+    /// "authenticate and try again" -- this will not succeed on retry.
+    pub(super) fn forbidden(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, code, message)
+    }
+
+    /// A conditional write whose condition no longer holds.
+    pub(super) fn precondition_failed(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::PRECONDITION_FAILED, code, message)
     }
 
     /// Temporary overload rather than a fault: the request was valid and
@@ -130,6 +150,12 @@ struct DatasetSummary {
     processing_datetime_display: String,
     revision_id: String,
     shape: (usize, usize),
+    /// Picked lines stored for this radargram, across every user.
+    ///
+    /// `None` when the catalog is not a project, which is different from
+    /// `Some(0)`: "nowhere to save picks" and "nobody has picked this yet"
+    /// should not look the same on a card.
+    line_count: Option<usize>,
 }
 
 /// Format an RFC3339 processing datetime for display as `YYYY-MM-DD HH:MM`.
@@ -144,8 +170,113 @@ fn format_datetime_for_display(raw: &str) -> String {
     }
 }
 
+/// Horizontal stretch factors the viewer offers.
+///
+/// One list, used to build the viewer's dropdown, to build the settings
+/// page's, and to validate a stored default -- three places that would
+/// otherwise drift, leaving a saved value with no option to select it.
+pub const X_SCALES: [f64; 6] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0];
+
+/// Unstretched. Not a preference, so a project that has not chosen one
+/// stores nothing rather than storing this.
+pub const DEFAULT_X_SCALE: f64 = 1.0;
+
+/// `1`, `0.25`, `2` -- no trailing `.0`, since these are shown as `2x`.
+fn format_x_scale(scale: f64) -> String {
+    if scale.fract() == 0.0 {
+        format!("{}", scale as i64)
+    } else {
+        format!("{scale}")
+    }
+}
+
+/// The offered scales for a template or script to render as `<option>`s.
+///
+/// `value` is the number to send back, `text` the canonical string form of
+/// it, and `label` what the user reads. `text` exists because the two pages
+/// build their options differently -- minijinja renders the f64 as `2.0`
+/// while JavaScript's `String(2.0)` gives `2` -- and two pages disagreeing
+/// on an option's value is the kind of difference that only shows up when
+/// something tries to match one against the other.
+pub fn x_scale_options() -> Vec<serde_json::Value> {
+    X_SCALES
+        .iter()
+        .map(|scale| {
+            let text = format_x_scale(*scale);
+            serde_json::json!({
+                "value": scale,
+                "text": text,
+                "label": format!("{text}\u{00d7}"),
+            })
+        })
+        .collect()
+}
+
+/// Whether `scale` is one the viewer can actually select.
+///
+/// Compared with a tolerance rather than by equality: the value arrives as
+/// JSON or TOML and round-trips through f64, and refusing a stored `0.25`
+/// because it came back a bit off would be a baffling failure.
+pub fn is_offered_x_scale(scale: f64) -> bool {
+    X_SCALES.iter().any(|s| (s - scale).abs() < 1e-9)
+}
+
+/// The horizontal stretch a radargram should open at.
+///
+/// The project's default, or 1x. A stored value that is no longer offered
+/// falls back rather than failing: the viewer would otherwise open with a
+/// dropdown showing nothing selected and a stretch nobody could undo.
+fn resolve_x_scale(state: &AppState) -> f64 {
+    state
+        .project
+        .as_ref()
+        .and_then(|p| p.default_xscale())
+        .filter(|s| is_offered_x_scale(*s))
+        .unwrap_or(DEFAULT_X_SCALE)
+}
+
+/// The profile a page should render with.
+///
+/// The request wins, then the project's configured default, then the
+/// built-in one. Three pages used to hardcode the last of those, which is
+/// what made a project-wide default impossible to express.
+fn resolve_profile(state: &AppState, requested: Option<String>) -> String {
+    requested
+        .or_else(|| state.project.as_ref().and_then(|p| p.default_profile()))
+        .unwrap_or_else(|| "default".to_string())
+}
+
 fn to_summary(entry: &super::catalog::CatalogEntry) -> DatasetSummary {
+    summarize(entry, None)
+}
+
+/// Count the picked lines stored for `radargram`, across all users.
+///
+/// Returns `None` if the count cannot be established, so a card falls back
+/// to saying nothing rather than claiming zero. A malformed document on
+/// disk is a reason not to answer, not a reason to report "no picks".
+fn count_lines(project: &crate::project::Project, radargram: &RadargramId) -> Option<usize> {
+    let store = project.documents();
+    let users = crate::project::interpretations::list_users(store, radargram).ok()?;
+    let mut total = 0;
+    for user in users {
+        let user_id = crate::identity::UserId::new(user).ok()?;
+        let stored = crate::project::interpretations::read(store, radargram, &user_id).ok()?;
+        if let Some(stored) = stored {
+            total += stored
+                .document
+                .features
+                .iter()
+                .filter(|f| matches!(f.geometry, gprinterp::Geometry::LineString(_)))
+                .count();
+        }
+    }
+    Some(total)
+}
+
+fn summarize(entry: &super::catalog::CatalogEntry, line_count: Option<usize>) -> DatasetSummary {
     DatasetSummary {
+        line_count,
         radargram_id: entry.radargram_id.to_string(),
         effective_label: entry.effective_label(),
         display_name: entry.display_name.as_ref().map(|d| d.to_string()),
@@ -160,7 +291,22 @@ fn to_summary(entry: &super::catalog::CatalogEntry) -> DatasetSummary {
 }
 
 pub async fn list_datasets(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let entries: Vec<DatasetSummary> = state.catalog.entries.iter().map(to_summary).collect();
+    // Counted here too, so `line_count` means the same thing in the API as
+    // it does on a card rather than being null for a project.
+    let entries: Vec<DatasetSummary> = state
+        .catalog
+        .entries
+        .iter()
+        .map(|entry| {
+            summarize(
+                entry,
+                state
+                    .project
+                    .as_ref()
+                    .and_then(|project| count_lines(project, &entry.radargram_id)),
+            )
+        })
+        .collect();
     let warnings: Vec<String> = state
         .catalog
         .warnings
@@ -170,7 +316,7 @@ pub async fn list_datasets(State(state): State<Arc<AppState>>) -> impl IntoRespo
     Json(serde_json::json!({ "entries": entries, "warnings": warnings }))
 }
 
-fn lookup_dataset<'a>(
+pub(super) fn lookup_dataset<'a>(
     state: &'a AppState,
     radargram_id: &str,
 ) -> Result<&'a super::catalog::CatalogEntry, ApiError> {
@@ -405,18 +551,112 @@ struct GroupSummary {
     entries: Vec<DatasetSummary>,
 }
 
+/// The project settings page.
+///
+/// Thin on purpose: one setting today, and the shape to hang the rest on
+/// when multi-user and deployment settings arrive. Renders for a
+/// non-project catalog too, explaining why there is nothing to configure.
+pub async fn settings_page(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ProfileQuery>,
+) -> Result<impl IntoResponse, PageError> {
+    let active_profile = resolve_profile(&state, query.profile);
+    lookup_profile(&active_profile).map_err(PageError)?;
+
+    let env = templates::environment();
+    let tmpl = env
+        .get_template("settings.html.jinja")
+        .expect("settings template is always registered");
+    let html = tmpl
+        .render(minijinja::context! {
+            project => state.project.is_some(),
+            writable => state.writable,
+            active_profile => active_profile,
+            project_name => state
+                .project
+                .as_ref()
+                .and_then(|p| p.config().project.name.clone()),
+            project_root => state
+                .project
+                .as_ref()
+                .map(|p| p.root().display().to_string()),
+        })
+        .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
+    Ok(Html(html))
+}
+
+/// The layer management page.
+///
+/// A page of its own rather than a panel in the viewer: the vocabulary is
+/// project-scoped, editing it is a deliberate act rather than something done
+/// mid-pick, and a delete needs room to say what it would affect.
+///
+/// Renders for a non-project catalog too, explaining why there is nothing to
+/// edit -- a 404 here would be an odd answer to "show me the layers".
+pub async fn layers_page(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ProfileQuery>,
+) -> Result<impl IntoResponse, PageError> {
+    // This page has nothing to render, but it carries the profile so the
+    // menu's links out of it keep the viewing preference the user arrived
+    // with. An unknown profile is rejected rather than passed on, so a bad
+    // value cannot propagate silently through the menu.
+    let active_profile = resolve_profile(&state, query.profile);
+    lookup_profile(&active_profile).map_err(PageError)?;
+
+    let env = templates::environment();
+    let tmpl = env
+        .get_template("layers.html.jinja")
+        .expect("layers template is always registered");
+    let html = tmpl
+        .render(minijinja::context! {
+            project => state.project.is_some(),
+            writable => state.writable,
+            active_profile => active_profile,
+        })
+        .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
+    Ok(Html(html))
+}
+
 pub async fn index_page(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ProfileQuery>,
 ) -> Result<impl IntoResponse, PageError> {
-    let active_profile = query.profile.unwrap_or_else(|| "default".to_string());
+    let active_profile = resolve_profile(&state, query.profile);
     lookup_profile(&active_profile).map_err(PageError)?;
     let profiles: Vec<String> = RenderProfile::built_in_profiles()
         .into_iter()
         .map(|p| p.name)
         .collect();
 
-    let entries: Vec<DatasetSummary> = state.catalog.entries.iter().map(to_summary).collect();
+    // Counted once per entry here and reused below, rather than per card:
+    // the same radargram appears in both the flat list and its group, and
+    // each count is a directory read plus a JSON parse.
+    let line_counts: std::collections::HashMap<String, Option<usize>> = match &state.project {
+        Some(project) => state
+            .catalog
+            .entries
+            .iter()
+            .map(|e| {
+                (
+                    e.radargram_id.to_string(),
+                    count_lines(project, &e.radargram_id),
+                )
+            })
+            .collect(),
+        None => std::collections::HashMap::new(),
+    };
+    let summarize_entry = |entry: &super::catalog::CatalogEntry| {
+        summarize(
+            entry,
+            line_counts
+                .get(entry.radargram_id.as_str())
+                .copied()
+                .flatten(),
+        )
+    };
+
+    let entries: Vec<DatasetSummary> = state.catalog.entries.iter().map(&summarize_entry).collect();
     let warnings: Vec<String> = state
         .catalog
         .warnings
@@ -452,7 +692,7 @@ pub async fn index_page(
                 entries: state
                     .entries_in_group(id)
                     .into_iter()
-                    .map(to_summary)
+                    .map(&summarize_entry)
                     .collect(),
             }
         })
@@ -462,7 +702,7 @@ pub async fn index_page(
         .entries
         .iter()
         .filter(|e| e.group_id.is_none())
-        .map(to_summary)
+        .map(&summarize_entry)
         .collect();
     if !ungrouped_entries.is_empty() {
         groups.push(GroupSummary {
@@ -483,6 +723,7 @@ pub async fn index_page(
             groups => groups,
             profiles => profiles,
             active_profile => active_profile,
+            project => state.project.is_some(),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
@@ -494,7 +735,7 @@ pub async fn viewer_page(
     Query(query): Query<ProfileQuery>,
 ) -> Result<impl IntoResponse, PageError> {
     let entry = lookup_dataset(&state, &radargram_id).map_err(PageError)?;
-    let active_profile = query.profile.unwrap_or_else(|| "default".to_string());
+    let active_profile = resolve_profile(&state, query.profile);
     lookup_profile(&active_profile).map_err(PageError)?;
 
     let radargram = state
@@ -509,6 +750,7 @@ pub async fn viewer_page(
     let (height, width) = radargram.shape;
     let raster = ViewerRaster::new(width, height);
     let grid = ChunkGrid::new(raster);
+    let viewer_user = super::interp_routes::current_user(&state).map_err(PageError)?;
 
     let profiles: Vec<String> = RenderProfile::built_in_profiles()
         .into_iter()
@@ -532,6 +774,11 @@ pub async fn viewer_page(
             processing_datetime => format_datetime_for_display(&entry.processing_datetime),
             shape_height => height,
             shape_width => width,
+            project => state.project.is_some(),
+            writable => state.writable,
+            // Who the viewer will save as. Resolved rather than assumed,
+            // so the page shows the right name the moment logins exist.
+            user => viewer_user.as_str(),
             profiles => profiles,
             active_profile => active_profile,
             chunk_size => super::render::grid::CHUNK_SIZE,
@@ -539,6 +786,8 @@ pub async fn viewer_page(
             n_rows => grid.n_rows,
             viewer_width => raster.width,
             viewer_height => raster.height,
+            x_scales => x_scale_options(),
+            active_x_scale => resolve_x_scale(&state),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
@@ -603,6 +852,342 @@ pub async fn dataset_track(
     let track = super::track::read_track_from_netcdf(&path)
         .map_err(|e| ApiError::internal("track_read_failed", e))?;
     Ok(Json(track_to_json(&track)))
+}
+
+/// Widest image this will render.
+///
+/// Not a memory limit on its own -- `MAX_IMAGE_PIXELS` is that -- but a
+/// guard on the one dimension people reach for. JPEG cannot exceed 65535 in
+/// either direction at all, and is rejected separately with that reason.
+const MAX_IMAGE_WIDTH: usize = 32768;
+
+/// Total pixels a single render may produce.
+///
+/// The renderer bands its reads, so the source array is never fully
+/// resident, but the *output* image is: one byte per pixel for the
+/// grayscale buffer plus whatever the encoder holds. 120 MP is roughly
+/// 120 MB of buffer, which is a lot to ask for and still a long way from
+/// falling over.
+const MAX_IMAGE_PIXELS: usize = 120_000_000;
+
+/// JPEG stores its dimensions in 16 bits.
+const MAX_JPEG_DIMENSION: usize = 65_535;
+
+#[derive(Deserialize)]
+pub struct ImageQuery {
+    profile: Option<String>,
+    /// Output width in pixels. Defaults to the radargram's own trace count,
+    /// which is the widest that carries any new information.
+    width: Option<usize>,
+    /// "png" (default) or "jpeg".
+    format: Option<String>,
+    /// JPEG quality, 1-100. Ignored for PNG.
+    quality: Option<u8>,
+}
+
+/// `GET /api/v1/datasets/{id}/views/{view}/image`
+///
+/// The whole radargram as one image, at a caller-chosen width -- what the
+/// viewer shows, composited server-side rather than stitched from chunks in
+/// the browser.
+///
+/// Sizing is the caller's decision because there is no good default: one
+/// pixel per trace is the honest answer for analysis and can be 12000 px
+/// wide, while a figure wants something that fits on a page. Both are
+/// legitimate, so both are offered and the limits are explained when they
+/// are hit.
+pub async fn dataset_image(
+    State(state): State<Arc<AppState>>,
+    Path((radargram_id, view)): Path<(String, String)>,
+    Query(query): Query<ImageQuery>,
+) -> Result<Response, ApiError> {
+    let entry = lookup_dataset(&state, &radargram_id)?;
+    let dataset_view = lookup_view(&view)?;
+    let base = lookup_profile(&resolve_profile(&state, query.profile))?;
+
+    let radargram = state
+        .radargrams
+        .get(entry.radargram_id.as_str())
+        .ok_or_else(|| {
+            ApiError::internal(
+                "dataset_unavailable",
+                "Dataset is cataloged but its render service failed to initialize.",
+            )
+        })?;
+    let (source_height, source_width) = radargram.shape;
+
+    let format = match query.format.as_deref() {
+        None | Some("") | Some("png") => super::render::profile::ImageFormat::Png,
+        Some("jpeg") | Some("jpg") => super::render::profile::ImageFormat::Jpeg {
+            // Clamped rather than rejected: quality is a dial, and every
+            // value outside the range has an obvious nearest meaning.
+            quality: query.quality.unwrap_or(85).clamp(1, 100),
+        },
+        Some(other) => {
+            return Err(ApiError::bad_request(
+                "invalid_format",
+                format!("Unknown image format '{other}'. Use 'png' or 'jpeg'."),
+            ))
+        }
+    };
+
+    let width = query.width.unwrap_or(source_width);
+    if width == 0 {
+        return Err(ApiError::bad_request(
+            "invalid_width",
+            "Width must be at least 1 pixel.",
+        ));
+    }
+    if width > MAX_IMAGE_WIDTH {
+        return Err(ApiError::bad_request(
+            "invalid_width",
+            format!("Width {width} is above the {MAX_IMAGE_WIDTH} px limit."),
+        ));
+    }
+
+    // Derived the same way the viewer's own overview is, so the aspect
+    // ratio matches what is on screen. Never upscaled past the source: an
+    // image wider than the trace count carries no more information, and
+    // asking for one is more likely a mistake than an intent.
+    let spec = OverviewSpec::new(source_width, source_height, width.min(source_width));
+
+    if spec.width.saturating_mul(spec.height) > MAX_IMAGE_PIXELS {
+        return Err(ApiError::bad_request(
+            "image_too_large",
+            format!(
+                "{}x{} is {} megapixels, above the {} MP limit. Ask for a smaller width.",
+                spec.width,
+                spec.height,
+                spec.width * spec.height / 1_000_000,
+                MAX_IMAGE_PIXELS / 1_000_000,
+            ),
+        ));
+    }
+    if matches!(format, super::render::profile::ImageFormat::Jpeg { .. })
+        && (spec.width > MAX_JPEG_DIMENSION || spec.height > MAX_JPEG_DIMENSION)
+    {
+        return Err(ApiError::bad_request(
+            "image_too_large",
+            format!(
+                "JPEG cannot exceed {MAX_JPEG_DIMENSION} px in either direction, and this \
+                 would be {}x{}. Use PNG, or ask for a smaller width.",
+                spec.width, spec.height
+            ),
+        ));
+    }
+
+    let extension = match format {
+        super::render::profile::ImageFormat::Jpeg { .. } => "jpg",
+        super::render::profile::ImageFormat::Png => "png",
+    };
+    let content_type = format.content_type();
+    let profile = super::render::profile::RenderProfile { format, ..base };
+    let id = entry.radargram_id.to_string();
+    let filename = format!(
+        "{id}-{}-{}x{}.{extension}",
+        profile.name, spec.width, spec.height
+    );
+    let render_profile = profile.clone();
+
+    let bytes = render_under_permit(state.clone(), id, move |service| {
+        service.get_or_render_overview(&spec, dataset_view, &render_profile)
+    })
+    .await?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type.to_string()),
+            attachment(&filename),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
+/// A download name built from validated components.
+///
+/// `RadargramId` and `UserId` are slugs, so nothing here can carry a quote,
+/// a newline or a path separator into the header.
+fn attachment(filename: &str) -> (header::HeaderName, String) {
+    (
+        header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"{filename}\""),
+    )
+}
+
+/// `GET /api/v1/datasets/{id}/track.geojson`
+///
+/// The same simplified track the maps draw, as a portable file. One Feature
+/// per segment rather than one MultiLineString, so the per-segment trace
+/// range survives into the properties -- a gap in a track is a real thing
+/// (a standstill or a lifted antenna) and collapsing them loses it.
+///
+/// WGS84, per RFC 7946. The track vertices are already in it: `track.rs`
+/// simplifies in the native projected CRS and reprojects only the vertices
+/// it keeps.
+pub async fn dataset_track_geojson(
+    State(state): State<Arc<AppState>>,
+    Path(radargram_id): Path<String>,
+) -> Result<Response, ApiError> {
+    let entry = lookup_dataset(&state, &radargram_id)?;
+    let path = state
+        .absolute_path(entry)
+        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    let track = super::track::read_track_from_netcdf(&path)
+        .map_err(|e| ApiError::internal("track_read_failed", e))?;
+
+    let id = entry.radargram_id.to_string();
+    let features = track_features(entry, &track);
+
+    let body = serde_json::to_string_pretty(&serde_json::json!({
+        "type": "FeatureCollection",
+        "features": features,
+    }))
+    .map_err(|e| ApiError::internal("serialize_failed", e.to_string()))?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/geo+json".to_string()),
+            attachment(&format!("{id}-track.geojson")),
+        ],
+        body,
+    )
+        .into_response())
+}
+
+/// `GET /api/v1/groups/{group}/track.geojson` -- every track in a group.
+///
+/// One file rather than one per radargram, because the question a group
+/// answers is "where did we survey", and that is only visible with all of
+/// them together. Each Feature names its radargram, so the merge is
+/// reversible.
+///
+/// A track that fails to read is skipped rather than failing the download,
+/// matching `group_tracks`: one bad member should not deny the rest.
+pub async fn group_track_geojson(
+    State(state): State<Arc<AppState>>,
+    Path(group): Path<String>,
+) -> Result<Response, ApiError> {
+    merged_track_geojson(&state, &DownloadScope::Group(group))
+}
+
+/// `GET /api/v1/catalog/track.geojson` -- every track the server knows
+/// about, in one file. The catalog-wide half of [`merged_track_geojson`].
+pub async fn catalog_track_geojson(
+    State(state): State<Arc<AppState>>,
+) -> Result<Response, ApiError> {
+    merged_track_geojson(&state, &DownloadScope::Catalog)
+}
+
+fn merged_track_geojson(state: &AppState, scope: &DownloadScope) -> Result<Response, ApiError> {
+    let entries = scope.entries(state);
+    if entries.is_empty() {
+        return Err(ApiError::not_found(
+            scope.empty_code(),
+            format!("Nothing to download in {}.", scope.describe()),
+        ));
+    }
+
+    let mut features = Vec::new();
+    for entry in &entries {
+        let Ok(path) = state.absolute_path(entry) else {
+            continue;
+        };
+        let Ok(track) = super::track::read_track_from_netcdf(&path) else {
+            continue;
+        };
+        features.extend(track_features(entry, &track));
+    }
+
+    let body = serde_json::to_string_pretty(&serde_json::json!({
+        "type": "FeatureCollection",
+        "features": features,
+    }))
+    .map_err(|e| ApiError::internal("serialize_failed", e.to_string()))?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/geo+json".to_string()),
+            attachment(&format!("{}-tracks.geojson", scope.slug())),
+        ],
+        body,
+    )
+        .into_response())
+}
+
+/// One GeoJSON Feature per track segment.
+///
+/// Shared by the single-radargram and group downloads so a merged file is
+/// exactly the concatenation of the individual ones -- if the two ever
+/// disagreed about properties, joining them up downstream would silently
+/// produce ragged records.
+fn track_features(
+    entry: &super::catalog::CatalogEntry,
+    track: &super::track::Track,
+) -> Vec<serde_json::Value> {
+    let id = entry.radargram_id.to_string();
+    track
+        .segments
+        .iter()
+        .filter(|segment| segment.vertices.len() >= 2)
+        .map(|segment| {
+            let coordinates: Vec<[f64; 2]> = segment
+                .vertices
+                .iter()
+                .map(|vertex| [vertex.lon, vertex.lat])
+                .collect();
+            serde_json::json!({
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": coordinates},
+                "properties": {
+                    "radargram_id": id,
+                    "effective_label": entry.effective_label(),
+                    "group_id": entry.group_id.as_ref().map(|g| g.to_string()),
+                    "segment_index": segment.segment_index,
+                    "trace_start": segment.trace_start,
+                    "trace_end": segment.trace_end,
+                    "n_traces": segment.n_traces,
+                    "length_m": segment.length_m,
+                },
+            })
+        })
+        .collect()
+}
+
+/// `GET /api/v1/datasets/{id}/download` -- the processed NetCDF itself.
+///
+/// Streamed rather than read into memory: the files this serves run to
+/// hundreds of megabytes, and buffering one per concurrent request is the
+/// kind of thing that works in testing and falls over in the field.
+pub async fn dataset_download(
+    State(state): State<Arc<AppState>>,
+    Path(radargram_id): Path<String>,
+) -> Result<Response, ApiError> {
+    let entry = lookup_dataset(&state, &radargram_id)?;
+    let path = state
+        .absolute_path(entry)
+        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| ApiError::internal("radargram_open_failed", e.to_string()))?;
+    let length = file
+        .metadata()
+        .await
+        .map(|m| m.len())
+        .map_err(|e| ApiError::internal("radargram_stat_failed", e.to_string()))?;
+
+    let stream = tokio_util::io::ReaderStream::new(file);
+    let id = entry.radargram_id.to_string();
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/x-netcdf".to_string()),
+            (header::CONTENT_LENGTH, length.to_string()),
+            attachment(&format!("{id}.nc")),
+        ],
+        axum::body::Body::from_stream(stream),
+    )
+        .into_response())
 }
 
 /// Every radargram's track in one group, for sibling-track display on the

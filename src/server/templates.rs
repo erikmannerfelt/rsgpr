@@ -21,6 +21,16 @@ pub fn environment() -> Environment<'static> {
     )
     .expect("viewer template must parse");
     env.add_template(
+        "layers.html.jinja",
+        include_str!("templates/layers.html.jinja"),
+    )
+    .expect("layers template must parse");
+    env.add_template(
+        "settings.html.jinja",
+        include_str!("templates/settings.html.jinja"),
+    )
+    .expect("settings template must parse");
+    env.add_template(
         "error.html.jinja",
         include_str!("templates/error.html.jinja"),
     )
@@ -42,6 +52,8 @@ mod tests {
             "base.html.jinja",
             "index.html.jinja",
             "viewer.html.jinja",
+            "layers.html.jinja",
+            "settings.html.jinja",
             "error.html.jinja",
         ] {
             assert!(env.get_template(name).is_ok(), "missing template {name}");

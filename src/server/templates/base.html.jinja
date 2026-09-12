@@ -12,10 +12,33 @@
 </head>
 <body>
   <header>
-    <a href="/" class="brand">
+    {#- Same reasoning as the menu links below: the logo is another way home,
+        and it should not be the one that quietly resets the profile. -#}
+    {%- set profile_query = "?profile=" ~ active_profile if active_profile else "" %}
+    <a href="/{{ profile_query }}" class="brand">
       <img src="/static/images/logo.svg" alt="" class="brand-logo">
       Ridal
     </a>
+    {#- A menu rather than a row of links: project settings, sign in/out and
+        whatever else follows all belong here, and a header that grows a link
+        per page stops working quickly on a phone. `<details>` gives a
+        keyboard-accessible disclosure with no JavaScript; app.js only adds
+        closing it on Escape or an outside click. -#}
+    <nav class="site-nav">
+      <details class="site-menu" id="site-menu">
+        <summary aria-label="Menu">Menu</summary>
+        {#- The render profile is a viewing preference, so it rides along
+            through every page rather than resetting whenever the menu is
+            used. `active_profile` is undefined on pages that have none (the
+            error page), which minijinja treats as falsy -- so the links
+            simply come out bare there. -#}
+        <ul>
+          <li><a href="/{{ profile_query }}">Radargram catalog</a></li>
+          <li><a href="/layers{{ profile_query }}">Layers</a></li>
+          <li><a href="/settings{{ profile_query }}">Project settings</a></li>
+        </ul>
+      </details>
+    </nav>
   </header>
   <main>
     {% block content %}{% endblock %}

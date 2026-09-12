@@ -39,17 +39,35 @@ enterpolation = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# The level 1 interpretation format (`ridal interp`). Developed alongside
+# ridal in its own repository; see github.com/erikmannerfelt/gprinterp.
+gprinterp = "0.1"
+
 # Web server and browser GUI (feature "server"). See tracking issue #115.
 axum = { version = "0.8", optional = true }
 # "time" is for the render-permit acquisition timeout in routes.rs, which
 # turns an overloaded server into a 503 instead of an unbounded queue.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "fs"], optional = true }
+# `ReaderStream`, so downloading a radargram streams the file instead of
+# buffering it. The corpus reaches 145 MB per file, which is not an amount
+# to hold in memory once per concurrent request.
+tokio-util = { version = "0.7", features = ["io"], optional = true }
 minijinja = { version = "2", optional = true }
-blake3 = { version = "1", optional = true }  # Revision and render identities
+# Revision and render identities. Not optional: `RevisionId` is shared by
+# the server's cache invalidation and `ridal interp`'s level 2 provenance,
+# which must agree on the same string for the same file.
+blake3 = "1"
 walkdir = { version = "2", optional = true }  # Recursive catalog discovery
 lru = { version = "0.12", optional = true }  # Wrapped in a byte-bounded cache
 webbrowser = { version = "1", optional = true }  # `ridal gui` browser opening
-toml = { version = "0.8", optional = true }
+# Project marker/config parsing (`ridal.toml`). Not optional: projects are
+# a CLI concept too -- `ridal project init` and interpretation storage must
+# work in builds without the server.
+toml = "0.8"
+# Editing `ridal.toml` in place from the settings page without destroying
+# the comments `ridal project init` writes into it. Already present as a
+# transitive dependency of `toml`, so this costs no extra compilation.
+toml_edit = "0.22"
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
@@ -78,12 +96,11 @@ python = ["pyo3", "numpy"]
 server = [
     "axum",
     "tokio",
+    "tokio-util",
     "minijinja",
-    "blake3",
     "walkdir",
     "lru",
     "webbrowser",
-    "toml",
     "tracing",
     "tracing-subscriber",
 ]

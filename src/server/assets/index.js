@@ -34,23 +34,37 @@ document.getElementById('index-profile-select').addEventListener('change', (even
 document.querySelectorAll('.group-map').forEach((el) => {
   const map = RIDAL.basemap(L.map(el.id));
 
-  RIDAL.fetchJson(`/api/v1/groups/${el.dataset.group}/tracks`)
+  RIDAL.fetchJson(RIDAL.apiPath("groups", el.dataset.group, "tracks"))
     .then((members) => {
       const allPoints = [];
       for (const [radargramId, info] of Object.entries(members)) {
-        const layers = RIDAL.trackToLatLngs(info.track).map((latlngs) => {
+        const pairs = RIDAL.trackToLatLngs(info.track).map((latlngs) => {
           allPoints.push(...latlngs);
-          return L.polyline(latlngs, {
+          // The wide companion goes down first and carries the popup, so a
+          // track is as easy to hit as it is to see.
+          const hit = RIDAL.hitLine(latlngs)
+            // A function, not a string: evaluated when the popup opens, so
+            // the thumbnail and the link use whatever profile is selected
+            // then.
+            .bindPopup(() =>
+              RIDAL.popupContent(
+                radargramId,
+                info.effective_label,
+                document.getElementById('index-profile-select').value,
+              ),
+            )
+            .addTo(map);
+          const visible = L.polyline(latlngs, {
             color: RIDAL.trackColor,
             weight: RIDAL.trackWeight,
-          })
-            .bindPopup(RIDAL.popupContent(radargramId, info.effective_label))
-            .addTo(map);
+            interactive: false,
+          }).addTo(map);
+          return { visible, hit };
         });
         // Two-way highlight with the matching catalog card (#121
         // planning round item 7): hovering either one highlights both.
         const card = document.getElementById(`card-${radargramId}`);
-        RIDAL.bindTrackHighlight(layers, card, RIDAL.trackWeight, RIDAL.trackFocusWeight);
+        RIDAL.bindTrackHighlight(pairs, card, RIDAL.trackWeight, RIDAL.trackFocusWeight);
       }
       if (allPoints.length > 0) {
         map.fitBounds(allPoints);
@@ -67,3 +81,73 @@ document.querySelectorAll('.group-map').forEach((el) => {
       map.setView([0, 0], 2);
     });
 });
+
+/* --- Merged downloads ----------------------------------------------------
+ *
+ * One handler for every scope on the page: the catalog-wide menu and one
+ * per group. Each menu carries the API prefix its items hang off
+ * (`data-download-base`), so a scope is a prefix and nothing else -- adding
+ * a saved-selection scope later needs no change here, and a new merged
+ * product needs one template line rather than one per scope.
+ *
+ * The points dialog is shared, with the base it was opened for remembered
+ * while it is up: only one can be open at a time, so per-scope copies of
+ * the markup would be dead weight.
+ *
+ * Dismissal (outside click, Escape) comes from app.js, which handles every
+ * `.site-menu` on the page.
+ */
+(function setupMergedDownloads() {
+  const dialog = document.getElementById('group-download-dialog');
+  const menus = [...document.querySelectorAll('.download-menu[data-download-base]')];
+  if (!dialog || menus.length === 0) return;
+
+  const title = document.getElementById('group-download-title');
+  const spacing = document.getElementById('group-spacing');
+  const format = document.getElementById('group-format');
+  let base = null;
+
+  const go = (url) => {
+    window.location.href = url;
+  };
+
+  for (const menu of menus) {
+    const menuBase = menu.dataset.downloadBase;
+    const label = menu.dataset.downloadLabel || '';
+    for (const button of menu.querySelectorAll('button[data-download]')) {
+      const product = button.dataset.download;
+      button.addEventListener('click', () => {
+        menu.open = false;
+        // Everything except level 2 is a plain link: no options to ask for.
+        if (product !== 'level2') {
+          go(`${menuBase}/${product}`);
+          return;
+        }
+        base = menuBase;
+        title.textContent = label
+          ? `Download layer points - ${label}`
+          : 'Download layer points';
+        dialog.showModal();
+      });
+    }
+  }
+
+  document
+    .getElementById('group-download-close')
+    .addEventListener('click', () => dialog.close());
+
+  document.getElementById('group-download-go').addEventListener('click', () => {
+    if (!base) return;
+    // Same two-parameters-from-one-choice shape as the viewer's dialog:
+    // "GeoJSON in native coordinates" is one decision to a user.
+    const choice = format.value;
+    const fileFormat = choice === 'csv' ? 'csv' : 'geojson';
+    const crs = choice === 'geojson-native' ? '&crs=native' : '';
+    dialog.close();
+    go(
+      `${base}/level2` +
+        `?spacing=${encodeURIComponent(spacing.value)}` +
+        `&format=${encodeURIComponent(fileFormat)}${crs}`,
+    );
+  });
+})();

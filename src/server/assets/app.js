@@ -144,14 +144,65 @@ const RIDAL = Object.freeze({
    * beside it. The near-opaque popup background that makes this legible
    * over arbitrary basemap imagery comes from app.css's
    * .leaflet-popup-content-wrapper rule, not from anything here. */
-  popupContent(radargramId, label) {
-    return (
-      `<a class="popup-link" href="/view/${radargramId}">` +
-      `${label}` +
-      `<img class="popup-thumb" src="/api/v1/datasets/${radargramId}/views/standard/overview" ` +
-      'loading="lazy" alt="">' +
-      '</a>'
-    );
+  /** A track popup: the radargram's label, a thumbnail, and a link to it.
+   *
+   * `profile` applies to *both* -- the link, so arriving at the radargram
+   * keeps the profile being browsed in, and the thumbnail, which is a
+   * render and otherwise comes back in the default profile regardless of
+   * what the rest of the page is showing.
+   *
+   * Callers should pass this to `bindPopup` as a function rather than a
+   * string, so the profile is read when the popup opens. The viewer's
+   * profile can change without a page reload, and a popup built at load
+   * time would keep showing the profile that was active then. */
+  /** Build an API path with every segment percent-encoded.
+   *
+   * The values that reach these today are server-rendered slugs --
+   * validated `RadargramId`, `GroupId`, `UserId`, and a profile name from
+   * a select whose options the server wrote. So this is not closing a
+   * live hole. It is that an un-encoded URL segment is a latent bug
+   * rather than a safe assumption: one containing a slash, `?` or `#`
+   * silently addresses a different resource than intended, and the next
+   * value routed through here may not come from the server.
+   *
+   * Encoding at construction means no caller has to know where its value
+   * came from, which is the only version of this that stays true.
+   */
+  apiPath(...segments) {
+    return `/api/v1/${segments.map((s) => encodeURIComponent(s)).join("/")}`;
+  },
+
+  /** Build a track popup as DOM nodes rather than an HTML string.
+   *
+   * Leaflet assigns a string popup with `innerHTML` and appends an element
+   * with `appendChild` (see `_updateContent` in the vendored build), so
+   * returning a node means nothing here is ever parsed as HTML. That
+   * removes the escaping question rather than answering it: `label` is
+   * free text from a radargram's metadata, and the profile comes from a
+   * <select> whose value a scanner cannot prove is constrained.
+   *
+   * Callers should pass this to `bindPopup` as a function rather than a
+   * string, so the profile is read when the popup opens. The viewer's
+   * profile can change without a page reload, and a popup built at load
+   * time would keep showing the profile that was active then. */
+  popupContent(radargramId, label, profile) {
+    const query = profile ? `?profile=${encodeURIComponent(profile)}` : "";
+    const id = encodeURIComponent(radargramId);
+
+    const link = document.createElement("a");
+    link.className = "popup-link";
+    link.href = `/view/${id}${query}`;
+    // A text node: markup in a display name is shown, never run.
+    link.appendChild(document.createTextNode(label));
+
+    const thumb = document.createElement("img");
+    thumb.className = "popup-thumb";
+    thumb.src = `${RIDAL.apiPath("datasets", radargramId, "views", "standard", "overview")}${query}`;
+    thumb.loading = "lazy";
+    thumb.alt = "";
+    link.appendChild(thumb);
+
+    return link;
   },
 
   /** Wire up a track's hover/popup highlighting, and -- if `card` is
@@ -162,18 +213,53 @@ const RIDAL = Object.freeze({
    * rather than fighting over the layer's weight when one ends before
    * the other. `layers` is an array because one track can be several
    * polyline segments. */
-  bindTrackHighlight(layers, card, baseWeight, focusWeight) {
+  /** How wide, in pixels, the invisible strip along a line that accepts a
+   * tap or hover.
+   *
+   * A Leaflet polyline is only interactive within its own stroke, so a 3px
+   * track has a 3px target -- unusable with a finger and fiddly with a
+   * mouse. Every interactive line therefore gets a transparent companion of
+   * this width. Roughly a fingertip on touch, a comfortable aim otherwise. */
+  hitWidth: window.matchMedia("(pointer: coarse)").matches ? 34 : 14,
+
+  /** A transparent, interactive companion for `latlngs`.
+   *
+   * Add it *before* the visible line so the visible one draws on top, and
+   * put every handler on this rather than on the line it shadows -- a
+   * visible line left interactive would swallow events aimed at the easier
+   * target. */
+  hitLine(latlngs) {
+    return L.polyline(latlngs, {
+      className: "hit-line",
+      weight: RIDAL.hitWidth,
+      opacity: 0,
+      interactive: true,
+    });
+  },
+
+  /** Two-way hover/popup highlighting for a set of track lines.
+   *
+   * Takes `{ visible, hit }` pairs: events come from the wide companion,
+   * while the weight change is applied to the line that can actually be
+   * seen. */
+  bindTrackHighlight(pairs, card, baseWeight, focusWeight) {
     let hovered = false;
     let popupOpen = false;
     const apply = () => {
       const on = hovered || popupOpen;
-      layers.forEach((layer) => {
-        layer.setStyle({ weight: on ? focusWeight : baseWeight });
-        if (on) layer.bringToFront();
+      pairs.forEach(({ visible, hit }) => {
+        visible.setStyle({ weight: on ? focusWeight : baseWeight });
+        if (on) {
+          // Order matters: the companion first, so the visible line still
+          // ends up above it.
+          hit.bringToFront();
+          visible.bringToFront();
+        }
       });
       if (card) card.classList.toggle("is-hovered", on);
     };
-    layers.forEach((layer) => {
+    pairs.forEach(({ hit }) => {
+      const layer = hit;
       layer.on("mouseover", () => { hovered = true; apply(); });
       layer.on("mouseout", () => { hovered = false; apply(); });
       layer.on("popupopen", () => { popupOpen = true; apply(); });
@@ -185,3 +271,46 @@ const RIDAL = Object.freeze({
     }
   },
 });
+
+/* Dismiss any menu on Escape or a click outside it.
+ *
+ * `<details>` gives the disclosure, the keyboard behaviour and the open
+ * state for free, but it stays open until its own summary is clicked again,
+ * which is wrong for a menu: tapping the page elsewhere should close it.
+ * That is the only reason this file knows menus exist.
+ *
+ * Applies to every `.site-menu` rather than one by id, so the header menu
+ * and the viewer's download menu behave the same and a third would too.
+ *
+ * The outside-click listener runs in the capture phase, which no handler
+ * can opt out of. That is insurance rather than a fix for an observed
+ * failure: several handlers in the viewer call `stopPropagation`, and the
+ * obvious worry is that one of them hides a click from the document. In
+ * practice the one most likely to -- the picker's, on every picked line --
+ * does not, measured by counting document listeners in both phases. Capture
+ * costs nothing and removes the question. */
+(function setupMenus() {
+  const menus = [...document.querySelectorAll("details.site-menu")];
+  if (menus.length === 0) return;
+
+  document.addEventListener(
+    "click",
+    (event) => {
+      for (const menu of menus) {
+        if (menu.open && !menu.contains(event.target)) menu.open = false;
+      }
+    },
+    true,
+  );
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    for (const menu of menus) {
+      if (!menu.open) continue;
+      menu.open = false;
+      // Return focus to the control that opened it, or the close is
+      // invisible to a keyboard user.
+      menu.querySelector("summary").focus();
+    }
+  });
+})();

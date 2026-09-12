@@ -28,14 +28,16 @@ const SOURCE_HEIGHT = CFG.sourceHeight;
 const RASTER_SCALE = VIEWER_WIDTH / SOURCE_WIDTH;
 const VERTICAL_RASTER_SCALE = VIEWER_HEIGHT / SOURCE_HEIGHT;
 
-let xScale = 1;
+// The project's default stretch, already validated against the offered
+// factors server-side, so this is the value the dropdown is showing.
+let xScale = Number(document.getElementById('xscale-select').value) || 1;
 
 function currentProfile() {
   return document.getElementById('profile-select').value;
 }
 
 function chunkUrl(x, y, profile) {
-  return `/api/v1/datasets/${RADARGRAM_ID}/views/${VIEW}/chunks/${profile}/${x}/${y}`;
+  return RIDAL.apiPath("datasets", RADARGRAM_ID, "views", VIEW, "chunks", profile, x, y);
 }
 
 function chunkBounds(x, y, scale) {
@@ -57,24 +59,110 @@ function chunkBounds(x, y, scale) {
   ];
 }
 
-let chunkLayers = [];
-function loadChunks(map, profile, scale) {
-  chunkLayers.forEach((l) => map.removeLayer(l));
-  chunkLayers = [];
+/* One chunk overlay, fetched only once the browser decides it is near the
+ * viewport.
+ *
+ * L.imageOverlay(url, ...) sets `img.src` the moment the layer is added
+ * (`_initImage`), with no viewport test -- so every chunk in the grid used
+ * to be requested on page load whatever the map was looking at, and zooming
+ * in could not prevent it. Leaflet also accepts an existing <img> in place
+ * of a URL, and in that branch it does *not* touch `src`. So the element is
+ * built here instead, with `loading` set before `src` (after, the attribute
+ * has no effect), and handed over ready-made.
+ *
+ * This is what lets the viewer render 1:1 with no resolution cap: cost now
+ * tracks what is on screen rather than how long the radargram is.
+ */
+function chunkImage(x, y, profile) {
+  const img = document.createElement('img');
+  img.loading = 'lazy';
+  img.decoding = 'async';
+  img.alt = '';
+  img.src = chunkUrl(x, y, profile);
+  return img;
+}
+
+/* Which chunks the current view touches, padded by one chunk so a small
+ * pan reveals an already-loaded tile rather than a blank one. */
+function chunksInView(scale) {
+  const bounds = map.getBounds();
+  const west = bounds.getWest() - CHUNK_SIZE;
+  const east = bounds.getEast() + CHUNK_SIZE;
+  const south = bounds.getSouth() - CHUNK_SIZE;
+  const north = bounds.getNorth() + CHUNK_SIZE;
+  const found = [];
   for (let y = 0; y < N_ROWS; y++) {
     for (let x = 0; x < N_COLS; x++) {
-      const layer = L.imageOverlay(chunkUrl(x, y, profile), chunkBounds(x, y, scale)).addTo(map);
-      chunkLayers.push(layer);
+      const [[lat0, lng0], [lat1, lng1]] = chunkBounds(x, y, scale);
+      if (lng1 < west || lng0 > east || lat1 < south || lat0 > north) continue;
+      found.push([x, y]);
     }
+  }
+  return found;
+}
+
+/* Chunks are added as the view reaches them, and then kept.
+ *
+ * Adding the whole grid up front meant opening a radargram rendered every
+ * chunk of it -- the cost of opening a file scaled with its length rather
+ * than with what was being looked at, which is what the old 8192 px cap
+ * was really paying for. `loading="lazy"` alone is not enough to rely on:
+ * it is a browser heuristic (and headless Chromium ignores it outright), so
+ * the decision is made here instead and the attribute is left on as a
+ * second line of defence.
+ *
+ * Kept rather than evicted once loaded: panning back over ground already
+ * visited should not re-fetch it, and what has been looked at is a far
+ * smaller bound than the whole file.
+ */
+let chunkLayers = [];
+const chunksAdded = new Set();
+
+function addChunksInView(profile, scale) {
+  for (const [x, y] of chunksInView(scale)) {
+    const key = `${x},${y}`;
+    if (chunksAdded.has(key)) continue;
+    chunksAdded.add(key);
+    const layer = L.imageOverlay(chunkImage(x, y, profile), chunkBounds(x, y, scale)).addTo(map);
+    chunkLayers.push(layer);
   }
 }
 
+/* Full rebuild: the profile or the horizontal scale changed, so every
+ * placed chunk is either the wrong image or in the wrong place. */
+function loadChunks(map, profile, scale) {
+  chunkLayers.forEach((l) => map.removeLayer(l));
+  chunkLayers = [];
+  chunksAdded.clear();
+  addChunksInView(profile, scale);
+}
+
 const map = L.map('map', { crs: L.CRS.Simple, minZoom: -6, attributionControl: false });
+// Published for picker.js, which draws onto this same map and needs the
+// current horizontal stretch to convert clicks to trace indices. Plain
+// globals rather than exports: these are classic scripts with no module
+// boundary between them (#120: no build step).
+window.RIDAL_MAP = map;
+window.RIDAL_XSCALE = xScale;
+/* Open on the start of the radargram at full depth, not on the whole thing.
+ *
+ * Fitting the entire length put every chunk in the viewport at once, which
+ * defeats lazy loading and lands the user on a squashed overview they have
+ * to zoom into anyway. Fitting the *height* gives readable detail
+ * immediately and leaves the rest of the length to load as they pan into
+ * it. A radargram short enough to fit whole still does -- the min() below
+ * means nothing changes for those.
+ */
 function fitToScale(scale) {
-  map.fitBounds([[-VIEWER_HEIGHT, 0], [0, VIEWER_WIDTH * scale]]);
+  const size = map.getSize();
+  // Viewer px that span the container once the full sample range fits it.
+  const widthAtFullHeight = size.y > 0 ? (VIEWER_HEIGHT * size.x) / size.y : VIEWER_WIDTH * scale;
+  const width = Math.min(VIEWER_WIDTH * scale, widthAtFullHeight);
+  map.fitBounds([[-VIEWER_HEIGHT, 0], [0, width]]);
 }
 fitToScale(xScale);
 loadChunks(map, currentProfile(), xScale);
+map.on('moveend zoomend', () => addChunksInView(currentProfile(), xScale));
 
 document.getElementById('profile-select').addEventListener('change', () => {
   loadChunks(map, currentProfile(), xScale);
@@ -91,7 +179,9 @@ document.getElementById('xscale-select').addEventListener('change', (event) => {
   const newScale = parseFloat(event.target.value);
   const center = map.getCenter();
   xScale = newScale;
+  window.RIDAL_XSCALE = newScale;
   loadChunks(map, currentProfile(), xScale);
+  if (window.RIDAL_REDRAW_PICKS) window.RIDAL_REDRAW_PICKS();
   map.setView(
     [center.lat, center.lng * (newScale / oldScale)],
     map.getZoom(),
@@ -132,8 +222,13 @@ const overviewMap = RIDAL.basemap(L.map('overview-map'));
     invalidateQueued = true;
     requestAnimationFrame(() => {
       invalidateQueued = false;
-      map.invalidateSize();
-      overviewMap.invalidateSize();
+      // `pan: false` is load-bearing on a phone. The default re-centres the
+      // map to keep the previous centre visible, which reads as the viewer
+      // jumping -- and it fires exactly when a first tap collapses the
+      // browser's address bar and changes the 70vh map height. The picks
+      // stay put either way; only the view was moving.
+      map.invalidateSize({ pan: false });
+      overviewMap.invalidateSize({ pan: false });
     });
   }
 
@@ -199,6 +294,12 @@ const overviewMap = RIDAL.basemap(L.map('overview-map'));
     updateSideBySideState();
     scheduleInvalidate();
   }).observe(layout);
+
+  // The map pane gets its own observer, deliberately not the one above:
+  // that callback writes `mapEl.style.flex`, so pointing it at `mapEl`
+  // would let it feed itself. This one only tells Leaflet the pane
+  // resized, which is what a phone's address bar hiding does.
+  new ResizeObserver(() => scheduleInvalidate()).observe(mapEl);
 })();
 
 let ownTrack = null;
@@ -220,7 +321,7 @@ function fitOverviewToTrack(track) {
   }
 }
 
-RIDAL.fetchJson(`/api/v1/datasets/${RADARGRAM_ID}/track`)
+RIDAL.fetchJson(RIDAL.apiPath("datasets", RADARGRAM_ID, "track"))
   .then((track) => {
     ownTrack = track;
     trackToLatLngs(track).forEach((latlngs) => {
@@ -239,20 +340,28 @@ RIDAL.fetchJson(`/api/v1/datasets/${RADARGRAM_ID}/track`)
   });
 
 if (GROUP) {
-  RIDAL.fetchJson(`/api/v1/groups/${GROUP}/tracks`)
+  RIDAL.fetchJson(RIDAL.apiPath("groups", GROUP, "tracks"))
     .then((siblings) => {
       for (const [siblingId, info] of Object.entries(siblings)) {
         if (siblingId === RADARGRAM_ID) continue;
-        const layers = trackToLatLngs(info.track).map((latlngs) =>
-          L.polyline(latlngs, {
+        const pairs = trackToLatLngs(info.track).map((latlngs) => {
+          const hit = RIDAL.hitLine(latlngs)
+            // A function, not a string: the profile select changes the
+            // radargram without reloading, so the popup has to be built
+            // when it opens rather than when the track is drawn.
+            .bindPopup(() =>
+              RIDAL.popupContent(siblingId, info.effective_label, currentProfile()),
+            )
+            .addTo(overviewMap);
+          const visible = L.polyline(latlngs, {
             color: RIDAL.siblingColor,
             weight: RIDAL.siblingWeight,
             opacity: RIDAL.siblingOpacity,
-          })
-            .bindPopup(RIDAL.popupContent(siblingId, info.effective_label))
-            .addTo(overviewMap),
-        );
-        RIDAL.bindTrackHighlight(layers, null, RIDAL.siblingWeight, RIDAL.siblingFocusWeight);
+            interactive: false,
+          }).addTo(overviewMap);
+          return { visible, hit };
+        });
+        RIDAL.bindTrackHighlight(pairs, null, RIDAL.siblingWeight, RIDAL.siblingFocusWeight);
       }
     })
     .catch((error) => {
@@ -297,7 +406,7 @@ function locateTrace(track, traceIndex) {
 // for fixtures that never wrote it, so the readout below must check
 // each one rather than assuming all-or-nothing. ---
 let axes = null;
-RIDAL.fetchJson(`/api/v1/datasets/${RADARGRAM_ID}/axes`)
+RIDAL.fetchJson(RIDAL.apiPath("datasets", RADARGRAM_ID, "axes"))
   .then((a) => { axes = a; })
   .catch((error) => {
     // The readout degrades to trace-only, which is still useful, so this
@@ -313,6 +422,16 @@ function axisValue(array, index) {
 }
 
 const readout = document.getElementById('cursor-readout');
+// Seeded, and never blanked below, so the readout always occupies exactly
+// one line. An empty readout used to take no width, sit on the controls
+// row, and then wrap to a row of its own the moment it was populated --
+// growing the whole controls block and shifting the radargram down by a
+// line. On a phone that happens on every tap: moving a finger from the map
+// to a button fires `mouseout` (blank, shift up), tapping the map fires
+// `mousemove` (populate, shift down). It made the first tap on any control
+// land on whatever had just moved out from under it, and put a placed
+// vertex a line higher than where it was tapped.
+readout.textContent = `trace - / ${SOURCE_WIDTH}`;
 map.on('mousemove', (event) => {
   const viewerX = event.latlng.lng / xScale;
   const viewerY = -event.latlng.lat;
@@ -345,7 +464,9 @@ map.on('mousemove', (event) => {
 });
 map.on('mouseout', () => {
   cursorMarker.setStyle({ opacity: 0 });
-  readout.textContent = '';
+  // The last reading deliberately stays. Blanking it resized the controls
+  // block (see the seed above), and keeping it is better anyway: on a touch
+  // screen the value is only readable *after* the finger lifts.
 });
 
 // --- Metadata dialog: a button opening a <dialog> with the server's
@@ -354,7 +475,7 @@ map.on('mouseout', () => {
 // plus the processing steps/log in their own <details>. ---
 const dialog = document.getElementById('metadata-dialog');
 document.getElementById('metadata-button').addEventListener('click', () => {
-  RIDAL.fetchJson(`/api/v1/datasets/${RADARGRAM_ID}/attributes`)
+  RIDAL.fetchJson(RIDAL.apiPath("datasets", RADARGRAM_ID, "attributes"))
     .then((data) => {
       const tbody = document.querySelector('#metadata-table tbody');
       tbody.innerHTML = '';
@@ -415,3 +536,153 @@ document.getElementById('metadata-button').addEventListener('click', () => {
     });
 });
 document.getElementById('metadata-close').addEventListener('click', () => dialog.close());
+
+/* --- Downloads -----------------------------------------------------------
+ *
+ * Owned here rather than in picker.js: three of the five need no project
+ * and no write access, so they have to work on a read-only catalog where
+ * the picker never initialises at all.
+ *
+ * Each is a plain navigation to an endpoint that sets
+ * `Content-Disposition: attachment`, so the browser saves the file and the
+ * page stays where it is -- no blob building, and a failure lands on the
+ * server's own error envelope rather than being swallowed.
+ */
+(function setupDownloads() {
+  const menu = document.getElementById('download-menu');
+  if (!menu) return;
+
+  const datasetUrl = RIDAL.apiPath("datasets", RADARGRAM_ID);
+  const picksUrl = `${datasetUrl}/interpretations/${CFG.user}`;
+  const go = (url) => {
+    menu.open = false;
+    window.location.href = url;
+  };
+
+  /* The two pick downloads are derived from what is *saved*. Offering them
+   * over unsaved edits would hand back something that quietly disagrees
+   * with what is on screen, so they say so instead. */
+  function picksAreStale() {
+    if (window.RIDAL_PICKS_DIRTY) {
+      RIDAL.reportError(
+        'map',
+        'Save your picks first -- a download is built from the saved ' +
+          'interpretation, not from what is on screen.',
+      );
+      menu.open = false;
+      return true;
+    }
+    return false;
+  }
+
+  const bind = (id, handler) => {
+    const button = document.getElementById(id);
+    if (button) button.addEventListener('click', handler);
+  };
+
+  bind('dl-track', () => go(`${datasetUrl}/track.geojson`));
+  bind('dl-radargram', () => go(`${datasetUrl}/download`));
+  bind('dl-raw', () => {
+    if (!picksAreStale()) go(`${picksUrl}/raw`);
+  });
+
+  // --- Layer points (the level 2 product) ---
+  const pointsDialog = document.getElementById('download-dialog');
+  bind('dl-points', () => {
+    if (picksAreStale()) return;
+    menu.open = false;
+    pointsDialog.showModal();
+  });
+  document
+    .getElementById('download-close')
+    .addEventListener('click', () => pointsDialog.close());
+  document.getElementById('download-go').addEventListener('click', () => {
+    const spacing = document.getElementById('download-spacing').value;
+    // One select covers both the file format and its coordinates: "GeoJSON
+    // in native coordinates" is a single choice to a user even though it is
+    // two parameters on the wire.
+    const choice = document.getElementById('download-format').value;
+    const format = choice === 'csv' ? 'csv' : 'geojson';
+    const crs = choice === 'geojson-native' ? '&crs=native' : '';
+    pointsDialog.close();
+    go(
+      `${picksUrl}/level2?spacing=${encodeURIComponent(spacing)}` +
+        `&format=${encodeURIComponent(format)}${crs}`,
+    );
+  });
+
+  // --- Rendered image ---
+  const imageDialog = document.getElementById('image-dialog');
+  const widthSelect = document.getElementById('image-width');
+  const formatSelect = document.getElementById('image-format');
+  const qualityField = document.getElementById('image-quality-field');
+  const qualitySelect = document.getElementById('image-quality');
+  const estimate = document.getElementById('image-estimate');
+
+  /* Offered widths, smallest first, ending at one pixel per trace.
+   *
+   * Full resolution is the default and the last entry. The viewer renders
+   * 1:1, so "what the viewer shows" and "full resolution" are now the same
+   * option; there used to be a separate entry for the viewer's capped
+   * raster, which no longer exists.
+   *
+   * Width is *not* a speed dial. Rendering reads the whole source array
+   * whichever width is asked for, so the time barely moves with it: on a
+   * release build, a 12187x3678 radargram from a 145 MB file took 1.9 s at
+   * 900 px and 2.4 s at full resolution, and 6 ms once cached. The choice
+   * here is about file size and detail, which is what the estimate says. */
+  function widthOptions() {
+    const presets = [1000, 2000, 4000, 8000, 16000]
+      .filter((w) => w > 0 && w < SOURCE_WIDTH)
+      .sort((a, b) => a - b);
+    return [
+      ...presets.map((w) => new Option(`${w} px`, String(w))),
+      new Option(`${SOURCE_WIDTH} px - full resolution`, String(SOURCE_WIDTH)),
+    ];
+  }
+
+  function describeChoice() {
+    const width = Number(widthSelect.value) || SOURCE_WIDTH;
+    const height = Math.max(1, Math.round((SOURCE_HEIGHT * width) / SOURCE_WIDTH));
+    const megapixels = (width * height) / 1e6;
+    // Deliberately about size rather than time. An earlier version warned
+    // that large widths were slow, from timings taken on a debug build --
+    // they were 15 to 35 times the real figure, and the warning would have
+    // steered people away from full resolution for no reason.
+    estimate.textContent =
+      `${width} \u00d7 ${height} px (${megapixels.toFixed(1)} MP). ` +
+      (formatSelect.value === 'jpeg'
+        ? 'JPEG is much smaller but lossy, and cannot exceed 65535 px.'
+        : 'PNG is lossless; at this size the file may be tens of megabytes.');
+  }
+
+  widthSelect.replaceChildren(...widthOptions());
+  // Full resolution: the viewer no longer downscales, so defaulting to
+  // anything less would hand back less than what is on screen.
+  widthSelect.selectedIndex = widthSelect.options.length - 1;
+  describeChoice();
+
+  widthSelect.addEventListener('change', describeChoice);
+  formatSelect.addEventListener('change', () => {
+    qualityField.hidden = formatSelect.value !== 'jpeg';
+    describeChoice();
+  });
+
+  bind('dl-image', () => {
+    menu.open = false;
+    imageDialog.showModal();
+  });
+  document
+    .getElementById('image-close')
+    .addEventListener('click', () => imageDialog.close());
+  document.getElementById('image-go').addEventListener('click', () => {
+    const params = new URLSearchParams({
+      profile: currentProfile(),
+      width: widthSelect.value,
+      format: formatSelect.value,
+    });
+    if (formatSelect.value === 'jpeg') params.set('quality', qualitySelect.value);
+    imageDialog.close();
+    go(`${datasetUrl}/views/${VIEW}/image?${params}`);
+  });
+})();

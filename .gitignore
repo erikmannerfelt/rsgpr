@@ -18,3 +18,7 @@ PHASE1_LOG.md
 # once the PR is opened/updated, not as a permanent tracked file that
 # would survive a squash merge into main.
 PR_WEB_GUI.md
+
+# Local gprinterp path override (see .cargo/config.toml)
+.cargo/
+gprinterp/

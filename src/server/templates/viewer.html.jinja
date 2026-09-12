@@ -4,7 +4,8 @@
   {#- Carries the active profile back to the catalog, so a round trip
       viewer -> catalog -> viewer stays in the profile you were browsing
       in rather than silently resetting to the default. -#}
-  <p><a href="/?profile={{ active_profile }}#card-{{ radargram_id }}">&larr; Back to catalog</a></p>
+  <p><a class="back-link" href="/?profile={{ active_profile }}#card-{{ radargram_id }}">
+    <span aria-hidden="true">&larr;</span> Back to catalog</a></p>
   <h1>{{ effective_label }}{% if group_name %} (Group: {{ group_name }}){% endif %}</h1>
   <table class="meta">
     <tr>
@@ -24,19 +25,156 @@
         {% endfor %}
       </select>
     </label>
+    {#- Options come from the server so the project's default always has an
+        entry to select; a hardcoded list here could drift from the one the
+        settings page validates against. -#}
     <label>Horizontal scale:
       <select id="xscale-select">
-        <option value="0.25">0.25&times;</option>
-        <option value="0.5">0.5&times;</option>
-        <option value="1" selected>1&times;</option>
-        <option value="2">2&times;</option>
-        <option value="4">4&times;</option>
-        <option value="8">8&times;</option>
+        {% for s in x_scales %}
+        <option value="{{ s.text }}" {% if s.value == active_x_scale %}selected{% endif %}>{{ s.label }}</option>
+        {% endfor %}
       </select>
     </label>
     <button id="metadata-button" type="button">Metadata</button>
+    {#- A menu rather than a button: there are five things to download and
+        they are not variations of one another. Lives in this row, not the
+        picking toolbar, because a radargram, its track and an image are
+        downloadable from a read-only catalog with no project at all. -#}
+    <details class="site-menu download-menu" id="download-menu">
+      <summary>Download</summary>
+      <ul>
+        {% if project %}
+          <li><button type="button" id="dl-points">Layer points</button></li>
+          <li><button type="button" id="dl-raw">Raw picks (gprinterp)</button></li>
+        {% endif %}
+        <li><button type="button" id="dl-track">Track (GeoJSON)</button></li>
+        <li><button type="button" id="dl-image">Rendered image</button></li>
+        <li><button type="button" id="dl-radargram">Radargram (NetCDF)</button></li>
+      </ul>
+    </details>
     <span id="cursor-readout"></span>
   </div>
+
+  {#- The picking toolbar. Rendered even when the catalog is not a writable
+      project, in which case it explains why rather than vanishing: a missing
+      control reads as a missing feature. -#}
+  <div class="controls picker-controls" id="picker-controls">
+    {% if writable %}
+      {#- The swatch sits inside the label so it groups with the select
+          rather than with the button after it. `aria-hidden` because the
+          colour repeats what the option text already says -- it is a
+          reminder, not information of its own. -#}
+      <label>Layer:
+        <span class="layer-swatch layer-swatch-inline" id="pick-layer-swatch"
+              aria-hidden="true"></span>
+        <select id="pick-layer"><option value="">Loading&hellip;</option></select>
+      </label>
+      <button id="pick-toggle" type="button" aria-pressed="false">Start picking</button>
+      <button id="pick-undo" type="button" disabled>Undo vertex</button>
+      <button id="pick-finish" type="button" disabled
+              title="Complete the line you are drawing. The next tap starts a separate line instead of extending this one.">Finish line</button>
+      <button id="pick-save" type="button" disabled>Save</button>
+      <span id="pick-status" class="pick-status"></span>
+    {% else %}
+      <span class="pick-status">
+        {% if project %}
+          This server is read-only, so picks cannot be saved.
+        {% else %}
+          Not a Ridal project, so there is nowhere to save picks.
+          Run <code>ridal project init</code> and restart.
+        {% endif %}
+      </span>
+    {% endif %}
+  </div>
+
+  {#- Appears when a stored line is clicked. A sibling of the toolbar rather
+      than a child: it acts on one existing line rather than on the drawing
+      session, and showing it only when relevant is what makes "click a line
+      to edit it" discoverable. -#}
+  {% if writable %}
+  <div class="controls picker-selection" id="pick-selection" hidden>
+    <strong>Selected line</strong>
+    <label>Layer:
+      <span class="layer-swatch layer-swatch-inline" id="pick-selected-swatch"
+            aria-hidden="true"></span>
+      <select id="pick-selected-layer"></select>
+    </label>
+    <button id="pick-delete" type="button" class="danger">Delete line</button>
+    <span id="pick-selection-hint" class="pick-status"></span>
+  </div>
+  {% endif %}
+
+  <div id="pick-error" class="warning" role="status" aria-live="polite" hidden></div>
+
+  <dialog id="image-dialog">
+    <h2>Download rendered image</h2>
+    <p class="hint">
+      The whole radargram as one image, in the profile currently selected.
+    </p>
+    <div class="add-layer-fields">
+      <label>Width
+        <select id="image-width"></select>
+      </label>
+      <label>Format
+        <select id="image-format">
+          <option value="png" selected>PNG (lossless)</option>
+          <option value="jpeg">JPEG (smaller)</option>
+        </select>
+      </label>
+      <label id="image-quality-field" hidden>Quality
+        <select id="image-quality">
+          <option value="95">95 (best)</option>
+          <option value="85" selected>85</option>
+          <option value="70">70 (smallest)</option>
+        </select>
+      </label>
+    </div>
+    <p class="hint" id="image-estimate"></p>
+    <p>
+      <button type="button" id="image-go">Download</button>
+      <button type="button" id="image-close">Close</button>
+    </p>
+  </dialog>
+
+  <dialog id="download-dialog">
+    <h2>Download layer points</h2>
+    <p class="hint">
+      Picked lines resampled to evenly spaced points along the ground track,
+      with depth, travel time and position attached. Derived from the saved
+      interpretation, so save first.
+    </p>
+    <p class="hint">
+      WGS84 is the portable choice and what RFC 7946 requires of GeoJSON.
+      Native CRS writes the radargram's own projected coordinates instead,
+      which most GIS tools read but strict GeoJSON readers will take for
+      degrees. Either way the projected easting and northing are also
+      present as properties on every point.
+    </p>
+    <div class="add-layer-fields">
+      <label>Spacing
+        <select id="download-spacing">
+          <option value="auto" selected>Auto (from trace spacing)</option>
+          <option value="1">1 m</option>
+          <option value="5">5 m</option>
+          <option value="10">10 m</option>
+          <option value="25">25 m</option>
+          <option value="per-trace">Every trace</option>
+          <option value="vertices">Picked vertices only</option>
+        </select>
+      </label>
+      <label>Format
+        <select id="download-format">
+          <option value="geojson" selected>GeoJSON (WGS84)</option>
+          <option value="geojson-native">GeoJSON (native CRS)</option>
+          <option value="csv">CSV</option>
+        </select>
+      </label>
+    </div>
+    <p>
+      <button type="button" id="download-go">Download</button>
+      <button type="button" id="download-close">Close</button>
+    </p>
+  </dialog>
 
   <div class="layout" id="viewer-layout">
     <div id="map"></div>
@@ -72,11 +210,15 @@
     chunkSize: {{ chunk_size }},
     nCols: {{ n_cols }},
     nRows: {{ n_rows }},
+    revisionId: "{{ revision_id }}",
     viewerWidth: {{ viewer_width }},
     viewerHeight: {{ viewer_height }},
     sourceWidth: {{ shape_width }},
     sourceHeight: {{ shape_height }},
+    writable: {% if writable %}true{% else %}false{% endif %},
+    user: "{{ user }}",
   };
 </script>
 <script src="/static/viewer.js"></script>
+<script src="/static/picker.js"></script>
 {% endblock %}
