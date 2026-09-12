@@ -397,6 +397,10 @@ impl Project {
     }
 
     /// The horizontal stretch to open radargrams at. `None` means 1x.
+    ///
+    /// Only the viewer reads it, so a CLI-only build has no caller -- the
+    /// same situation as `set_render_defaults` below.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     pub fn default_xscale(&self) -> Option<f64> {
         self.read_config().render.default_xscale
     }

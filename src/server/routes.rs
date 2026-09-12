@@ -1046,8 +1046,8 @@ pub async fn dataset_image(
     let (source_height, source_width) = radargram.shape;
 
     let format = match query.format.as_deref() {
-        None | Some("") | Some("png") => super::render::profile::ImageFormat::Png,
-        Some("jpeg") | Some("jpg") => super::render::profile::ImageFormat::Jpeg {
+        None | Some("") | Some("png") => crate::render::profile::ImageFormat::Png,
+        Some("jpeg") | Some("jpg") => crate::render::profile::ImageFormat::Jpeg {
             // Clamped rather than rejected: quality is a dial, and every
             // value outside the range has an obvious nearest meaning.
             quality: query.quality.unwrap_or(85).clamp(1, 100),
@@ -1092,7 +1092,7 @@ pub async fn dataset_image(
             ),
         ));
     }
-    if matches!(format, super::render::profile::ImageFormat::Jpeg { .. })
+    if matches!(format, crate::render::profile::ImageFormat::Jpeg { .. })
         && (spec.width > MAX_JPEG_DIMENSION || spec.height > MAX_JPEG_DIMENSION)
     {
         return Err(ApiError::bad_request(
@@ -1106,11 +1106,11 @@ pub async fn dataset_image(
     }
 
     let extension = match format {
-        super::render::profile::ImageFormat::Jpeg { .. } => "jpg",
-        super::render::profile::ImageFormat::Png => "png",
+        crate::render::profile::ImageFormat::Jpeg { .. } => "jpg",
+        crate::render::profile::ImageFormat::Png => "png",
     };
     let content_type = format.content_type();
-    let profile = super::render::profile::RenderProfile { format, ..base };
+    let profile = crate::render::profile::RenderProfile { format, ..base };
     let id = entry.radargram_id.to_string();
     let filename = format!(
         "{id}-{}-{}x{}.{extension}",

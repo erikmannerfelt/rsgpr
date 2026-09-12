@@ -62,7 +62,9 @@ pub struct RenderArgs {
     /// Suppress progress messages.
     #[arg(short, long)]
     pub quiet: bool,
+}
 
+#[derive(Debug, clap::Args)]
 pub struct ProjectArgs {
     #[command(subcommand)]
     pub command: ProjectCommand,

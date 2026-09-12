@@ -556,7 +556,7 @@ pub async fn get_settings(
     State(state): State<Arc<AppState>>,
     caller: Caller,
 ) -> Result<impl IntoResponse, ApiError> {
-    let profiles: Vec<String> = crate::server::render::profile::RenderProfile::built_in_profiles()
+    let profiles: Vec<String> = crate::render::profile::RenderProfile::built_in_profiles()
         .into_iter()
         .map(|p| p.name)
         .collect();
@@ -635,7 +635,7 @@ pub async fn put_settings(
     let profile = match update.default_profile.as_deref() {
         None | Some("") => None,
         Some(name) => {
-            if crate::server::render::profile::RenderProfile::by_name(name).is_none() {
+            if crate::render::profile::RenderProfile::by_name(name).is_none() {
                 return Err(ApiError::bad_request(
                     "unknown_profile",
                     format!("There is no render profile called '{name}'."),

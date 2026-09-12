@@ -20,8 +20,8 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 use super::app::{build_router, AccessOptions, AppState};
-use super::render::service::RenderServiceConfig;
 use crate::project::Project;
+use crate::server::render_service::RenderServiceConfig;
 
 const RADARGRAM: &str = "line-01";
 
