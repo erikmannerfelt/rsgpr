@@ -128,12 +128,11 @@ pub fn write(
     preferences: &Preferences,
     expected: &Expectation,
 ) -> Result<Version, PreferencesError> {
-    let mut text = serde_json::to_string_pretty(preferences).map_err(|e| {
-        PreferencesError::Malformed {
+    let mut text =
+        serde_json::to_string_pretty(preferences).map_err(|e| PreferencesError::Malformed {
             path: store.root().join(path_of(user)),
             message: e.to_string(),
-        }
-    })?;
+        })?;
     text.push('\n');
     Ok(store.write(&path_of(user), &text, expected)?)
 }
@@ -189,7 +188,10 @@ mod tests {
         assert_eq!(erik.render_profile.as_deref(), Some("abslog"));
         assert_eq!(erik.x_scale, Some(2.0));
         // The point of the whole module: two people can disagree.
-        assert_eq!(read(&store, &user("student")).unwrap(), Preferences::default());
+        assert_eq!(
+            read(&store, &user("student")).unwrap(),
+            Preferences::default()
+        );
     }
 
     #[test]

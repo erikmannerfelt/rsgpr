@@ -190,9 +190,7 @@ macro_rules! slug_newtype {
         /// hand-edited document must not be able to reintroduce a value the
         /// HTTP boundary would have rejected.
         impl<'de> serde::Deserialize<'de> for $name {
-            fn deserialize<D: serde::Deserializer<'de>>(
-                deserializer: D,
-            ) -> Result<Self, D::Error> {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
                 let value = String::deserialize(deserializer)?;
                 Self::new(value).map_err(serde::de::Error::custom)
             }

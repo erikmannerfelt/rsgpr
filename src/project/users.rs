@@ -459,18 +459,37 @@ pub fn user_for_invite<'a>(set: &'a UserSet, token: &str, now: i64) -> Option<&'
     set.users.iter().find(|user| {
         user.invite.as_ref().is_some_and(|invite| {
             invite.is_valid_at(now)
-                && blake3::Hash::from_hex(&invite.token_hash).is_ok_and(|stored| stored == presented)
+                && blake3::Hash::from_hex(&invite.token_hash)
+                    .is_ok_and(|stored| stored == presented)
         })
     })
 }
 
 /// Lowercase hex, without pulling in an encoding crate for 32 bytes.
-fn to_hex(bytes: &[u8]) -> String {
+///
+/// Shared with the session key, the project's other secret, so the two
+/// hand-rolled codecs do not become two hand-rolled codecs.
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         out.push_str(&format!("{byte:02x}"));
     }
     out
+}
+
+/// The inverse of [`to_hex`] for exactly 32 bytes. `None` for anything that
+/// is not 64 hex characters, which is how a truncated or hand-edited secret
+/// is caught rather than silently accepted at the wrong length.
+pub(crate) fn from_hex_32(text: &str) -> Option<[u8; 32]> {
+    let text = text.trim();
+    if text.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(text.get(index * 2..index * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
 }
 
 /// Refuse a password that is too short to be worth hashing.
@@ -631,7 +650,10 @@ mod tests {
 
         let (set, _) = read(&store).unwrap().unwrap();
         assert_eq!(set.users.len(), 2, "the second write kept the first");
-        assert_eq!(set.get(&UserId::new("erik").unwrap()).unwrap().role, Role::Admin);
+        assert_eq!(
+            set.get(&UserId::new("erik").unwrap()).unwrap().role,
+            Role::Admin
+        );
     }
 
     #[test]
@@ -690,6 +712,20 @@ mod tests {
         assert!(user_for_invite(&set, &token, now + INVITE_TTL_DAYS * 86_400).is_none());
         // And an account with no invite is never matched by an empty one.
         assert!(user_for_invite(&set, "", now).is_none());
+    }
+
+    #[test]
+    fn hex_round_trips_and_refuses_anything_that_is_not_32_bytes() {
+        let bytes: [u8; 32] = std::array::from_fn(|i| (i * 7 % 256) as u8);
+        let text = to_hex(&bytes);
+        assert_eq!(text.len(), 64);
+        assert_eq!(from_hex_32(&text), Some(bytes));
+        assert_eq!(from_hex_32(&text[..62]), None, "truncated");
+        assert_eq!(from_hex_32(&format!("{text}00")), None, "too long");
+        assert_eq!(from_hex_32(&"z".repeat(64)), None, "not hex");
+        // Trailing whitespace is what a hand-edited or shell-written key
+        // file actually looks like, so it is tolerated.
+        assert_eq!(from_hex_32(&format!("{text}\n")), Some(bytes));
     }
 
     #[test]
@@ -759,10 +795,7 @@ mod tests {
                 &Expectation::Any,
             )
             .unwrap();
-        assert!(matches!(
-            read(&store),
-            Err(UserError::Malformed { .. })
-        ));
+        assert!(matches!(read(&store), Err(UserError::Malformed { .. })));
     }
 
     #[cfg(feature = "server")]

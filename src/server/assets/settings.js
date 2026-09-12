@@ -41,7 +41,7 @@
       showError(`Could not load settings: ${error.message}`);
       return;
     }
-    writable = Boolean(settings.writable);
+    writable = Boolean(settings.can_edit_project);
 
     // The empty option is a real choice, not a placeholder: it clears the
     // setting rather than storing the name of the built-in profile, so a

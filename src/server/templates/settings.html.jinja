@@ -17,7 +17,7 @@
       <dt>Location</dt><dd class="path">{{ project_root }}</dd>
     </dl>
 
-    {% if not writable %}
+    {% if not can_edit_project %}
       <div class="warning">
         <p>This server is read-only. Settings are shown but cannot be changed.</p>
       </div>
@@ -31,7 +31,7 @@
       <h2>Rendering</h2>
       <label class="settings-field">
         <span class="settings-label">Default render profile</span>
-        <select id="default-profile" {% if not writable %}disabled{% endif %}>
+        <select id="default-profile" {% if not can_edit_project %}disabled{% endif %}>
           <option value="">Loading&hellip;</option>
         </select>
         <span class="hint">
@@ -42,7 +42,7 @@
       </label>
       <label class="settings-field">
         <span class="settings-label">Default horizontal scale</span>
-        <select id="default-xscale" {% if not writable %}disabled{% endif %}>
+        <select id="default-xscale" {% if not can_edit_project %}disabled{% endif %}>
           <option value="">Loading&hellip;</option>
         </select>
         <span class="hint">
@@ -52,7 +52,7 @@
           1&times;. Changeable per radargram in the viewer regardless.
         </span>
       </label>
-      {% if writable %}
+      {% if can_edit_project %}
         <button type="submit">Save</button>
         <span id="settings-status" class="pick-status"></span>
       {% endif %}

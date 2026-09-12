@@ -47,9 +47,21 @@ pub struct AppState {
     /// directory of `.nc` files, or a single file, with nowhere to save
     /// anything. Every write route checks this rather than assuming.
     pub project: Option<crate::project::Project>,
-    /// Whether write routes are enabled. Requires a project, and can be
-    /// switched off for one that has one (`--read-only`).
-    pub writable: bool,
+    /// `--read-only`: cap every caller at `viewer`, whatever their account
+    /// says.
+    ///
+    /// A cap rather than a separate switch on the write routes, because
+    /// "what may this request do" now has exactly one answer -- the caller's
+    /// effective role -- and a second, parallel gate is how the two drift
+    /// apart. See [`super::auth::Caller`].
+    pub read_only: bool,
+    /// The key that signs session cookies, loaded on first use.
+    ///
+    /// Lazy so a project that never authenticates never grows a
+    /// `session.key`, and behind a lock rather than a `OnceLock` so a
+    /// failure to read it is retried on the next login instead of being
+    /// cached forever.
+    session_key: Mutex<Option<super::auth::SessionKey>>,
     /// Bounds how many renders may be in flight at once, across every
     /// radargram, sized from `--n-workers`.
     ///
@@ -84,13 +96,14 @@ impl AppState {
     /// producing an empty catalog, and every later comparison against it
     /// (this function's own containment check below) is symlink-resolved
     /// and consistent.
-    /// `project` is `None` for a bare directory or single file, which is
-    /// the read-only case; `writable` is ignored unless a project is present.
+    /// `project` is `None` for a bare directory or single file, which has
+    /// nowhere to write and is therefore read-only whatever `read_only`
+    /// says.
     pub fn build_with_project(
         root: &StdPath,
         config: &RenderServiceConfig,
         project: Option<crate::project::Project>,
-        writable: bool,
+        read_only: bool,
     ) -> Result<Self, String> {
         let root = root
             .canonicalize()
@@ -138,9 +151,8 @@ impl AppState {
             root_is_file,
             catalog,
             radargrams,
-            // Writes need somewhere to go, so a catalog with no project is
-            // read-only no matter what the caller asked for.
-            writable: writable && project.is_some(),
+            read_only,
+            session_key: Mutex::new(None),
             project,
             // `.max(1)`: a zero-permit semaphore would deadlock every
             // render forever. The CLI rejects `--n-workers 0` with a
@@ -199,6 +211,29 @@ impl AppState {
         Self::resolve_absolute_path(&self.root, self.root_is_file, entry)
     }
 
+    /// The key that signs this project's session cookies, creating it on
+    /// first use.
+    ///
+    /// Errors rather than returning `None` for a catalog with no project:
+    /// nothing should be asking for a session key there, and answering
+    /// "there is no key" would read as "this cookie is fine".
+    pub fn session_key(&self) -> Result<super::auth::SessionKey, String> {
+        let project = self
+            .project
+            .as_ref()
+            .ok_or_else(|| "this catalog is not a project, so it has no sessions".to_string())?;
+        let mut guard = self
+            .session_key
+            .lock()
+            .map_err(|_| "the session key lock was poisoned by a panic".to_string())?;
+        if let Some(key) = guard.as_ref() {
+            return Ok(key.clone());
+        }
+        let key = super::auth::project_session_key(project)?;
+        *guard = Some(key.clone());
+        Ok(key)
+    }
+
     pub fn find_entry(&self, radargram_id: &str) -> Option<&super::catalog::CatalogEntry> {
         self.catalog
             .entries
@@ -231,14 +266,14 @@ impl AppState {
 /// -- level 2 points, tracks, and whatever is added next -- is implemented
 /// once and offered at both scopes, instead of a catalog copy drifting from
 /// the group original.
-pub enum DownloadScope {
+pub enum MergeScope {
     /// Every radargram the server knows about, groups and ungrouped alike.
     Catalog,
     /// One group id, or [`NO_GROUP_ID`] for the ungrouped pseudo-group.
     Group(String),
 }
 
-impl DownloadScope {
+impl MergeScope {
     pub fn entries<'a>(&self, state: &'a AppState) -> Vec<&'a super::catalog::CatalogEntry> {
         match self {
             Self::Catalog => state.catalog.entries.iter().collect(),
@@ -414,6 +449,15 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             "/api/v1/datasets/{radargram_id}/views/{view}/chunks/{profile}/{x}/{y}",
             get(super::routes::chunk_image),
         )
+        // Every route above is reached through this, so identity is resolved
+        // exactly once per request and a route added later cannot forget to
+        // ask who is calling. It is also the only place that can enforce
+        // "this project requires a login to read", which is a property of
+        // the whole site rather than of any one handler.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            super::auth::middleware,
+        ))
         .with_state(state)
 }
 

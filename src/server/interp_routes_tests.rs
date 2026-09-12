@@ -130,7 +130,7 @@ fn group_app() -> (tempfile::TempDir, Router) {
             dir.path(),
             &RenderServiceConfig::default(),
             Some(project),
-            true,
+            false,
         )
         .unwrap(),
     );
@@ -155,7 +155,7 @@ fn mixed_catalog_app() -> (tempfile::TempDir, Router) {
             dir.path(),
             &RenderServiceConfig::default(),
             Some(project),
-            true,
+            false,
         )
         .unwrap(),
     );
@@ -177,7 +177,7 @@ fn project_app_with_axes() -> (tempfile::TempDir, Router) {
             dir.path(),
             &RenderServiceConfig::default(),
             Some(project),
-            true,
+            false,
         )
         .unwrap(),
     );
@@ -185,6 +185,11 @@ fn project_app_with_axes() -> (tempfile::TempDir, Router) {
 }
 
 /// A project containing one radargram, served writable unless stated.
+///
+/// No `users.json`, so this is the unconfigured case: every request is the
+/// local `default` user with the `operator` role, which is how Ridal behaved
+/// before authentication existed and what every test written then assumes.
+/// The authenticated cases build their own state in `auth_routes_tests`.
 fn project_app(writable: bool) -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
@@ -195,7 +200,7 @@ fn project_app(writable: bool) -> (tempfile::TempDir, Router) {
             dir.path(),
             &RenderServiceConfig::default(),
             Some(project),
-            writable,
+            !writable,
         )
         .unwrap(),
     );
@@ -207,7 +212,7 @@ fn bare_app() -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     write_test_nc(&dir.path().join("line-01.nc"), RADARGRAM);
     let state = Arc::new(
-        AppState::build_with_project(dir.path(), &RenderServiceConfig::default(), None, true)
+        AppState::build_with_project(dir.path(), &RenderServiceConfig::default(), None, false)
             .unwrap(),
     );
     (dir, build_router(state))
@@ -409,7 +414,12 @@ async fn a_read_only_server_refuses_writes_but_still_serves_reads() {
 
     let (_dir2, app) = project_app(false);
     let (status, _, body) = put(&app, URI, &document(RADARGRAM), None).await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    // A 403 rather than a 409 since #131: --read-only is a cap on the
+    // caller's role, not a separate switch on the write routes, so this is
+    // "you may not" rather than "the server is not in a state to". The code
+    // still names the flag, because the operator of the server is the one
+    // who can change it.
+    assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"]["code"], "read_only");
 
     let (status, _, body) = get(&app, "/api/v1/datasets/line-01/interpretations").await;
@@ -1037,7 +1047,10 @@ async fn the_default_profile_round_trips_through_the_settings_api() {
     let (status, _, body) = get(&app, "/api/v1/project/settings").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["project"], true);
-    assert_eq!(body["writable"], true);
+    // Split since #131: what the Project section may do is an operator
+    // question, and it is not the same question as whether this person may
+    // edit their own preferences.
+    assert_eq!(body["can_edit_project"], true);
     assert!(body["default_profile"].is_null(), "unset to begin with");
     assert!(
         body["profiles"]
@@ -1408,12 +1421,12 @@ async fn settings_are_read_only_where_writes_are() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"]["code"], "read_only");
 
     // Reading still works, and the page says why the form is inert.
     let (_, _, body) = get(&app, "/api/v1/project/settings").await;
-    assert_eq!(body["writable"], false);
+    assert_eq!(body["can_edit_project"], false);
     let (status, html) = page(&app, "/settings").await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("read-only"), "{html}");

@@ -171,17 +171,20 @@ pub struct ServerStartArgs {
     #[arg(long)]
     pub open_browser: bool,
 
-    /// Serve a project without accepting any writes.
+    /// Serve a project without accepting any writes. Caps every caller at
+    /// the "viewer" role, whatever their account says.
     #[arg(long)]
     pub read_only: bool,
 
-    /// Accept writes while bound to a non-loopback address.
+    /// Accept password logins while bound to a non-loopback address.
     ///
-    /// Ridal has no authentication yet, so this makes interpretations
-    /// editable by anyone who can reach the address. Prefer binding loopback
-    /// behind a reverse proxy that authenticates.
+    /// Ridal does not terminate TLS, so a password sent to a non-loopback
+    /// address travels in the clear unless something in front of it is
+    /// doing so. Use this only when you know what that something is; the
+    /// supported arrangement is to bind loopback behind a TLS-terminating
+    /// reverse proxy.
     #[arg(long)]
-    pub allow_remote_writes: bool,
+    pub allow_insecure_login: bool,
 
     /// In-memory cache budget for encoded chunk/overview images, in MB.
     #[arg(long)]
@@ -553,7 +556,7 @@ fn server_command(args: ServerArgs) -> Result<(), String> {
                 start_args.port,
                 start_args.open_browser,
                 start_args.read_only,
-                start_args.allow_remote_writes,
+                start_args.allow_insecure_login,
                 config,
             )
         }
