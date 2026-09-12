@@ -352,7 +352,7 @@ pub fn resolve(state: &AppState, headers: &HeaderMap, now: i64) -> Caller {
     //
     // So a damaged file denies everything until it is fixed: no accounts to
     // match, no public read, no anonymous download. `launch` refuses to
-    // start on an unparseable file for the same reason, which is where an
+    // start on an unparsable file for the same reason, which is where an
     // operator will actually see it; this covers the file being damaged
     // under a running server.
     let configured = match users::read(project.documents()) {
