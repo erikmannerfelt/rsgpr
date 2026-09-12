@@ -22,8 +22,10 @@ mod identity;
 mod interp;
 mod io;
 mod project;
+mod render;
 #[cfg(feature = "server")]
 mod server;
+mod source;
 mod tools;
 mod user_metadata;
 

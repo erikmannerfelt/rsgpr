@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::app::AppState;
-use super::render::service::RenderServiceConfig;
+use crate::server::render_service::RenderServiceConfig;
 
 pub struct LaunchOptions {
     pub host: IpAddr,

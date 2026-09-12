@@ -22,6 +22,8 @@ pub enum Commands {
     Steps(StepsArgs),
     /// Inspect supported formats
     Formats(FormatsArgs),
+    /// Render a processed radargram to an image
+    Render(RenderArgs),
     /// Work with interpretations (picked layers) of processed radargrams
     Interp(InterpArgs),
     /// Create and inspect Ridal projects
@@ -32,6 +34,34 @@ pub enum Commands {
     /// Run the web server explicitly (for remote or persistent deployment)
     #[cfg(feature = "server")]
     Server(ServerArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RenderArgs {
+    /// Processed .nc file to render.
+    pub input: PathBuf,
+
+    /// Output image path. The extension picks the encoding (.png or .jpg);
+    /// if omitted, a sidecar beside the input is used.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Render profile: a built-in name, or a path to a TOML file.
+    #[arg(long, default_value = "default")]
+    pub profile: String,
+
+    /// Output width in pixels. Defaults to one pixel per trace; larger
+    /// than the trace count is not upsampled to.
+    #[arg(long)]
+    pub width: Option<usize>,
+
+    /// JPEG quality, 1-100. Ignored for PNG.
+    #[arg(long)]
+    pub quality: Option<u8>,
+
+    /// Suppress progress messages.
+    #[arg(short, long)]
+    pub quiet: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -344,6 +374,17 @@ pub struct ProcessArgs {
     #[arg(short, long)]
     pub render: Option<Option<PathBuf>>,
 
+    /// Render profile for --render: a built-in name, or a path to a TOML
+    /// file. Distinct from the *processing* profile selected by --default
+    /// and --steps.
+    #[arg(long)]
+    pub render_profile: Option<String>,
+
+    /// Output width in pixels for --render. Defaults to one pixel per
+    /// trace.
+    #[arg(long)]
+    pub render_width: Option<usize>,
+
     /// Don't export an nc file
     #[arg(long)]
     pub no_export: bool,
@@ -436,6 +477,17 @@ pub struct BatchProcessArgs {
     /// Render images into the given directory.
     #[arg(short, long)]
     pub render: Option<Option<PathBuf>>,
+
+    /// Render profile for --render: a built-in name, or a path to a TOML
+    /// file. Distinct from the *processing* profile selected by --default
+    /// and --steps.
+    #[arg(long)]
+    pub render_profile: Option<String>,
+
+    /// Output width in pixels for --render. Defaults to one pixel per
+    /// trace.
+    #[arg(long)]
+    pub render_width: Option<usize>,
 
     /// Don't export nc files
     #[arg(long)]
@@ -595,6 +647,7 @@ pub fn run(arguments: Args) -> Result<(), String> {
         Commands::Info(args) => info_command(args),
         Commands::Steps(args) => steps_command(args),
         Commands::Formats(args) => formats_command(args),
+        Commands::Render(args) => render_command(args),
         Commands::Interp(args) => match args.command {
             InterpCommand::Export(args) => interp_export_command(&args),
         },
@@ -620,7 +673,7 @@ pub fn run(arguments: Args) -> Result<(), String> {
 fn render_service_config(
     cache_memory_mb: Option<usize>,
     n_workers: Option<usize>,
-) -> Result<crate::server::render::service::RenderServiceConfig, String> {
+) -> Result<crate::server::render_service::RenderServiceConfig, String> {
     // Rejected rather than silently clamped: n_workers sizes the render
     // permit semaphore, and zero permits would leave every image request
     // waiting until it times out into a 503. A user who typed 0 meant
@@ -628,8 +681,8 @@ fn render_service_config(
     if n_workers == Some(0) {
         return Err("--n-workers must be at least 1".to_string());
     }
-    let default = crate::server::render::service::RenderServiceConfig::default();
-    Ok(crate::server::render::service::RenderServiceConfig {
+    let default = crate::server::render_service::RenderServiceConfig::default();
+    Ok(crate::server::render_service::RenderServiceConfig {
         cache_memory_mb: cache_memory_mb.unwrap_or(default.cache_memory_mb),
         n_workers: n_workers.unwrap_or(default.n_workers),
         ..default
@@ -681,6 +734,8 @@ fn process_command(args: &ProcessArgs) -> Result<(), String> {
         steps: resolved_steps,
         no_export: args.no_export,
         render_path: args.render.clone(),
+        render_profile: args.render_profile.clone(),
+        render_width: args.render_width,
         override_antenna_mhz: args.override_antenna_mhz,
         override_antenna_separation: args.override_antenna_separation,
         user_metadata,
@@ -723,6 +778,8 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
         steps: resolved_steps,
         no_export: args.no_export,
         render_dir,
+        render_profile: args.render_profile.clone(),
+        render_width: args.render_width,
         merge: args.merge.clone(),
         override_antenna_mhz: args.override_antenna_mhz,
         override_antenna_separation: args.override_antenna_separation,
@@ -833,6 +890,35 @@ fn steps_command(args: StepsArgs) -> Result<(), String> {
 
     for (name, _) in all_steps {
         println!("{name}");
+    }
+    Ok(())
+}
+
+/// `ridal render <input.nc> [-o out.png] [--profile ...] [--width ...]`
+///
+/// The command-line half of the web GUI's image download. Both go through
+/// `render::oneshot`, so the two produce the same picture from the same
+/// file and profile.
+fn render_command(args: RenderArgs) -> Result<(), String> {
+    let profile = crate::render::profile::RenderProfile::resolve(&args.profile)?;
+    let output = args
+        .output
+        .clone()
+        .unwrap_or_else(|| crate::render::oneshot::sidecar_path(&args.input, &profile));
+
+    let request = crate::render::oneshot::RenderRequest {
+        profile: &profile,
+        width: args.width,
+        quality: args.quality,
+    };
+    let (width, height) =
+        crate::render::oneshot::render_path_to_file(&args.input, &output, &request)?;
+
+    if !args.quiet {
+        println!(
+            "Rendered {}x{} px with the '{}' profile to {:?}",
+            width, height, profile.name, output
+        );
     }
     Ok(())
 }
@@ -1226,7 +1312,7 @@ mod tests {
         assert!(super::render_service_config(None, Some(1)).is_ok());
         assert_eq!(
             super::render_service_config(None, None).unwrap().n_workers,
-            crate::server::render::service::RenderServiceConfig::default().n_workers,
+            crate::server::render_service::RenderServiceConfig::default().n_workers,
             "an omitted flag must keep the default, not become an error"
         );
     }

@@ -1,6 +1,6 @@
 //! Web server and browser GUI for browsing radargrams ridal has already
 //! processed (#115). Everything under this module requires the `server`
-//! cargo feature; a CLI-only build never links Axum, MiniJinja, or blake3.
+//! cargo feature; a CLI-only build never links Axum or MiniJinja.
 //!
 //! See `ARCHITECTURE.md` at the repository root for the narrative version
 //! of what follows, including the request lifecycle, the decisions most
@@ -34,10 +34,12 @@
 //!    card grid requesting one overview per catalog entry cannot start
 //!    hundreds of simultaneous renders), then runs on a `spawn_blocking`
 //!    thread against the matching [`app::OpenRadargram`]'s
-//!    [`render::service::RenderService`]. See [`render`] for the pipeline
-//!    that turns a source window into encoded image bytes -- that module
-//!    is pure and independently testable, with no HTTP types anywhere in
-//!    it.
+//!    [`render_service::RenderService`], which caches encoded results and
+//!    drives [`crate::render`] -- the pipeline that turns a source window
+//!    into encoded image bytes. That pipeline lives outside this module
+//!    and outside the `server` feature, because nothing in it is about
+//!    HTTP: `ridal render` on the command line and the web GUI are two
+//!    callers of one renderer.
 //! 5. [`track`] extracts and simplifies the physical track a radargram
 //!    follows (trace-indexed, not distance-indexed -- see its module doc
 //!    for why that distinction is load-bearing), used by both the index
@@ -47,9 +49,10 @@
 //!
 //! Rendering and dataset logic must not depend on Axum, MiniJinja, or
 //! other HTTP/template types. Only [`app`], [`routes`], [`interp_routes`],
-//! [`launch`], and [`templates`] are allowed to know an HTTP server exists; everything
-//! else -- especially [`render`] -- must stay testable with nothing but
-//! plain Rust and, where needed, a real NetCDF file.
+//! [`launch`], and [`templates`] are allowed to know an HTTP server exists;
+//! everything else must stay testable with nothing but plain Rust and,
+//! where needed, a real NetCDF file. [`crate::render`] and [`crate::source`]
+//! followed that rule so completely that they no longer live here at all.
 
 pub mod app;
 pub mod assets;
@@ -62,8 +65,7 @@ pub mod interp_routes;
 #[cfg(test)]
 mod interp_routes_tests;
 pub mod launch;
-pub mod render;
+pub mod render_service;
 pub mod routes;
-pub mod source;
 pub mod templates;
 pub mod track;

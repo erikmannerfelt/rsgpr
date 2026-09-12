@@ -10,7 +10,7 @@
 
 use super::colormap::to_stats_domain;
 use super::profile::AmplitudeTransform;
-use crate::server::source::SourceReader;
+use crate::source::AmplitudeSource;
 
 /// Spread across the profile. 128 well-separated locations is ample for a
 /// percentile dominated by vertical (not horizontal) structure; the cost
@@ -34,8 +34,25 @@ const TRACES_PER_RUN: usize = 16;
 /// way of excluding the direct-wave band (see
 /// `RenderProfile::stats_skip_first_samples`). `0` reproduces the original
 /// whole-trace behavior.
+/// Seed for the trace sampling below, shared by every caller.
+///
+/// Fixed, and fixed *once for the whole program*, which is the load-bearing
+/// part. The seed chooses which traces the percentile estimate looks at, so
+/// two callers with different seeds can disagree about a radargram's
+/// amplitude limits and therefore about every pixel they draw from it.
+/// `ridal render`, `ridal process --render` and the browser all promise to
+/// produce the same picture; a per-caller seed quietly broke that promise
+/// in a way that looks like noise rather than like a bug.
+///
+/// A constant rather than something derived from the file: determinism is
+/// the only requirement -- the same input must give the same output across
+/// runs and restarts -- and a constant additionally means two profiles of
+/// one radargram sample the same traces, so comparing them shows the
+/// difference between the profiles and nothing else.
+pub const SAMPLE_SEED: u64 = 0x5249_4441_4c00_0001;
+
 pub fn sampled_amplitude_limits(
-    reader: &SourceReader,
+    reader: &impl AmplitudeSource,
     transform: AmplitudeTransform,
     seed: u64,
     low_pct: f32,
@@ -74,6 +91,7 @@ fn percentile(sorted: &[f32], p: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source::SourceReader;
 
     fn write_test_nc_with(path: &std::path::Path, height: usize, width: usize, values: &[f32]) {
         let mut file = netcdf::create(path).unwrap();

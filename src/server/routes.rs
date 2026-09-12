@@ -11,10 +11,10 @@ use serde::Deserialize;
 
 use super::app::{validate_radargram_id, AppState, MergeScope, NO_GROUP_ID};
 use super::auth::Caller;
-use super::render::grid::{ChunkGrid, OverviewSpec, ViewerRaster};
-use super::render::profile::{DatasetView, RenderProfile};
 use super::templates;
 use crate::identity::RadargramId;
+use crate::render::grid::{ChunkGrid, OverviewSpec, ViewerRaster};
+use crate::render::profile::{DatasetView, RenderProfile};
 
 /// Stable JSON error envelope (#120): `{"error": {"code", "message"}}`.
 pub struct ApiError {
@@ -472,7 +472,7 @@ async fn render_under_permit<F>(
     render: F,
 ) -> Result<Vec<u8>, ApiError>
 where
-    F: FnOnce(&mut super::render::service::RenderService) -> Result<Vec<u8>, String>
+    F: FnOnce(&mut crate::server::render_service::RenderService) -> Result<Vec<u8>, String>
         + Send
         + 'static,
 {
@@ -899,7 +899,7 @@ pub async fn viewer_page(
             user => caller.user.as_ref().map(|u| u.as_str()).unwrap_or(""),
             profiles => profiles,
             active_profile => active_profile,
-            chunk_size => super::render::grid::CHUNK_SIZE,
+            chunk_size => crate::render::grid::CHUNK_SIZE,
             n_cols => grid.n_cols,
             n_rows => grid.n_rows,
             viewer_width => raster.width,
@@ -1046,8 +1046,8 @@ pub async fn dataset_image(
     let (source_height, source_width) = radargram.shape;
 
     let format = match query.format.as_deref() {
-        None | Some("") | Some("png") => super::render::profile::ImageFormat::Png,
-        Some("jpeg") | Some("jpg") => super::render::profile::ImageFormat::Jpeg {
+        None | Some("") | Some("png") => crate::render::profile::ImageFormat::Png,
+        Some("jpeg") | Some("jpg") => crate::render::profile::ImageFormat::Jpeg {
             // Clamped rather than rejected: quality is a dial, and every
             // value outside the range has an obvious nearest meaning.
             quality: query.quality.unwrap_or(85).clamp(1, 100),
@@ -1092,7 +1092,7 @@ pub async fn dataset_image(
             ),
         ));
     }
-    if matches!(format, super::render::profile::ImageFormat::Jpeg { .. })
+    if matches!(format, crate::render::profile::ImageFormat::Jpeg { .. })
         && (spec.width > MAX_JPEG_DIMENSION || spec.height > MAX_JPEG_DIMENSION)
     {
         return Err(ApiError::bad_request(
@@ -1106,11 +1106,11 @@ pub async fn dataset_image(
     }
 
     let extension = match format {
-        super::render::profile::ImageFormat::Jpeg { .. } => "jpg",
-        super::render::profile::ImageFormat::Png => "png",
+        crate::render::profile::ImageFormat::Jpeg { .. } => "jpg",
+        crate::render::profile::ImageFormat::Png => "png",
     };
     let content_type = format.content_type();
-    let profile = super::render::profile::RenderProfile { format, ..base };
+    let profile = crate::render::profile::RenderProfile { format, ..base };
     let id = entry.radargram_id.to_string();
     let filename = format!(
         "{id}-{}-{}x{}.{extension}",

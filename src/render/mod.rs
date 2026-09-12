@@ -1,8 +1,12 @@
 //! Turns raw source amplitude into an encoded image, with no HTTP or
-//! template types anywhere in the path (#118). This module is what
-//! [`crate::server::routes`] calls into; everything below is plain,
+//! template types anywhere in the path (#118). Everything below is plain,
 //! independently testable Rust that never materializes a full-resolution
 //! image in memory.
+//!
+//! Two callers: `ridal render` on the command line, and the web GUI's
+//! `server::routes` by way of `server::render_service`. Deliberately not
+//! an intra-doc link -- that module is behind the `server` feature, and
+//! this one has to document itself without it.
 //!
 //! # Pipeline
 //!
@@ -17,7 +21,7 @@
 //!    [`grid::SourceWindow`] -- floating-point source-array bounds, not
 //!    necessarily integer-aligned.
 //! 2. [`renderer::Renderer`] reads exactly that window (via
-//!    [`crate::server::source::SourceReader`], never the whole array), then
+//!    [`crate::source::SourceReader`], never the whole array), then
 //!    calls [`resample::resample`] to reduce it to the output size.
 //!    Overviews are read in bounded-size horizontal bands rather than all
 //!    at once, since an overview's *input* is the entire radargram
@@ -32,14 +36,17 @@
 //!    revision+profile from a fixed-seed sample, never per chunk -- doing
 //!    it per chunk would make adjacent chunks normalize differently and
 //!    produce a visible seam at every boundary.
-//! 4. [`service::RenderService`] is the entry point everything above is
-//!    reached through: given a [`profile::RenderProfile`] and a chunk or
-//!    overview request, it resolves amplitude limits (cached separately
-//!    from images, since they're reused across every chunk), checks its
-//!    in-memory cache, and renders on a miss. Cache keys fold in
-//!    [`crate::server::catalog::RevisionId`] plus every profile field that
-//!    affects pixels, so a reprocessed file or a changed profile can never
-//!    return a stale image.
+//! 4. [`renderer::Renderer`] ties the above together: given a
+//!    [`profile::RenderProfile`], [`profile::AmplitudeLimits`] and a chunk
+//!    or overview request, it produces encoded image bytes. It holds no
+//!    cache and no state beyond its source, so a one-shot `ridal render`
+//!    uses it directly.
+//!
+//!    The server wraps it in `server::render_service::RenderService`,
+//!    which adds the in-memory cache and resolves amplitude limits once
+//!    per revision+profile rather than per request. That wrapper stays on
+//!    the server side because caching encoded responses is a server
+//!    concern; a command-line render has nothing to reuse them for.
 //!
 //! # Why resampling method is more than one knob
 //!
@@ -63,17 +70,19 @@
 //! name say so directly -- these were all found by looking at real
 //! radargrams, not by reasoning about the code in the abstract.
 
-// A handful of small public methods (ChunkGrid::iter, cache introspection
-// on RenderService/ByteBoundedCache, etc.) exist for API completeness and
-// future callers (an eventual grid-manifest endpoint, cache metrics) but
-// have no caller yet. Kept rather than deleted, since removing and later
-// re-adding an identical method is pure churn.
+// A handful of small public methods (ChunkGrid::iter and friends) exist
+// for API completeness and future callers -- an eventual grid-manifest
+// endpoint -- but have no caller yet. Kept rather than deleted, since
+// removing and later re-adding an identical method is pure churn.
+//
+// The cache-introspection half of this allowance moved to
+// `server::render_service` along with the cache itself.
 #![allow(dead_code)]
 
 pub mod colormap;
 pub mod grid;
+pub mod oneshot;
 pub mod profile;
 pub mod renderer;
 pub mod resample;
-pub mod service;
 pub mod stats;
