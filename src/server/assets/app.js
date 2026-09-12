@@ -155,6 +155,23 @@ const RIDAL = Object.freeze({
    * string, so the profile is read when the popup opens. The viewer's
    * profile can change without a page reload, and a popup built at load
    * time would keep showing the profile that was active then. */
+  /** Build an API path with every segment percent-encoded.
+   *
+   * The values that reach these today are server-rendered slugs --
+   * validated `RadargramId`, `GroupId`, `UserId`, and a profile name from
+   * a select whose options the server wrote. So this is not closing a
+   * live hole. It is that an un-encoded URL segment is a latent bug
+   * rather than a safe assumption: one containing a slash, `?` or `#`
+   * silently addresses a different resource than intended, and the next
+   * value routed through here may not come from the server.
+   *
+   * Encoding at construction means no caller has to know where its value
+   * came from, which is the only version of this that stays true.
+   */
+  apiPath(...segments) {
+    return `/api/v1/${segments.map((s) => encodeURIComponent(s)).join("/")}`;
+  },
+
   /** Build a track popup as DOM nodes rather than an HTML string.
    *
    * Leaflet assigns a string popup with `innerHTML` and appends an element
@@ -180,7 +197,7 @@ const RIDAL = Object.freeze({
 
     const thumb = document.createElement("img");
     thumb.className = "popup-thumb";
-    thumb.src = `/api/v1/datasets/${id}/views/standard/overview${query}`;
+    thumb.src = `${RIDAL.apiPath("datasets", radargramId, "views", "standard", "overview")}${query}`;
     thumb.loading = "lazy";
     thumb.alt = "";
     link.appendChild(thumb);

@@ -37,7 +37,7 @@ function currentProfile() {
 }
 
 function chunkUrl(x, y, profile) {
-  return `/api/v1/datasets/${RADARGRAM_ID}/views/${VIEW}/chunks/${profile}/${x}/${y}`;
+  return RIDAL.apiPath("datasets", RADARGRAM_ID, "views", VIEW, "chunks", profile, x, y);
 }
 
 function chunkBounds(x, y, scale) {
@@ -321,7 +321,7 @@ function fitOverviewToTrack(track) {
   }
 }
 
-RIDAL.fetchJson(`/api/v1/datasets/${RADARGRAM_ID}/track`)
+RIDAL.fetchJson(RIDAL.apiPath("datasets", RADARGRAM_ID, "track"))
   .then((track) => {
     ownTrack = track;
     trackToLatLngs(track).forEach((latlngs) => {
@@ -340,7 +340,7 @@ RIDAL.fetchJson(`/api/v1/datasets/${RADARGRAM_ID}/track`)
   });
 
 if (GROUP) {
-  RIDAL.fetchJson(`/api/v1/groups/${GROUP}/tracks`)
+  RIDAL.fetchJson(RIDAL.apiPath("groups", GROUP, "tracks"))
     .then((siblings) => {
       for (const [siblingId, info] of Object.entries(siblings)) {
         if (siblingId === RADARGRAM_ID) continue;
@@ -406,7 +406,7 @@ function locateTrace(track, traceIndex) {
 // for fixtures that never wrote it, so the readout below must check
 // each one rather than assuming all-or-nothing. ---
 let axes = null;
-RIDAL.fetchJson(`/api/v1/datasets/${RADARGRAM_ID}/axes`)
+RIDAL.fetchJson(RIDAL.apiPath("datasets", RADARGRAM_ID, "axes"))
   .then((a) => { axes = a; })
   .catch((error) => {
     // The readout degrades to trace-only, which is still useful, so this
@@ -475,7 +475,7 @@ map.on('mouseout', () => {
 // plus the processing steps/log in their own <details>. ---
 const dialog = document.getElementById('metadata-dialog');
 document.getElementById('metadata-button').addEventListener('click', () => {
-  RIDAL.fetchJson(`/api/v1/datasets/${RADARGRAM_ID}/attributes`)
+  RIDAL.fetchJson(RIDAL.apiPath("datasets", RADARGRAM_ID, "attributes"))
     .then((data) => {
       const tbody = document.querySelector('#metadata-table tbody');
       tbody.innerHTML = '';
@@ -552,7 +552,7 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
   const menu = document.getElementById('download-menu');
   if (!menu) return;
 
-  const datasetUrl = `/api/v1/datasets/${RADARGRAM_ID}`;
+  const datasetUrl = RIDAL.apiPath("datasets", RADARGRAM_ID);
   const picksUrl = `${datasetUrl}/interpretations/${CFG.user}`;
   const go = (url) => {
     menu.open = false;

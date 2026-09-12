@@ -34,7 +34,7 @@ document.getElementById('index-profile-select').addEventListener('change', (even
 document.querySelectorAll('.group-map').forEach((el) => {
   const map = RIDAL.basemap(L.map(el.id));
 
-  RIDAL.fetchJson(`/api/v1/groups/${el.dataset.group}/tracks`)
+  RIDAL.fetchJson(RIDAL.apiPath("groups", el.dataset.group, "tracks"))
     .then((members) => {
       const allPoints = [];
       for (const [radargramId, info] of Object.entries(members)) {

@@ -928,7 +928,12 @@
 
     // --- Persistence ----------------------------------------------------------
 
-    const documentUrl = `/api/v1/datasets/${CFG.radargramId}/interpretations/${CFG.user}`;
+    const documentUrl = RIDAL.apiPath(
+      "datasets",
+      CFG.radargramId,
+      "interpretations",
+      CFG.user,
+    );
 
     async function save() {
       if (!dirty) return;
