@@ -312,6 +312,37 @@ impl DocumentStore {
         text: &str,
         expected: &Expectation,
     ) -> Result<Version, StoreError> {
+        self.write_with_mode(relative, text, expected, None)
+    }
+
+    /// [`Self::write`], but leaving the document readable only by its owner.
+    ///
+    /// For the two documents that are secrets rather than data: the user
+    /// file, which holds password hashes, and the session-signing key, which
+    /// is a forgery kit for every account. Everything else in a project is
+    /// meant to be read by whoever can read the directory.
+    ///
+    /// The mode is applied to the temporary file *before* the rename, so the
+    /// document is never momentarily world-readable at its real path. Unix
+    /// only; elsewhere this is an ordinary write, which is why the callers
+    /// treat restrictive permissions as one defence and never as the reason
+    /// a secret is safe.
+    pub fn write_private(
+        &self,
+        relative: &Path,
+        text: &str,
+        expected: &Expectation,
+    ) -> Result<Version, StoreError> {
+        self.write_with_mode(relative, text, expected, Some(0o600))
+    }
+
+    fn write_with_mode(
+        &self,
+        relative: &Path,
+        text: &str,
+        expected: &Expectation,
+        mode: Option<u32>,
+    ) -> Result<Version, StoreError> {
         let path = self.path_of(relative)?;
         let _guard = self.write_lock.lock().map_err(|_| StoreError::Poisoned)?;
 
@@ -352,6 +383,9 @@ impl DocumentStore {
             path: temp.path.clone(),
             source,
         })?;
+        if let Some(mode) = mode {
+            set_mode(&temp.path, mode)?;
+        }
         std::fs::rename(&temp.path, &path).map_err(|source| StoreError::Io {
             path: path.clone(),
             source,
@@ -449,6 +483,25 @@ impl DocumentStore {
         stems.sort();
         Ok(stems)
     }
+}
+
+/// Restrict a file to its owner. A no-op where the platform has no such
+/// concept, which is deliberate: [`DocumentStore::write_private`] documents
+/// that its callers must not depend on this for secrecy.
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> Result<(), StoreError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(|source| {
+        StoreError::Io {
+            path: path.to_path_buf(),
+            source,
+        }
+    })
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) -> Result<(), StoreError> {
+    Ok(())
 }
 
 /// A unique temporary sibling, keeping the real extension last so anything
