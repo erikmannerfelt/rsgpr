@@ -89,12 +89,15 @@ impl ApiError {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, code, message)
     }
 
-    /// For tests and for the permission checks in [`super::auth`], which
-    /// build errors and then assert on what they became.
+    /// For the permission tests in [`super::auth`], which build errors and
+    /// then assert on what they became. Not needed in the response path,
+    /// where `IntoResponse` reads the fields directly.
+    #[cfg(test)]
     pub(super) fn status_code(&self) -> StatusCode {
         self.status
     }
 
+    #[cfg(test)]
     pub(super) fn message(&self) -> &str {
         &self.message
     }

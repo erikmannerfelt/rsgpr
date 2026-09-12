@@ -190,20 +190,6 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(|(_, value)| value.to_string())
 }
 
-/// How a caller's identity was established.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IdentitySource {
-    /// The project has no user file, so it has not opted into
-    /// authentication. Everyone is the local default user, which is how
-    /// every Ridal before #131 behaved and how a project keeps working after
-    /// an upgrade.
-    Unconfigured,
-    /// A signed session cookie.
-    Session,
-    /// Nobody signed in, on a project that does have accounts.
-    Anonymous,
-}
-
 /// Why a caller's effective role is lower than their account's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoleCap {
@@ -228,7 +214,6 @@ pub struct Caller {
     /// What this caller may actually do here and now.
     pub role: Role,
     pub download: DownloadScope,
-    pub source: IdentitySource,
     /// Set when [`Self::role`] is below [`Self::account_role`], so a refusal
     /// can explain which of the two reasons it was.
     pub cap: Option<RoleCap>,
@@ -339,7 +324,6 @@ pub fn resolve(state: &AppState, headers: &HeaderMap, now: i64) -> Caller {
             account_role: Role::Viewer,
             role: Role::Viewer,
             download: DownloadScope::All,
-            source: IdentitySource::Unconfigured,
             cap: Some(RoleCap::NotAProject),
             authentication_configured: false,
         };
@@ -354,7 +338,7 @@ pub fn resolve(state: &AppState, headers: &HeaderMap, now: i64) -> Caller {
         Err(_) => Some(UserSet::default()),
     };
 
-    let (user, account_role, download, source) = match &configured {
+    let (user, account_role, download) = match &configured {
         None => (
             // The migration case, and `ridal gui`'s no-login-step case: the
             // local default user, with everything an unauthenticated Ridal
@@ -363,21 +347,10 @@ pub fn resolve(state: &AppState, headers: &HeaderMap, now: i64) -> Caller {
             UserId::new(crate::identity::DEFAULT_USER).ok(),
             Role::Operator,
             DownloadScope::All,
-            IdentitySource::Unconfigured,
         ),
         Some(set) => match authenticated_user(state, set, headers, now) {
-            Some(user) => (
-                Some(user.name.clone()),
-                user.role,
-                user.download,
-                IdentitySource::Session,
-            ),
-            None => (
-                None,
-                Role::Viewer,
-                set.anonymous_download,
-                IdentitySource::Anonymous,
-            ),
+            Some(user) => (Some(user.name.clone()), user.role, user.download),
+            None => (None, Role::Viewer, set.anonymous_download),
         },
     };
 
@@ -392,7 +365,6 @@ pub fn resolve(state: &AppState, headers: &HeaderMap, now: i64) -> Caller {
         account_role,
         role,
         download,
-        source,
         cap,
         authentication_configured: configured.is_some(),
     }
@@ -682,7 +654,6 @@ mod tests {
             account_role: Role::Viewer,
             role: Role::Viewer,
             download: DownloadScope::All,
-            source: IdentitySource::Anonymous,
             cap: None,
             authentication_configured: true,
         };
@@ -737,7 +708,6 @@ mod tests {
             account_role: Role::Viewer,
             role: Role::Viewer,
             download: DownloadScope::None,
-            source: IdentitySource::Anonymous,
             cap: None,
             authentication_configured: true,
         };
