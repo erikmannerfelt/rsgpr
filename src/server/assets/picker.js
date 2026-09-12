@@ -133,6 +133,11 @@
     let features = [];
     /** ETag of the document these came from, or null if none is stored yet. */
     let etag = null;
+    /** The document as it was read, so members this editor does not model
+     * survive a save. gprinterp requires unknown fields to round-trip, and
+     * rebuilding the document from its handful of known keys deleted them
+     * silently on the first browser edit. */
+    let loaded = null;
     let layers = [];
     let picking = false;
     let dirty = false;
@@ -194,6 +199,21 @@
       element.style.background = colorFor(label);
     }
 
+    /* Is this position inside the source array?
+     *
+     * Exclusive at the top: indices are zero-based, so `trace ===
+     * sourceWidth` is one past the last trace. It used to pass a `>` check
+     * and be stored, and level 2 then clamped the axis lookup while keeping
+     * the out-of-range index -- a point that looks real and is not.
+     *
+     * Used by the click and the drag paths alike. The map can be panned
+     * beyond the raster, so a vertex can be dropped outside it. */
+    const inBounds = (trace, sample) =>
+      trace >= 0 &&
+      trace < CFG.sourceWidth &&
+      sample >= 0 &&
+      sample < CFG.sourceHeight;
+
     const layerFor = (label) => layers.find((l) => l.id === label);
     const colorFor = (label) => (layerFor(label) || {}).color || DEFAULT_COLOR;
     const allowsOverhangs = (label) =>
@@ -254,6 +274,12 @@
         }
 
         const [newTrace, newSample] = toIndex(dropped);
+        if (!inBounds(newTrace, newSample)) {
+          // Dropped off the radargram. Put the marker back rather than
+          // storing a position outside the data.
+          redraw();
+          return;
+        }
         // Preserve any third element GeoJSON allows, rather than truncating
         // a position this viewer did not author.
         coordinates[index] = [newTrace, newSample, ...before.slice(2)];
@@ -580,8 +606,12 @@
         // is non-interactive, so it cannot swallow a tap meant for the
         // easier target.
         const hit = RIDAL.hitLine(points).addTo(map);
+        // A text node, not a string: Leaflet assigns a string tooltip with
+        // innerHTML, and `label` is free text from the stored document.
         hit.bindTooltip(
-          `${label || "unlabelled"} (${feature.geometry.coordinates.length} vertices)`,
+          document.createTextNode(
+            `${label || "unlabelled"} (${feature.geometry.coordinates.length} vertices)`,
+          ),
         );
         hit.on("click", (event) => {
           // While picking, a tap over an existing line is still a new
@@ -709,11 +739,13 @@
             })
               .addTo(map)
               .bindTooltip(
-                allowed
-                  ? `Overhang at vertex ${index}, allowed on "${label}". This ` +
-                      "layer exports as picked vertices, not evenly spaced."
-                  : `Overhang at vertex ${index}: the line doubles back here, ` +
-                      "so it has two depths at one position.",
+                document.createTextNode(
+                  allowed
+                    ? `Overhang at vertex ${index}, allowed on "${label}". This ` +
+                        "layer exports as picked vertices, not evenly spaced."
+                    : `Overhang at vertex ${index}: the line doubles back here, ` +
+                        "so it has two depths at one position.",
+                ),
               ),
           );
         }
@@ -827,14 +859,7 @@
         return;
       }
       const [trace, sample] = toIndex(event.latlng);
-      if (
-        trace < 0 ||
-        trace > CFG.sourceWidth ||
-        sample < 0 ||
-        sample > CFG.sourceHeight
-      ) {
-        return;
-      }
+      if (!inBounds(trace, sample)) return;
 
       // Test the whole candidate line, not just this vertex against the
       // previous one. Direction is a property of the line as a whole, and
@@ -941,11 +966,15 @@
       clearError();
 
       const body = {
+        // Spread first, so anything this editor does not model is carried
+        // through, then override only the fields it owns.
+        ...(loaded || {}),
         schema: "gprinterp",
         schema_version: "0.1",
         key: CFG.radargramId,
         date_modified: new Date().toISOString(),
         source: {
+          ...((loaded && loaded.source) || {}),
           id: CFG.radargramId,
           // The revision the picks were drawn against. Without it a
           // document authored here can never trigger the reprocessing
@@ -959,7 +988,14 @@
         features,
       };
       const headers = { "Content-Type": "application/json" };
-      if (etag) headers["If-Match"] = etag;
+      // Conditional either way. Without the absent case, two tabs that both
+      // loaded a document which did not exist yet would both save, and the
+      // later one would silently discard the other's first edit.
+      if (etag) {
+        headers["If-Match"] = etag;
+      } else {
+        headers["If-None-Match"] = "*";
+      }
 
       try {
         const response = await fetch(documentUrl, {
@@ -1013,6 +1049,7 @@
         }
         etag = response.headers.get("ETag");
         const body = await response.json();
+        loaded = body;
         const all = body.features || [];
         features = all.filter(
           (f) => f.geometry && f.geometry.type === "LineString",

@@ -85,6 +85,48 @@ impl std::fmt::Display for Violation {
 /// the line's own direction, taken from its first and last vertices.
 /// Vertical segments (two vertices on one trace) *are* overhangs: they are
 /// the degenerate case of two depths at one position.
+/// Whether an interpretation may be exported against this radargram, and
+/// what to warn about if so.
+///
+/// Lifted out of the CLI so the HTTP routes cannot forget it. They did:
+/// the command line refused a mismatched radargram while the browser
+/// download produced a plausible, wrong file from the same inputs.
+///
+/// A mismatched radargram is fatal -- the depths would be wrong in a way
+/// nothing downstream could detect. A mismatched *revision* is a warning,
+/// because the indices may still line up; whether they do depends on which
+/// steps were re-run.
+pub struct IdentityCheck {
+    pub warning: Option<String>,
+}
+
+pub fn check_identity(
+    document: &Document,
+    geometry: &crate::interp::level2::RadargramGeometry,
+) -> Result<IdentityCheck, String> {
+    if document.key != geometry.radargram_id {
+        return Err(format!(
+            "this interpretation was drawn on radargram '{}', not '{}'. \
+             Export it against the radargram it was drawn on.",
+            document.key, geometry.radargram_id
+        ));
+    }
+    let warning = document
+        .source
+        .as_ref()
+        .and_then(|s| s.revision_id.as_deref())
+        .filter(|revision| *revision != geometry.revision_id)
+        .map(|revision| {
+            format!(
+                "the interpretation was drawn on revision {revision}, but the radargram is \
+                 revision {}. It has been reprocessed since, so trace and sample indices may \
+                 no longer line up.",
+                geometry.revision_id
+            )
+        });
+    Ok(IdentityCheck { warning })
+}
+
 pub fn overhang_at(positions: &[Position]) -> Option<(usize, f64)> {
     let traces: Vec<f64> = positions.iter().filter_map(|p| p.x()).collect();
     if traces.len() < 2 {

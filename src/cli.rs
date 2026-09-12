@@ -1009,29 +1009,12 @@ fn interp_export_command(args: &InterpExportArgs) -> Result<(), String> {
 
     let geometry = crate::interp::source::read_geometry(&args.radargram)?;
 
-    // The interpretation names a radargram; exporting it against a different
-    // one silently produces plausible, wrong depths. Refusing is the only
-    // safe default, since nothing downstream can detect the mistake.
-    if document.key != geometry.radargram_id {
-        return Err(format!(
-            "{:?} was drawn on radargram '{}', but {:?} is '{}'. \
-             Export it against the radargram it was drawn on.",
-            args.interpretation, document.key, args.radargram, geometry.radargram_id
-        ));
-    }
-    if let Some(revision) = document
-        .source
-        .as_ref()
-        .and_then(|s| s.revision_id.as_deref())
-    {
-        if revision != geometry.revision_id {
-            eprintln!(
-                "warning: the interpretation was drawn on revision {revision}, but {:?} is \
-                 revision {}. The radargram has been reprocessed since, so trace and sample \
-                 indices may no longer line up.",
-                args.radargram, geometry.revision_id
-            );
-        }
+    // Shared with the HTTP download routes, which previously skipped this
+    // and produced a plausible, wrong file from the same inputs.
+    let identity = crate::interp::checks::check_identity(&document, &geometry)
+        .map_err(|e| format!("{:?}: {e}", args.interpretation))?;
+    if let Some(warning) = identity.warning {
+        eprintln!("warning: {warning}");
     }
 
     // Overhang permission is a property of the project's layer vocabulary.

@@ -249,6 +249,12 @@ pub fn read(store: &DocumentStore) -> Result<(LayerSet, Option<Version>), LayerE
     let set: LayerSet = serde_json::from_str(&stored.text).map_err(|e| LayerError::Malformed {
         message: e.to_string(),
     })?;
+    // Validated on the way out as well as on the way in. `write` is not
+    // the only way a document gets here: `layers.json` is meant to be
+    // hand-editable, and an invalid colour edited in by hand would
+    // otherwise reach `style.background` in the browser, where CSS accepts
+    // considerably more than a colour.
+    set.validate()?;
     Ok((set, Some(stored.version)))
 }
 

@@ -300,12 +300,17 @@ pub async fn put_interpretation(
 pub async fn delete_interpretation(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = writable_project(&state)?;
     let radargram = parse_radargram(&radargram_id)?;
     let user = writing_as(&state, &user)?;
 
-    let existed = interpretations::remove(project.documents(), &radargram, &user)
+    // Conditional like the write, so a client holding a stale version
+    // cannot delete picks drawn after it last read. Deleting is the one
+    // operation with nothing left to reconstruct from.
+    let expected = expectation_from(&headers);
+    let existed = interpretations::remove(project.documents(), &radargram, &user, &expected)
         .map_err(interpretation_error)?;
     if !existed {
         return Err(ApiError::not_found(
@@ -455,6 +460,12 @@ pub async fn interpretation_level2(
     let geometry = crate::interp::source::read_geometry(&path)
         .map_err(|e| ApiError::internal("radargram_read_failed", e))?;
 
+    // The same refusal the CLI makes. Without it a misplaced or
+    // hand-edited document exports against the wrong radargram and
+    // produces depths that are plausible and wrong.
+    let identity = checks::check_identity(&stored.document, &geometry)
+        .map_err(|e| ApiError::bad_request("radargram_mismatch", e))?;
+
     let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
     let allows = |label: Option<&str>| layer_set.allows_overhangs(label);
 
@@ -492,16 +503,30 @@ pub async fn interpretation_level2(
         radargram.as_str(),
         user.as_str()
     );
-    Ok((
-        [
-            (header::CONTENT_TYPE, content_type.to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{filename}\""),
-            ),
-        ],
-        body,
-    ))
+    let mut headers = HeaderMap::new();
+    let set = |headers: &mut HeaderMap, name: header::HeaderName, value: String| {
+        if let Ok(value) = value.parse() {
+            headers.insert(name, value);
+        }
+    };
+    set(&mut headers, header::CONTENT_TYPE, content_type.to_string());
+    set(
+        &mut headers,
+        header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"{filename}\""),
+    );
+    // A revision mismatch is not fatal -- the indices may still line up --
+    // but a download that quietly used stale picks should say so. The CLI
+    // prints this to stderr; over HTTP the header is the only place it can
+    // go without corrupting the file.
+    if let Some(warning) = identity.warning {
+        set(
+            &mut headers,
+            header::WARNING,
+            format!("199 ridal \"{warning}\""),
+        );
+    }
+    Ok((headers, body))
 }
 
 /// `GET /api/v1/project/settings`
@@ -650,6 +675,7 @@ fn merged_level2(
 
     let mut exports = Vec::new();
     let mut skipped = Vec::new();
+    let mut stale = Vec::new();
     for entry in &entries {
         let radargram = &entry.radargram_id;
         let Some(stored) = interpretations::read(project.documents(), radargram, &user)
@@ -663,6 +689,18 @@ fn merged_level2(
             .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
         let geometry = crate::interp::source::read_geometry(&path)
             .map_err(|e| ApiError::internal("radargram_read_failed", e))?;
+
+        // Per member, and named, because a merge is where this goes
+        // unnoticed: one stale document among twenty produces a file that
+        // looks complete. A mismatched radargram still fails the whole
+        // download -- it means the project is inconsistent, not that one
+        // member is behind.
+        let identity = checks::check_identity(&stored.document, &geometry).map_err(|e| {
+            ApiError::bad_request("radargram_mismatch", format!("{}: {e}", radargram.as_str()))
+        })?;
+        if identity.warning.is_some() {
+            stale.push(radargram.to_string());
+        }
         let export = crate::interp::level2::export(
             &stored.document,
             &geometry,
@@ -725,16 +763,28 @@ fn merged_level2(
         header::CONTENT_DISPOSITION,
         format!("attachment; filename=\"{filename}\""),
     );
+    // One header carrying both kinds of caveat: omitted members and stale
+    // ones. Separate `Warning` headers would be legal but only the first
+    // tends to survive a round trip through a browser download.
+    let mut notes = Vec::new();
     if !skipped.is_empty() {
-        // A header rather than silence: a merged file that quietly omits
-        // half a survey looks complete.
+        // A merged file that quietly omits half a survey looks complete.
+        notes.push(format!(
+            "not yet interpreted, omitted: {}",
+            skipped.join(" ")
+        ));
+    }
+    if !stale.is_empty() {
+        notes.push(format!(
+            "drawn on an older revision, indices may not line up: {}",
+            stale.join(" ")
+        ));
+    }
+    if !notes.is_empty() {
         set(
             &mut headers,
             header::WARNING,
-            format!(
-                "199 ridal \"not yet interpreted, omitted: {}\"",
-                skipped.join(" ")
-            ),
+            format!("199 ridal \"{}\"", notes.join("; ")),
         );
     }
     Ok((headers, body))

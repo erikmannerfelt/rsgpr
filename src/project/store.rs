@@ -369,13 +369,55 @@ impl DocumentStore {
     }
 
     /// Delete a document. Returns whether it existed.
-    pub fn remove(&self, relative: &Path) -> Result<bool, StoreError> {
+    /// Delete a document, refusing if `expected` no longer holds.
+    ///
+    /// Conditional for the same reason writing is: a client holding a
+    /// version it read earlier could otherwise delete an edit made since,
+    /// and deleting someone else's work is the one operation with nothing
+    /// to reconstruct it from. `Expectation::Any` keeps the unconditional
+    /// behaviour for callers that cannot do better.
+    pub fn remove(&self, relative: &Path, expected: &Expectation) -> Result<bool, StoreError> {
         let path = self.path_of(relative)?;
         let _guard = self.write_lock.lock().map_err(|_| StoreError::Poisoned)?;
+
+        // Under the lock, so the check and the unlink cannot interleave
+        // with another writer.
+        let actual = Self::version_at(&path)?;
+        let satisfied = match (expected, &actual) {
+            (Expectation::Any, _) => true,
+            (Expectation::Present, Some(_)) => true,
+            (Expectation::Present, None) => false,
+            (Expectation::Absent, None) => true,
+            (Expectation::Absent, Some(_)) => false,
+            (Expectation::Version(wanted), Some(found)) => wanted == found,
+            (Expectation::Version(_), None) => false,
+        };
+        if !satisfied {
+            return Err(StoreError::Conflict {
+                expected: expected.clone(),
+                actual,
+            });
+        }
+
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(source) => Err(StoreError::Io { path, source }),
+        }
+    }
+
+    /// The version of whatever is at an already-resolved path, or `None`.
+    ///
+    /// Split out so `write` and `remove` can check a version while holding
+    /// the lock without resolving the path a second time.
+    fn version_at(path: &Path) -> Result<Option<Version>, StoreError> {
+        match std::fs::read(path) {
+            Ok(bytes) => Ok(Some(Version::of(&bytes))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(StoreError::Io {
+                path: path.to_path_buf(),
+                source,
+            }),
         }
     }
 
@@ -556,7 +598,7 @@ mod tests {
         let version = store
             .write(&doc("a.json"), "one", &Expectation::Absent)
             .unwrap();
-        store.remove(&doc("a.json")).unwrap();
+        store.remove(&doc("a.json"), &Expectation::Any).unwrap();
 
         let error = store
             .write(&doc("a.json"), "two", &Expectation::Version(version))

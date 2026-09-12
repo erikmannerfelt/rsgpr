@@ -155,8 +155,9 @@ pub fn remove(
     store: &DocumentStore,
     radargram: &RadargramId,
     user: &UserId,
+    expected: &Expectation,
 ) -> Result<bool, InterpretationError> {
-    Ok(store.remove(&path_of(radargram, user))?)
+    Ok(store.remove(&path_of(radargram, user), expected)?)
 }
 
 #[cfg(test)]
@@ -368,7 +369,7 @@ mod tests {
     fn removing_reports_whether_anything_was_there() {
         let (_dir, project) = project();
         let (radargram, user) = ids("dronbreen-0237", DEFAULT_USER);
-        assert!(!remove(project.documents(), &radargram, &user).unwrap());
+        assert!(!remove(project.documents(), &radargram, &user, &Expectation::Any).unwrap());
 
         write(
             project.documents(),
@@ -378,7 +379,7 @@ mod tests {
             &Expectation::Absent,
         )
         .unwrap();
-        assert!(remove(project.documents(), &radargram, &user).unwrap());
+        assert!(remove(project.documents(), &radargram, &user, &Expectation::Any).unwrap());
     }
 
     #[test]

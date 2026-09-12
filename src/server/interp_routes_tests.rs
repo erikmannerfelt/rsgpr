@@ -1066,6 +1066,89 @@ async fn the_default_profile_round_trips_through_the_settings_api() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn an_export_against_the_wrong_radargram_is_refused() {
+    // The CLI refused this and the HTTP route did not, so the same inputs
+    // gave an error on one path and a plausible, wrong file on the other.
+    // Needs the fixture with real axes: without a CRS, `read_geometry`
+    // fails first and the identity check is never reached.
+    let (_dir, app) = project_app_with_axes();
+
+    // Written straight to disk, because the API will not store a mismatch:
+    // `interpretations::write` already refuses a document whose key names a
+    // different radargram. So the only way in is a hand-edited or moved
+    // file -- which is exactly the case the export path has to survive.
+    let mut doc = document("line-01");
+    doc["key"] = serde_json::json!("some-other-line");
+    let dir = _dir.path().join("interpretations/line-01");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("default.gprinterp.json"),
+        serde_json::to_string(&doc).unwrap(),
+    )
+    .unwrap();
+
+    let (status, _, body) = get(
+        &app,
+        "/api/v1/datasets/line-01/interpretations/default/level2",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "radargram_mismatch");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("drawn on radargram"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_stale_delete_cannot_erase_newer_picks() {
+    // Writing was version-checked and deleting was not, so a client
+    // holding an old ETag could remove picks drawn after it last read.
+    let (_dir, app) = project_app(true);
+    let uri = "/api/v1/datasets/line-01/interpretations/default";
+
+    let (status, etag, _) = put(&app, uri, &document("line-01"), None).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let first = etag.expect("a write returns an ETag");
+
+    // Someone else edits. The document must genuinely differ: the version
+    // is a content hash, so saving identical bytes leaves it unchanged and
+    // there would be nothing stale about the first ETag.
+    let mut newer = document("line-01");
+    newer["features"][0]["properties"]["id"] = serde_json::json!("f-edited");
+    let (status, _, _) = put(&app, uri, &newer, Some(&first)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The stale holder tries to delete.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(uri)
+                .header(header::IF_MATCH, &first)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+
+    // And the picks are still there.
+    let (status, _, _) = get(&app, uri).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the document survived the stale delete"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn if_match_star_requires_the_document_to_already_exist() {
     // `If-Match: *` asserts "replace what is there". Mapping it to the
     // store's `Any` made it satisfied by an absent document too, so a

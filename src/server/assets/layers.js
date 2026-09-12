@@ -166,6 +166,11 @@ async function save() {
   if (etag) {
     // Refuses rather than clobbers if another tab saved in between.
     headers["If-Match"] = etag;
+  } else {
+    // An empty vocabulary has no ETag, so the first save had no condition
+    // at all: two pages both starting from nothing would both succeed and
+    // the later one would discard the other's layers.
+    headers["If-None-Match"] = "*";
   }
   try {
     const response = await fetch("/api/v1/layers", {
