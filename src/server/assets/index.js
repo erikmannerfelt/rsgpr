@@ -107,9 +107,10 @@ document.querySelectorAll('.group-map').forEach((el) => {
   const format = document.getElementById('group-format');
   let base = null;
 
-  const go = (url) => {
-    window.location.href = url;
-  };
+  /* Fetched rather than navigated to, so a refusal -- "nothing in this
+   * group has been interpreted yet" being the ordinary one -- is shown on
+   * this page instead of replacing it with the error envelope. */
+  const go = (url) => RIDAL.download(url, 'download-error');
 
   for (const menu of menus) {
     const menuBase = menu.dataset.downloadBase;

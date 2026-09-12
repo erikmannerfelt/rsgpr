@@ -802,6 +802,15 @@ async fn a_group_level2_says_which_members_it_left_out() {
         .unwrap_or_default()
         .to_string();
     assert!(warning.contains("line-02"), "{warning}");
+    // A person reads this now -- the browser shows it beside the download
+    // rather than discarding it with the rest of the headers -- so it has
+    // to say why the file is short, not just which radargram is missing.
+    assert!(warning.contains("interpreted"), "{warning}");
+    assert!(
+        warning.contains("of the"),
+        "counting them makes 'is this file complete?' answerable at a \
+         glance: {warning}"
+    );
 }
 
 #[tokio::test]

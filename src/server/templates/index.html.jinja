@@ -87,6 +87,11 @@
   {% endmacro %}
 
   <h1>Radargram catalog</h1>
+
+  {#- Where a failed download explains itself. Empty until something goes
+      wrong, and above the group sections so the explanation is visible
+      wherever on the page the menu that failed was. -#}
+  <div id="download-error"></div>
   {% if warnings %}
     <div class="warning">
       <strong>{{ warnings | length }} warning(s):</strong>

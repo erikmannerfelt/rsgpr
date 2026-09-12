@@ -81,6 +81,10 @@
     <span id="cursor-readout"></span>
   </div>
 
+  {#- Where a failed download explains itself, rather than the browser
+      leaving this page to render the error envelope as a document. -#}
+  <div id="download-error"></div>
+
   {#- The picking toolbar. Rendered even when the catalog is not a writable
       project, in which case it explains why rather than vanishing: a missing
       control reads as a missing feature. -#}

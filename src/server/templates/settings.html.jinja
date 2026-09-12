@@ -245,17 +245,16 @@
             is airtight. -#}
         <div class="warning">
           <p>
-            <strong>Download scope is not a boundary against a determined
-            reader.</strong> The viewer draws a radargram by fetching
-            256&times;256 chunks over HTTP, and the catalog's maps draw the
-            track, so anyone who can open a page can reassemble both no
-            matter what is set here. Gating those would break the viewer for
-            everyone below &ldquo;all&rdquo;.
+            <strong>This controls downloading, not seeing.</strong> Anyone
+            who can open a radargram is already looking at the image, and
+            at the track on the map. Someone determined could save those a
+            piece at a time whatever is set here, and stopping that would
+            stop the viewer working for everybody.
           </p>
           <p>
-            What this does is stop casual bulk export and state an intent.
-            If the underlying data must not leave, do not grant read access
-            to it.
+            So use this to keep bulk downloads deliberate, and to say what
+            the project expects of people. If somebody should not have the
+            data at all, do not give them access to the project.
           </p>
         </div>
       </section>

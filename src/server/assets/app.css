@@ -219,6 +219,25 @@ code {
   padding: 0 var(--space-1);
 }
 
+/* The in-flow sibling of .error-overlay, for reporting something that
+ * has no empty container to sit over -- a download that did not happen.
+ * Same colour language; laid out as a block that pushes the page down
+ * rather than as an overlay that could cover the control just used. */
+.page-problem {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  max-width: 60rem;
+}
+
+/* A download that succeeded with something worth reading attached, which
+ * is not a failure and should not borrow the colour of one. */
+.page-problem-note {
+  background: var(--color-surface-sunken);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
 /* Same colour language inside the metadata dialog, which is a table
  * rather than a positioned container, so it needs no overlay. */
 .error-text {

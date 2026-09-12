@@ -837,18 +837,26 @@ fn merged_level2(
     // One header carrying both kinds of caveat: omitted members and stale
     // ones. Separate `Warning` headers would be legal but only the first
     // tends to survive a round trip through a browser download.
+    // Whole sentences rather than the terse fragments these were, now that
+    // the browser shows them to a person: they used to travel only in a
+    // header nobody read, so "not yet interpreted, omitted: x" was a note
+    // to a developer rather than something anyone had to understand.
     let mut notes = Vec::new();
     if !skipped.is_empty() {
         // A merged file that quietly omits half a survey looks complete.
         notes.push(format!(
-            "not yet interpreted, omitted: {}",
-            skipped.join(" ")
+            "{} of the {} radargrams here are not in this file, because nobody \
+             has interpreted them yet: {}",
+            skipped.len(),
+            entries.len(),
+            skipped.join(", ")
         ));
     }
     if !stale.is_empty() {
         notes.push(format!(
-            "drawn on an older revision, indices may not line up: {}",
-            stale.join(" ")
+            "Some of these picks were drawn on an earlier version of their \
+             radargram, so they may not line up with it any more: {}",
+            stale.join(", ")
         ));
     }
     if !notes.is_empty() {
