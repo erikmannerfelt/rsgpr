@@ -99,6 +99,13 @@ pub enum Expectation {
     /// Replace whatever is there. Used by clients that cannot do better;
     /// the last writer wins.
     Any,
+    /// The document must already exist, at whatever version.
+    ///
+    /// This is HTTP's `If-Match: *`, which asserts existence without
+    /// naming a version. `Any` cannot stand in for it: `Any` is satisfied
+    /// by an absent document, so a client asserting "replace the thing
+    /// that is there" would instead create one.
+    Present,
     /// The document must not exist yet.
     Absent,
     /// The document must currently be at this version.
@@ -141,6 +148,11 @@ impl fmt::Display for StoreError {
                         "the document has changed since it was loaded: the write \
                          expected version {v}, but it {actual}. Reload and reapply \
                          the change so the other edit is not discarded."
+                    ),
+                    Expectation::Present => write!(
+                        f,
+                        "the write required the document to already exist, but it \
+                         {actual}"
                     ),
                     Expectation::Any => write!(f, "the document {actual} unexpectedly"),
                 }
@@ -267,6 +279,8 @@ impl DocumentStore {
         let actual = self.version(relative)?;
         let satisfied = match (expected, &actual) {
             (Expectation::Any, _) => true,
+            (Expectation::Present, Some(_)) => true,
+            (Expectation::Present, None) => false,
             (Expectation::Absent, None) => true,
             (Expectation::Absent, Some(_)) => false,
             (Expectation::Version(wanted), Some(found)) => wanted == found,
@@ -378,6 +392,35 @@ fn temp_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn present_requires_an_existing_document() {
+        // HTTP's `If-Match: *`. `Any` would accept an absent document and
+        // quietly turn "replace what is there" into a create.
+        let dir = tempfile::tempdir().unwrap();
+        let store = DocumentStore::new(dir.path().to_path_buf());
+        let path = Path::new("thing.json");
+
+        let err = store
+            .write(path, "{}", &Expectation::Present)
+            .expect_err("must refuse when nothing is there");
+        assert!(
+            matches!(err, StoreError::Conflict { actual: None, .. }),
+            "{err}"
+        );
+        assert!(
+            !dir.path().join("thing.json").exists(),
+            "nothing was created"
+        );
+        assert!(err.to_string().contains("already exist"), "{err}");
+
+        store.write(path, "{}", &Expectation::Absent).unwrap();
+        // Now that it exists, the same write is allowed whatever its version.
+        store
+            .write(path, "{\"v\":2}", &Expectation::Present)
+            .unwrap();
+        assert_eq!(store.read(path).unwrap().unwrap().text, "{\"v\":2}");
+    }
+
     use super::*;
 
     fn store() -> (tempfile::TempDir, DocumentStore) {

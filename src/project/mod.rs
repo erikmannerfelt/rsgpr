@@ -406,12 +406,26 @@ impl Project {
     #[cfg_attr(not(feature = "server"), allow(dead_code))]
     pub fn set_render_defaults(&self, defaults: &RenderDefaults) -> Result<(), ProjectError> {
         let marker = self.root.join(MARKER);
-        let text = std::fs::read_to_string(&marker).map_err(|e| ProjectError::Io {
-            path: marker.clone(),
-            message: e.to_string(),
-        })?;
+        // Read through the store so the version comes with the text. The
+        // write below is conditional on it: the store's lock serialises the
+        // writes but not the read-modify-write around them, so two saves
+        // arriving together would otherwise both read the old file and the
+        // second would discard the first's key.
+        let current = self
+            .documents
+            .read(Path::new(MARKER))
+            .map_err(|e| ProjectError::Io {
+                path: marker.clone(),
+                message: e.to_string(),
+            })?
+            .ok_or_else(|| ProjectError::Io {
+                path: marker.clone(),
+                message: "the project marker has gone missing".to_string(),
+            })?;
         let mut document: toml_edit::DocumentMut =
-            text.parse()
+            current
+                .text
+                .parse()
                 .map_err(|e: toml_edit::TomlError| ProjectError::Config {
                     path: marker.clone(),
                     message: e.to_string(),
@@ -429,11 +443,14 @@ impl Project {
         );
 
         let updated = document.to_string();
-        // Through the document store for its atomic write and its
-        // process-wide write lock, which also serialises two settings saves
-        // arriving at once.
+        // Atomic, and conditional on the version just read, so a save that
+        // raced another one is refused rather than silently winning.
         self.documents
-            .write(Path::new(MARKER), &updated, &store::Expectation::Any)
+            .write(
+                Path::new(MARKER),
+                &updated,
+                &store::Expectation::Version(current.version),
+            )
             .map_err(|e| ProjectError::Io {
                 path: marker.clone(),
                 message: e.to_string(),
@@ -703,6 +720,38 @@ mod tests {
                 xscale: None,
             })
             .unwrap();
+    }
+
+    #[test]
+    fn a_settings_save_that_raced_another_is_refused_not_silently_applied() {
+        // The store's lock serialises the writes but not the
+        // read-modify-write around them. Without a conditional write, two
+        // saves arriving together both read the old file and the second
+        // discards the first's key rather than conflicting.
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        set_profile(&project, Some("abslog"));
+
+        // Simulate the other writer: change the file behind this project's
+        // back, so the version it would have read is stale.
+        let marker = dir.path().join(MARKER);
+        let text = std::fs::read_to_string(&marker).unwrap();
+        std::fs::write(&marker, format!("{text}\n# someone else edited this\n")).unwrap();
+
+        // A save that read the *current* file still succeeds -- the point
+        // is that the version is checked, not that saving is fragile.
+        let reopened = Project::open(dir.path()).unwrap();
+        reopened
+            .set_render_defaults(&RenderDefaults {
+                profile: Some("positive".to_string()),
+                xscale: None,
+            })
+            .unwrap();
+        assert_eq!(reopened.default_profile().as_deref(), Some("positive"));
+        // The other writer's line survived, because the edit was applied to
+        // the text that was actually on disk.
+        let after = std::fs::read_to_string(&marker).unwrap();
+        assert!(after.contains("someone else edited this"), "{after}");
     }
 
     #[test]

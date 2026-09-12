@@ -942,6 +942,12 @@
         date_modified: new Date().toISOString(),
         source: {
           id: CFG.radargramId,
+          // The revision the picks were drawn against. Without it a
+          // document authored here can never trigger the reprocessing
+          // warning gprinterp SPEC 6.3 exists for: equal trace and sample
+          // counts are explicitly not evidence that two revisions agree on
+          // what an index means.
+          revision_id: CFG.revisionId,
           n_traces: CFG.sourceWidth,
           n_samples: CFG.sourceHeight,
         },

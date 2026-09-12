@@ -165,6 +165,14 @@ impl LayerSet {
                     ),
                 });
             }
+            if let Some(color) = &layer.color {
+                if !is_hex_color(color) {
+                    return Err(LayerError::InvalidColor {
+                        id: layer.id.clone(),
+                        color: color.clone(),
+                    });
+                }
+            }
             if seen.contains(&layer.id.as_str()) {
                 return Err(LayerError::DuplicateId(layer.id.clone()));
             }
@@ -180,6 +188,21 @@ pub enum LayerError {
     Malformed { message: String },
     DuplicateId(String),
     InvalidId { id: String, reason: String },
+    InvalidColor { id: String, color: String },
+}
+
+/// Is this `#rgb`, `#rrggbb` or `#rrggbbaa`?
+///
+/// Colours are written into `style.background` in the browser, where CSS
+/// accepts far more than a colour -- `url(http://…)` would make every
+/// viewer fetch whatever the author chose. The colour input in the UI
+/// constrains the widget, not the API or a hand-edited `layers.json`, so
+/// the restriction has to live at the boundary that stores it.
+fn is_hex_color(value: &str) -> bool {
+    let Some(digits) = value.strip_prefix('#') else {
+        return false;
+    };
+    matches!(digits.len(), 3 | 6 | 8) && digits.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 impl std::fmt::Display for LayerError {
@@ -189,6 +212,12 @@ impl std::fmt::Display for LayerError {
             LayerError::Malformed { message } => {
                 write!(f, "the layer definitions are not readable: {message}")
             }
+            LayerError::InvalidColor { id, color } => write!(
+                f,
+                "layer '{id}' has colour '{color}'; use a hex colour such as \
+                 '#e6194b'. Anything else would be handed to CSS, which accepts \
+                 more than colours."
+            ),
             LayerError::DuplicateId(id) => {
                 write!(f, "the layer id '{id}' is defined more than once")
             }
@@ -256,6 +285,39 @@ mod tests {
             allow_overhangs: false,
             extra: serde_json::Map::new(),
         }
+    }
+
+    #[test]
+    fn a_colour_must_be_hex_because_css_accepts_more_than_colours() {
+        // The value lands in `style.background` in the browser, where
+        // `url(http://...)` would make every viewer fetch whatever the
+        // author chose. The colour picker in the UI constrains the widget,
+        // not the API or a hand-edited layers.json.
+        let mut set = LayerSet::default();
+        set.layers.push(Layer {
+            id: "bed".to_string(),
+            name: "Bed".to_string(),
+            color: Some("url(http://example.invalid/x.png)".to_string()),
+            description: None,
+            allow_overhangs: false,
+            extra: Default::default(),
+        });
+        let err = set.validate().expect_err("must refuse");
+        assert!(matches!(err, LayerError::InvalidColor { .. }), "{err}");
+        assert!(err.to_string().contains("hex colour"), "{err}");
+
+        for good in ["#fff", "#e6194b", "#e6194bcc", "#ABCDEF"] {
+            set.layers[0].color = Some(good.to_string());
+            assert!(set.validate().is_ok(), "{good} should be accepted");
+        }
+        for bad in ["red", "#12", "#1234567", "#ggghhh", "rgb(1,2,3)", ""] {
+            set.layers[0].color = Some(bad.to_string());
+            assert!(set.validate().is_err(), "{bad:?} should be refused");
+        }
+
+        // No colour at all stays legal -- the viewer falls back to its own.
+        set.layers[0].color = None;
+        assert!(set.validate().is_ok());
     }
 
     #[test]

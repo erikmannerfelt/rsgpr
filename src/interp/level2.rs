@@ -27,6 +27,15 @@ use gprinterp::{Document, Geometry, Position};
 /// can never disagree.
 pub use crate::identity::DEFAULT_USER;
 
+/// Ceiling on the points one picked line may expand to.
+///
+/// Spacing reaches this as a query parameter on a public route, and the
+/// point count is `span / step`, so a small enough step asks for an
+/// unbounded allocation. Ten million is far above any real export -- a
+/// 50 km profile at 1 cm spacing is five million -- and far below a size
+/// that threatens the process.
+const MAX_POINTS_PER_LINE: usize = 10_000_000;
+
 /// Everything about one processed radargram that level 2 derivation needs.
 ///
 /// All per-trace vectors have length `n_traces` and all per-sample vectors
@@ -179,6 +188,16 @@ pub enum Level2Error {
     /// The `distance` axis decreases somewhere, so distance cannot be
     /// inverted to a trace index.
     NonMonotoneDistance,
+    /// The requested spacing would expand one line past
+    /// [`MAX_POINTS_PER_LINE`]. Refused rather than clamped: a caller who
+    /// asked for 1 cm spacing and silently got 10 m would not know.
+    SpacingTooFine {
+        layer: String,
+        line_index: usize,
+        step: f64,
+        span: f64,
+        estimate: f64,
+    },
     /// A picked line doubles back on itself in trace, so it is not a
     /// function of trace and cannot be resampled onto a distance grid.
     NonMonotoneLine {
@@ -216,6 +235,18 @@ impl fmt::Display for Level2Error {
                 f,
                 "the 'distance' axis decreases somewhere, so a distance cannot be \
                  resolved to a single trace"
+            ),
+            Level2Error::SpacingTooFine {
+                layer,
+                line_index,
+                step,
+                span,
+                estimate,
+            } => write!(
+                f,
+                "a spacing of {step} m over the {span:.1} m of line {line_index} in \
+                 layer '{layer}' would produce about {estimate:.0} points, above the \
+                 limit of {MAX_POINTS_PER_LINE}. Use a larger spacing."
             ),
             Level2Error::NonMonotoneLine {
                 layer,
@@ -299,7 +330,7 @@ pub fn export(
                 continue;
             }
             let line = Line::new(&vertices, &layer, line_index)?;
-            points.extend(line.sample(geometry, step, &layer, line_index, &feature_id, user));
+            points.extend(line.sample(geometry, step, &layer, line_index, &feature_id, user)?);
         }
     }
     if !vertex_layers.is_empty() {
@@ -410,9 +441,9 @@ impl Line {
         line_index: usize,
         feature_id: &Option<String>,
         user: &str,
-    ) -> Vec<Level2Point> {
+    ) -> Result<Vec<Level2Point>, Level2Error> {
         let Some((first_trace, last_trace)) = self.trace_span() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
 
         let traces: Vec<f64> = match step {
@@ -427,7 +458,22 @@ impl Line {
                     // along-track extent. One point still describes it.
                     1
                 } else {
-                    (span / step).floor() as usize + 1
+                    // Computed in f64 and checked *before* the cast.
+                    // `as usize` saturates, so a spacing of 1e-300 would
+                    // otherwise land on usize::MAX and the allocation
+                    // below would take the process down -- and spacing
+                    // arrives as a query parameter on a public route.
+                    let estimate = (span / step).floor() + 1.0;
+                    if !estimate.is_finite() || estimate > MAX_POINTS_PER_LINE as f64 {
+                        return Err(Level2Error::SpacingTooFine {
+                            layer: layer.to_string(),
+                            line_index,
+                            step,
+                            span,
+                            estimate,
+                        });
+                    }
+                    estimate as usize
                 };
                 (0..n)
                     .map(|i| {
@@ -439,12 +485,23 @@ impl Line {
             // Per-trace: every native trace the line spans, inclusive.
             None => {
                 let lo = first_trace.ceil().max(0.0) as usize;
-                let hi = (last_trace.floor() as usize).min(geometry.n_traces() - 1);
-                (lo..=hi.max(lo)).map(|t| t as f64).collect()
+                let hi = (last_trace.floor() as usize).min(geometry.n_traces().saturating_sub(1));
+                if lo > hi {
+                    // The line lies strictly between two native traces --
+                    // 39.5 to 39.9, say -- so it spans none of them. That
+                    // is an empty result, not one point: the previous
+                    // `hi.max(lo)` turned the empty range into `40..=40`
+                    // and produced a trace beyond the end of the geometry,
+                    // which `sample_at` then extrapolated into a
+                    // plausible-looking but fictitious point.
+                    Vec::new()
+                } else {
+                    (lo..=hi).map(|t| t as f64).collect()
+                }
             }
         };
 
-        traces
+        Ok(traces
             .into_iter()
             .enumerate()
             .map(|(point_index, trace)| {
@@ -468,7 +525,7 @@ impl Line {
                     user: user.to_string(),
                 }
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -569,6 +626,7 @@ fn interpolate(xs: &[f64], ys: &[f64], at: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     /// No layer permits overhangs: the default, and what a CLI export with
@@ -636,6 +694,66 @@ mod tests {
             assert!((point.sample - 10.0).abs() < 1e-9);
         }
         assert_eq!(export.spacing_m, Some(10.0));
+    }
+
+    #[test]
+    fn a_line_between_two_traces_yields_no_per_trace_points() {
+        // 39.5 to 39.9 spans no whole trace, so per-trace export has
+        // nothing to report. The old `hi.max(lo)` turned that empty range
+        // into trace 40, and the same arithmetic at the end of the array
+        // produced a trace past the last one, which `sample_at` then
+        // extrapolated into a plausible-looking but fictitious point.
+        let between = export(
+            &document(&[[39.5, 5.0], [39.9, 6.0]]),
+            &geometry(),
+            Spacing::PerTrace,
+            DEFAULT_USER,
+            &enforce_everywhere,
+        )
+        .unwrap();
+        assert!(between.points.is_empty(), "{:?}", between.points);
+
+        // A line that does span whole traces still reports them.
+        let spanning = export(
+            &document(&[[10.2, 5.0], [12.8, 6.0]]),
+            &geometry(),
+            Spacing::PerTrace,
+            DEFAULT_USER,
+            &enforce_everywhere,
+        )
+        .unwrap();
+        let traces: Vec<f64> = spanning.points.iter().map(|p| p.trace).collect();
+        assert_eq!(traces, vec![11.0, 12.0]);
+    }
+
+    #[test]
+    fn a_spacing_that_would_explode_is_refused_not_attempted() {
+        // Spacing reaches this as a query parameter on a public route, and
+        // the point count is span/step, so a small enough step asks for an
+        // unbounded allocation. `as usize` saturates rather than
+        // overflowing, so nothing downstream would have caught it.
+        let doc = document(&[[0.0, 5.0], [100.0, 6.0]]);
+        let err = export(
+            &doc,
+            &geometry(),
+            Spacing::ArcLength(1e-300),
+            DEFAULT_USER,
+            &enforce_everywhere,
+        )
+        .expect_err("must refuse");
+        let message = err.to_string();
+        assert!(message.contains("above the limit"), "{message}");
+        assert!(message.contains("larger spacing"), "{message}");
+
+        // A sane spacing is unaffected.
+        assert!(export(
+            &doc,
+            &geometry(),
+            Spacing::ArcLength(1.0),
+            DEFAULT_USER,
+            &enforce_everywhere,
+        )
+        .is_ok());
     }
 
     #[test]

@@ -155,12 +155,30 @@ const RIDAL = Object.freeze({
    * string, so the profile is read when the popup opens. The viewer's
    * profile can change without a page reload, and a popup built at load
    * time would keep showing the profile that was active then. */
+  /** Escape text for interpolation into an HTML string.
+   *
+   * `label` is a radargram's display name -- free text from the NetCDF's
+   * metadata or its filename -- and it is interpolated into markup below.
+   * Unescaped, a file whose display name contains a tag runs script in
+   * every viewer that opens its popup. That is a small risk while one
+   * person fills their own catalog and a real one as soon as several
+   * people can add radargrams to a shared server. */
+  escapeHtml(text) {
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  },
+
   popupContent(radargramId, label, profile) {
     const query = profile ? `?profile=${encodeURIComponent(profile)}` : "";
     return (
-      `<a class="popup-link" href="/view/${radargramId}${query}">` +
-      `${label}` +
-      `<img class="popup-thumb" src="/api/v1/datasets/${radargramId}/views/standard/overview${query}" ` +
+      `<a class="popup-link" href="/view/${encodeURIComponent(radargramId)}${query}">` +
+      `${RIDAL.escapeHtml(label)}` +
+      '<img class="popup-thumb" ' +
+      `src="/api/v1/datasets/${encodeURIComponent(radargramId)}/views/standard/overview${query}" ` +
       'loading="lazy" alt="">' +
       '</a>'
     );

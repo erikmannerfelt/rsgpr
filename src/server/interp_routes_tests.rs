@@ -1066,6 +1066,28 @@ async fn the_default_profile_round_trips_through_the_settings_api() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn if_match_star_requires_the_document_to_already_exist() {
+    // `If-Match: *` asserts "replace what is there". Mapping it to the
+    // store's `Any` made it satisfied by an absent document too, so a
+    // client asserting an existence precondition would instead create one
+    // and be told 201.
+    let (_dir, app) = project_app(true);
+    let uri = "/api/v1/datasets/line-01/interpretations/default";
+
+    let (status, _, body) = put(&app, uri, &document("line-01"), Some("*")).await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+    assert_eq!(body["error"]["code"], "version_conflict");
+
+    // Once it exists, the same header succeeds whatever the version is --
+    // that is what distinguishes `*` from naming a version.
+    let (status, _, _) = put(&app, uri, &document("line-01"), None).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _, _) = put(&app, uri, &document("line-01"), Some("*")).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_write_cannot_target_another_users_interpretation() {
     // The path parameter must not be the authorisation. Without this,
     // `PUT .../interpretations/alice` writes Alice's picks for anyone who

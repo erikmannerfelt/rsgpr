@@ -68,10 +68,10 @@ fn expectation_from(headers: &HeaderMap) -> Expectation {
     if let Some(value) = headers.get(header::IF_MATCH).and_then(|v| v.to_str().ok()) {
         let value = value.trim();
         if value == "*" {
-            // "must already exist"; the store has no such variant, and a
-            // real version is stricter than needed but never wrong here
-            // because the client only knows a version if it read one.
-            return Expectation::Any;
+            // "must already exist, at any version" -- which is not the same
+            // as `Any`, since `Any` is also satisfied by an absent document
+            // and would turn "replace what is there" into a create.
+            return Expectation::Present;
         }
         return Expectation::Version(Version::from_header(value));
     }
@@ -165,7 +165,9 @@ fn layer_error(error: layers::LayerError) -> ApiError {
         layers::LayerError::Malformed { .. } => {
             ApiError::internal("malformed_layers", error.to_string())
         }
-        layers::LayerError::DuplicateId(_) | layers::LayerError::InvalidId { .. } => {
+        layers::LayerError::DuplicateId(_)
+        | layers::LayerError::InvalidId { .. }
+        | layers::LayerError::InvalidColor { .. } => {
             ApiError::bad_request("invalid_layers", error.to_string())
         }
     }
