@@ -115,8 +115,16 @@ Optionally, for many sequential files, the `--merge` argument allows merging mul
 ridal batch-process data/*.rd3 --merge "10 min" --default -o output/
 ```
 
-A rudimentary profile renderer is available with the `-r` argument.
-This will be saved in the same location as the output file as a JPG if another filename is not given.
+An image of the result can be written at the same time with the `-r` argument.
+This is saved next to the output file as a JPG if another filename is not given.
+
+Already-processed files can be rendered on their own with the `render` subcommand, which takes a `.nc` and writes a PNG or JPG:
+```bash
+ridal render processed.nc -o out.png --profile positive --width 8000
+```
+The format follows the extension, and `--width` is capped at one pixel per trace, which is also the default.
+`--profile` takes either one of the built-in names or a path to a TOML file of your own.
+Both of these draw the same picture the browser GUI does, from the same profiles and the same code.
 
 
 ### Browser GUI
@@ -136,7 +144,8 @@ For something longer-lived than `ridal gui`, which picks an ephemeral port and o
 ridal server start path/to/processed/ --port 8080
 ```
 That is the mode to put behind a reverse proxy or run as a systemd service.
-There is no authentication yet, so anyone who can reach the port can read everything it serves.
+Out of the box it serves everything to anyone who can reach the port; see [sharing a project](#sharing-a-project-with-other-people) for how to put accounts in front of it.
+
 
 ### Interpreting layers
 
@@ -165,39 +174,46 @@ Each point carries its layer, trace and sample, distance along the profile, two-
 
 ### Sharing a project with other people
 
-A project with no accounts behaves as it always has: everyone using it is the user `default`, and `ridal gui` needs no login step.
-Accounts switch on the first time one is created, which has to happen from the command line — there is no administrator yet to authorise it, and no default password to forget to change:
+A project with no accounts works the way it always has: everyone using it is the user `default`, and `ridal gui` asks for no login.
+Accounts start the first time one is made, which has to be done from the command line since there is no administrator yet to allow it:
 ```bash
 ridal project user add erik --role admin
 ```
-That prints a one-time invite link, valid for a week. Send it however you already talk to that person; opening it is what sets their password, so nobody else ever knows it. A password reset is the same command (`ridal project user reset`), because it is the same mechanism.
+That prints a one-time invite link, good for a week.
+Send it however you normally would; opening it is what sets the password, so nobody else ever learns it.
+A forgotten password is the same command again, `ridal project user reset`.
 
-Two independent things are set per person. **Role** is what they may do, as a ladder:
+Each person gets a role and a download scope, and the two are set separately.
+The role is what they may do, with each level including the ones below it:
 
-| role | adds |
-|---|---|
-| `viewer` | read the catalog and open radargrams; read the layer vocabulary; set their own preferences |
-| `picker` | write their own interpretation |
-| `operator` | modify the layer vocabulary; set the project-wide defaults |
-| `admin` | users, roles, download scopes, and the access settings |
+- `viewer` reads the catalog, the radargrams and the layer names, and sets their own preferences.
+- `picker` also writes their own interpretation.
+- `operator` also edits the layer list and the project defaults.
+- `admin` also manages accounts, roles, download scopes and the access settings.
 
-**Download scope** (`none`, `picks`, `derived`, `all`) is what they may take away, and is deliberately not folded into the role: a picker who may not export the underlying data and a viewer who may export everything are both reasonable. `derived` — the level 2 point product — is usually the line a project is actually deciding about.
+The download scope is what they may take away: `none`, `picks`, `derived` or `all`.
+It is kept apart from the role because a picker who may not export the raw data and a viewer who may export everything are both sensible.
+`derived` is usually the interesting line, since the level 2 points are often enough to publish with.
 
-Interpretations are strictly per person. One user cannot modify another's picks, and **not even an admin can** — that is a property of the data model rather than a permission. Removing an account keeps the picks it authored, since those are attributed scientific data.
+Interpretations belong to whoever drew them.
+One user cannot change another's picks, and neither can an admin, because that is how the files are laid out rather than a permission anyone can grant.
+Removing an account leaves its picks in place.
 
-Serving this beyond localhost:
+To serve a project to other machines:
 ```bash
 ridal server start my-survey --host 127.0.0.1 --port 8000
 ```
-Ridal does not terminate TLS, so **put a TLS-terminating reverse proxy in front and leave Ridal on loopback** — that is the supported arrangement. Binding a public address refuses to start unless the project has accounts, and refuses password logins unless you pass `--allow-insecure-login` to say you know what is in front of that address.
+Ridal does not do TLS itself, so the supported arrangement is to leave it on loopback behind a reverse proxy that does.
+Binding a public address refuses to start unless the project has accounts, and refuses password logins unless `--allow-insecure-login` says you know what is in front of it.
+`--read-only` still works, and now means everyone is capped at `viewer` whatever their account says.
 
-`--read-only` still works and now means "cap everyone at `viewer`", whatever their account says.
+Note that the download scope limits downloading rather than seeing.
+Anyone who can open a radargram is already looking at the image and at the track on the map, and could save those a piece at a time whatever the scope says.
+It is there to keep bulk downloads deliberate, so if somebody should not have the data at all, do not give them access to the project.
 
-> **Download scope is not a boundary against a determined reader.** The viewer draws a radargram by fetching image chunks over HTTP and the catalog draws tracks on a map, so anyone who can open a page can reassemble both regardless. It stops casual bulk export and states an intent. If the underlying data must not leave, do not grant read access to it.
 
-
-Neither the GUI nor interpretation is in a release yet; both landed after `v0.5.2`.
-For now they need a git install:
+The GUI, interpretation, accounts and `ridal render` all arrived after `v0.5.2`, so they need version 0.6.0 or newer.
+Until that is on crates.io, a git install has them:
 ```bash
 cargo install --git https://github.com/erikmannerfelt/ridal
 ```
