@@ -221,6 +221,16 @@ pub struct Caller {
     /// anonymous caller is offered a login or told there is nothing to log
     /// in to.
     pub authentication_configured: bool,
+    /// The project's read policy, carried here rather than looked up again
+    /// by the middleware.
+    ///
+    /// It is not a property of the caller, and sits on this struct anyway
+    /// for two reasons: it comes out of the same `users.json` read, so
+    /// asking separately would parse the file twice on every request
+    /// including every image chunk; and two reads could disagree with each
+    /// other within one request, which is a strange way to decide whether
+    /// that request is allowed.
+    pub requires_login_to_read: bool,
 }
 
 impl Caller {
@@ -326,6 +336,7 @@ pub fn resolve(state: &AppState, headers: &HeaderMap, now: i64) -> Caller {
             download: DownloadScope::All,
             cap: Some(RoleCap::NotAProject),
             authentication_configured: false,
+            requires_login_to_read: false,
         };
     };
 
@@ -366,6 +377,9 @@ pub fn resolve(state: &AppState, headers: &HeaderMap, now: i64) -> Caller {
         role,
         download,
         cap,
+        requires_login_to_read: configured
+            .as_ref()
+            .is_some_and(|set| set.require_auth_to_read),
         authentication_configured: configured.is_some(),
     }
 }
@@ -414,7 +428,7 @@ pub async fn middleware(
     let caller = resolve(&state, request.headers(), now());
     let path = request.uri().path().to_string();
 
-    if requires_login_to_read(&state) && !caller.is_authenticated() && !is_public_path(&path) {
+    if caller.requires_login_to_read && !caller.is_authenticated() && !is_public_path(&path) {
         return if path.starts_with("/api/") {
             ApiError::unauthorized(
                 "authentication_required",
@@ -433,14 +447,6 @@ pub async fn middleware(
 
     request.extensions_mut().insert(caller);
     next.run(request).await
-}
-
-fn requires_login_to_read(state: &AppState) -> bool {
-    state
-        .project
-        .as_ref()
-        .and_then(|project| users::read(project.documents()).ok().flatten())
-        .is_some_and(|(set, _)| set.require_auth_to_read)
 }
 
 /// Seconds since the epoch.
@@ -656,6 +662,7 @@ mod tests {
             download: DownloadScope::All,
             cap: None,
             authentication_configured: true,
+            requires_login_to_read: false,
         };
 
         // Anonymous, on a project with accounts: retrying after a login
@@ -710,6 +717,7 @@ mod tests {
             download: DownloadScope::None,
             cap: None,
             authentication_configured: true,
+            requires_login_to_read: false,
         };
         let error = anonymous
             .require_download(DownloadScope::Derived, "level 2 points")
