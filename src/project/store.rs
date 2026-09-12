@@ -235,28 +235,32 @@ impl DocumentStore {
                 ),
             });
         }
-        let candidate = self.root.join(relative);
-
         // Symlinks are the gap the component check above cannot close. If
         // `interpretations/` were a symlink out of the project, every path
         // under it would escape while every component still looked
         // perfectly normal.
         //
-        // Resolve as far as the path exists -- a document being created
-        // does not yet, so the deepest existing ancestor is what there is
-        // to check -- and require that to stay under the resolved root.
-        //
-        // Two extra stats per document operation, on small JSON files
-        // written at human speed. The expensive concurrent work in this
-        // server is rendering, which never touches the store.
+        // The root is resolved first and the result is built *from* that,
+        // so the path handed to the filesystem is one whose root portion
+        // has its symlinks already followed -- the true location rather
+        // than a route to it. Doing the resolving on a side variable and
+        // returning the unresolved join would check the right thing and
+        // still hand out the wrong value.
         let root = self.root.canonicalize().map_err(|source| StoreError::Io {
             path: self.root.clone(),
             source,
         })?;
-        let anchor = candidate
-            .ancestors()
-            .find(|p| p.exists())
-            .unwrap_or(self.root.as_path());
+        let candidate = root.join(relative);
+
+        // What exists of the candidate must also stay inside. A document
+        // being created does not exist yet, so the deepest existing
+        // ancestor is what there is to check; for a symlinked directory
+        // that is the link itself, which is the case worth catching.
+        //
+        // Two extra stats per document operation, on small JSON files
+        // written at human speed. The expensive concurrent work in this
+        // server is rendering, which never touches the store.
+        let anchor = candidate.ancestors().find(|p| p.exists()).unwrap_or(&root);
         let resolved = anchor.canonicalize().map_err(|source| StoreError::Io {
             path: anchor.to_path_buf(),
             source,
