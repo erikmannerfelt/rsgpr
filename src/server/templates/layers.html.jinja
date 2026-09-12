@@ -17,8 +17,33 @@
       </p>
     </div>
   {% elif not writable %}
+    {#- Shown and explained rather than hidden, following the same rule as
+        the picking toolbar: a missing control reads as a missing feature.
+        Reading has to reach further down than writing, because the names
+        and colours are what make someone else's picks legible. -#}
     <div class="warning">
-      <p>This server is read-only. Layers are shown but cannot be changed.</p>
+      {% if read_only_server %}
+        <p>This server is read-only. Layers are shown but cannot be changed.</p>
+      {% else %}
+        <p>
+          Changing the layer vocabulary needs the <code>operator</code>
+          role &mdash; you are
+          {% if current_user %}
+            <code>{{ current_user }}</code> ({{ current_role }}).
+          {% else %}
+            not signed in.
+          {% endif %}
+          {% if can_pick %}
+            You can still use these layers on your own picks.
+          {% endif %}
+        </p>
+        <p class="hint">
+          A vocabulary everyone can add to accumulates
+          <code>bed</code>, <code>Bed</code> and <code>bedrock</code> within
+          a week, which is why this is a curation decision rather than
+          something done mid-pick.
+        </p>
+      {% endif %}
     </div>
   {% endif %}
 

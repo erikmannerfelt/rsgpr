@@ -1173,6 +1173,49 @@ button.danger:hover {
   margin-bottom: var(--space-5);
 }
 
+/* The three areas of the settings page: my preferences, the project
+ * defaults, and access. Separated by a rule rather than by spacing alone,
+ * because "who may change this" differs between them and a reader should
+ * be able to see where one authority ends and the next begins. */
+.settings-section {
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings-section:last-child {
+  border-bottom: none;
+}
+
+.settings-section h2 {
+  font-size: var(--text-lg);
+}
+
+.settings-section h3 {
+  font-size: var(--text-base);
+}
+
+/* A checkbox reads as one line, not as a stacked label over a control. */
+.settings-field.checkbox {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.settings-field.checkbox .hint {
+  flex-basis: 100%;
+}
+
+/* The invite link is the one string on this page that must be selected
+ * and copied exactly, so it wraps on any character rather than overflowing
+ * or breaking only at spaces it does not contain. */
+#invite-link {
+  display: inline-block;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
 .settings-form {
   padding: var(--space-4);
   background: var(--color-surface-sunken);

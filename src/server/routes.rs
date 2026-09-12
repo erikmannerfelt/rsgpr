@@ -117,7 +117,7 @@ impl IntoResponse for ApiError {
 
 /// Same error information, rendered as an HTML page for page routes
 /// rather than JSON for API routes.
-pub struct PageError(ApiError);
+pub struct PageError(pub(super) ApiError);
 
 impl IntoResponse for PageError {
     fn into_response(self) -> Response {
@@ -668,6 +668,11 @@ fn caller_context(caller: &Caller) -> minijinja::Value {
         // accounts has nothing to sign in to, and a link to a login page
         // that cannot succeed is worse than no link.
         authentication_configured => caller.authentication_configured,
+        // Why a control is inert, when the reason is the server rather than
+        // the person. "This server is read-only" and "you are a viewer" are
+        // both true under `--read-only`, but only the first tells someone
+        // what to do about it.
+        read_only_server => matches!(caller.cap, Some(super::auth::RoleCap::ReadOnlyServer)),
     }
 }
 

@@ -1,0 +1,43 @@
+{% extends "base.html.jinja" %}
+{% block title %}Set your password - Ridal{% endblock %}
+{% block content %}
+  <h1>Set your password</h1>
+  <p class="lede">
+    This link works once. Choosing a password here activates your account and
+    signs you in.
+  </p>
+
+  <div id="invite-error" class="warning" role="status" aria-live="polite" hidden></div>
+
+  {#- The token comes from the URL rather than a hidden field the user could
+      see and edit; it is here because the form posts JSON, and a data
+      attribute keeps it out of the page's visible text. -#}
+  <form id="invite-form" class="settings-form" novalidate
+        data-token="{{ token }}">
+    <label class="settings-field">
+      <span class="settings-label">New password</span>
+      <input type="password" id="invite-password" name="password"
+             autocomplete="new-password" required>
+      <span class="hint">
+        At least {{ min_password_len }} characters. A short sentence is
+        easier to remember than a short password and harder to guess.
+      </span>
+    </label>
+    <label class="settings-field">
+      <span class="settings-label">Again</span>
+      <input type="password" id="invite-confirm" name="confirm"
+             autocomplete="new-password" required>
+    </label>
+    <button type="submit">Set password and sign in</button>
+    <span id="invite-status" class="pick-status"></span>
+  </form>
+
+  <p class="hint">
+    Nobody else knows this password, including whoever invited you. If you
+    lose it, ask an administrator for a new link &mdash; a reset is the same
+    thing as an invite.
+  </p>
+{% endblock %}
+{% block extrascript %}
+  <script src="/static/login.js"></script>
+{% endblock %}

@@ -357,6 +357,46 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/static/images/logo.svg", get(super::assets::logo_svg))
         .route("/favicon.ico", get(super::assets::favicon))
         .route("/api/v1/health", get(super::routes::health))
+        // Authentication. The write routes below did not change shape when
+        // this arrived (#131): the path still names the user, and only the
+        // body of `current_user` moved.
+        .route("/login", get(super::auth_routes::login_page))
+        .route("/invite/{token}", get(super::auth_routes::invite_page))
+        .route("/static/login.js", get(super::assets::login_js))
+        .route("/api/v1/auth/me", get(super::auth_routes::me))
+        .route(
+            "/api/v1/auth/login",
+            axum::routing::post(super::auth_routes::login),
+        )
+        .route(
+            "/api/v1/auth/logout",
+            axum::routing::post(super::auth_routes::logout),
+        )
+        .route(
+            "/api/v1/auth/invite",
+            axum::routing::post(super::auth_routes::redeem_invite),
+        )
+        .route(
+            "/api/v1/users",
+            get(super::auth_routes::list_users).post(super::auth_routes::create_user),
+        )
+        .route(
+            "/api/v1/users/{name}",
+            axum::routing::put(super::auth_routes::update_user)
+                .delete(super::auth_routes::delete_user),
+        )
+        .route(
+            "/api/v1/users/{name}/invite",
+            axum::routing::post(super::auth_routes::reissue_invite),
+        )
+        .route(
+            "/api/v1/access",
+            axum::routing::put(super::auth_routes::put_access),
+        )
+        .route(
+            "/api/v1/preferences",
+            get(super::auth_routes::get_preferences).put(super::auth_routes::put_preferences),
+        )
         .route("/layers", get(super::routes::layers_page))
         .route("/settings", get(super::routes::settings_page))
         .route("/static/settings.js", get(super::assets::settings_js))

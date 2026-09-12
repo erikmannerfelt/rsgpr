@@ -77,11 +77,17 @@
       <span id="pick-status" class="pick-status"></span>
     {% else %}
       <span class="pick-status">
-        {% if project %}
-          This server is read-only, so picks cannot be saved.
-        {% else %}
+        {% if not project %}
           Not a Ridal project, so there is nowhere to save picks.
           Run <code>ridal project init</code> and restart.
+        {% elif read_only_server %}
+          This server is read-only, so picks cannot be saved.
+        {% elif not current_user %}
+          <a href="/login">Sign in</a> to draw picks of your own. Everyone
+          else's are shown either way.
+        {% else %}
+          Drawing picks needs the <code>picker</code> role, and
+          <code>{{ current_user }}</code> is a {{ current_role }}.
         {% endif %}
       </span>
     {% endif %}

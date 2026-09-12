@@ -54,6 +54,9 @@
 pub mod app;
 pub mod assets;
 pub mod auth;
+pub mod auth_routes;
+#[cfg(test)]
+mod auth_routes_tests;
 pub mod catalog;
 pub mod interp_routes;
 #[cfg(test)]

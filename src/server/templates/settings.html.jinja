@@ -1,7 +1,7 @@
 {% extends "base.html.jinja" %}
-{% block title %}Project settings - Ridal{% endblock %}
+{% block title %}Settings - Ridal{% endblock %}
 {% block content %}
-  <h1>Project settings</h1>
+  <h1>Settings</h1>
 
   {% if not project %}
     <div class="warning">
@@ -15,56 +15,229 @@
     <dl class="card-meta settings-summary">
       {% if project_name %}<dt>Project</dt><dd>{{ project_name }}</dd>{% endif %}
       <dt>Location</dt><dd class="path">{{ project_root }}</dd>
+      <dt>You</dt>
+      <dd>
+        {% if current_user %}
+          {{ current_user }} <span class="hint">({{ current_role }})</span>
+        {% else %}
+          not signed in <span class="hint">(viewer)</span>
+        {% endif %}
+      </dd>
     </dl>
-
-    {% if not can_edit_project %}
-      <div class="warning">
-        <p>This server is read-only. Settings are shown but cannot be changed.</p>
-      </div>
-    {% endif %}
   {% endif %}
 
   <div id="settings-error" class="warning" role="status" aria-live="polite" hidden></div>
 
   {% if project %}
-    <form id="settings-form" class="settings-form" novalidate>
-      <h2>Rendering</h2>
-      <label class="settings-field">
-        <span class="settings-label">Default render profile</span>
-        <select id="default-profile" {% if not can_edit_project %}disabled{% endif %}>
-          <option value="">Loading&hellip;</option>
-        </select>
-        <span class="hint">
-          Used whenever a page is opened without a profile in its address.
-          Choosing &ldquo;Ridal default&rdquo; leaves it unset, which falls
-          back to the built-in <code>default</code> profile.
-        </span>
-      </label>
-      <label class="settings-field">
-        <span class="settings-label">Default horizontal scale</span>
-        <select id="default-xscale" {% if not can_edit_project %}disabled{% endif %}>
-          <option value="">Loading&hellip;</option>
-        </select>
-        <span class="hint">
-          How far radargrams are stretched horizontally when opened. Survey
-          speed decides how much ground a trace covers, so a project whose
-          lines are short or densely sampled often wants more than
-          1&times;. Changeable per radargram in the viewer regardless.
-        </span>
-      </label>
-      {% if can_edit_project %}
-        <button type="submit">Save</button>
-        <span id="settings-status" class="pick-status"></span>
+    {#- Section one: preferences. Everyone who has an account gets these,
+        because choosing how you like to look at something is the floor of
+        what having an account means rather than a permission. -#}
+    <section class="settings-section">
+      <h2>My settings</h2>
+      {% if signed_in %}
+        <p class="hint">
+          Yours alone. They override the project defaults below for you, and
+          for nobody else. An address with <code>?profile=</code> or
+          <code>?xscale=</code> in it still wins for that one page.
+        </p>
+        <form id="my-settings-form" class="settings-form" novalidate>
+          <label class="settings-field">
+            <span class="settings-label">Render profile</span>
+            <select id="my-profile">
+              <option value="">Loading&hellip;</option>
+            </select>
+            <span class="hint">
+              &ldquo;Project default&rdquo; leaves it unset, so a change to
+              the project default reaches you.
+            </span>
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">Horizontal scale</span>
+            <select id="my-xscale">
+              <option value="">Loading&hellip;</option>
+            </select>
+          </label>
+          <button type="submit">Save my settings</button>
+          <span id="my-settings-status" class="pick-status"></span>
+        </form>
+      {% else %}
+        {#- Shown rather than hidden, following the same rule as the picking
+            toolbar: a missing control reads as a missing feature. -#}
+        <p class="hint">
+          Personal settings need an account &mdash; there is nowhere to keep
+          them otherwise.
+          {% if authentication_configured %}
+            <a href="/login">Sign in</a> to choose your own; until then the
+            project defaults apply.
+          {% else %}
+            This project has no accounts, so the project defaults apply to
+            everyone.
+          {% endif %}
+        </p>
       {% endif %}
-    </form>
+    </section>
 
-    {#- Said plainly rather than left to be discovered: this page writes to
-        a file people are invited to edit by hand. -#}
-    <p class="hint">
-      These settings are stored in <code>ridal.toml</code> at the location
-      above. Saving here rewrites only the value being changed, so comments
-      and anything you have edited by hand are kept.
-    </p>
+    {#- Section two: the project defaults, which are what someone who has
+        not chosen sees. Thin until the processing settings arrive, which is
+        the honest outcome of moving the render settings into preferences
+        rather than a reason to have resisted it. -#}
+    <section class="settings-section">
+      <h2>Project</h2>
+      {% if not can_edit_project %}
+        <div class="warning">
+          {% if read_only_server %}
+            <p>
+              This server is read-only, so the project defaults are shown
+              but cannot be changed. Whoever runs it can restart without
+              <code>--read-only</code>.
+            </p>
+          {% else %}
+            <p>
+              Changing the project defaults needs the <code>operator</code>
+              role. They are shown here so you can see what applies.
+            </p>
+          {% endif %}
+        </div>
+      {% endif %}
+      <form id="settings-form" class="settings-form" novalidate>
+        <label class="settings-field">
+          <span class="settings-label">Default render profile</span>
+          <select id="default-profile" {% if not can_edit_project %}disabled{% endif %}>
+            <option value="">Loading&hellip;</option>
+          </select>
+          <span class="hint">
+            What someone who has not chosen a profile sees. Setting this
+            never overwrites a person who has chosen.
+          </span>
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Default horizontal scale</span>
+          <select id="default-xscale" {% if not can_edit_project %}disabled{% endif %}>
+            <option value="">Loading&hellip;</option>
+          </select>
+          <span class="hint">
+            How far radargrams are stretched horizontally when opened.
+            Survey speed decides how much ground a trace covers, so a
+            project whose lines are short or densely sampled often wants
+            more than 1&times;.
+          </span>
+        </label>
+        {% if can_edit_project %}
+          <button type="submit">Save project defaults</button>
+          <span id="settings-status" class="pick-status"></span>
+        {% endif %}
+      </form>
+
+      {#- Said plainly rather than left to be discovered: this section writes
+          to a file people are invited to edit by hand. -#}
+      <p class="hint">
+        The project defaults are stored in <code>ridal.toml</code> at the
+        location above. Saving rewrites only the value being changed, so
+        comments and anything you have edited by hand are kept.
+      </p>
+    </section>
+
+    {#- Section three: who may do what. A distinct area rather than a few
+        more fields, because everything in it is about people rather than
+        about the project's data, and it is the only part where a mistake
+        locks someone out. -#}
+    {% if can_edit_access %}
+      <section class="settings-section" id="access-section">
+        <h2>Access</h2>
+
+        <table id="users-table" class="layers-table">
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">Role</th>
+              <th scope="col">Downloads</th>
+              <th scope="col">Status</th>
+              <th scope="col"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+
+        {#- The one moment an invite token exists: only its hash is stored,
+            so this is shown once and cannot be shown again. -#}
+        <div id="invite-result" class="warning" hidden>
+          <p>
+            <strong>Invite link for <span id="invite-who"></span>.</strong>
+            Send it however you already talk to that person. It works once
+            and expires in <span id="invite-days"></span> days, and it is as
+            sensitive as a password until then.
+          </p>
+          <p><code id="invite-link" class="path"></code></p>
+          <p class="hint">
+            This is the only time it is shown. If it is lost, issue another.
+          </p>
+        </div>
+
+        <form id="add-user" class="add-layer" novalidate>
+          <h3>Add someone</h3>
+          <p class="hint">
+            You create the account; they set their own password through a
+            one-time link, so no password is ever known to two people.
+          </p>
+          <div class="add-layer-fields">
+            <label>Name
+              <input type="text" name="name" required pattern="[a-z0-9_\-]+"
+                     placeholder="erik" autocomplete="off"
+                     autocapitalize="none" spellcheck="false">
+            </label>
+            <label>Role
+              <select name="role"></select>
+            </label>
+            <label>Downloads
+              <select name="download"></select>
+            </label>
+          </div>
+          <button type="submit">Create account and get a link</button>
+        </form>
+
+        <h3>Who can read this project</h3>
+        <form id="access-form" class="settings-form" novalidate>
+          <label class="settings-field checkbox">
+            <input type="checkbox" id="require-auth">
+            Require a login to read the catalog
+            <span class="hint">
+              Off by default: public read, authenticated write. Turning this
+              on hides the catalog, the viewer and the API from anyone who
+              is not signed in.
+            </span>
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">Anonymous downloads</span>
+            <select id="anonymous-download"></select>
+            <span class="hint">
+              What someone who is not signed in may download, when reading
+              is public.
+            </span>
+          </label>
+          <button type="submit">Save access settings</button>
+          <span id="access-status" class="pick-status"></span>
+        </form>
+
+        {#- Belongs beside the control, not only in the issue: otherwise
+            someone builds a data-sharing policy on top of this believing it
+            is airtight. -#}
+        <div class="warning">
+          <p>
+            <strong>Download scope is not a boundary against a determined
+            reader.</strong> The viewer draws a radargram by fetching
+            256&times;256 chunks over HTTP, and the catalog's maps draw the
+            track, so anyone who can open a page can reassemble both no
+            matter what is set here. Gating those would break the viewer for
+            everyone below &ldquo;all&rdquo;.
+          </p>
+          <p>
+            What this does is stop casual bulk export and state an intent.
+            If the underlying data must not leave, do not grant read access
+            to it.
+          </p>
+        </div>
+      </section>
+    {% endif %}
   {% endif %}
 {% endblock %}
 {% block extrascript %}
