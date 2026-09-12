@@ -25,6 +25,11 @@ jobs:
     name: Build & test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      # Without this, one platform failing cancels the others mid-run and
+      # their results are lost. A macOS-only break then looks like a total
+      # break, and nobody can tell whether Linux -- which runs fmt, clippy
+      # and the server-feature tests -- was fine.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-14]
 
