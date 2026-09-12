@@ -145,6 +145,18 @@
       <section class="settings-section" id="access-section">
         <h2>Access</h2>
 
+        <h3>People</h3>
+        {#- Said before the table rather than discovered after it. The
+            role and download controls are selects that apply on change,
+            and there is a Save button further down this page for a
+            different thing entirely -- without this line the obvious
+            reading is that the button saves the table. -#}
+        <p class="hint">
+          Role and download changes take effect as you make them; there is
+          nothing to save here. A change reaches whoever it is about on
+          their next request, including one already signed in.
+        </p>
+
         <table id="users-table" class="layers-table">
           <thead>
             <tr>
@@ -195,8 +207,18 @@
           <button type="submit">Create account and get a link</button>
         </form>
 
-        <h3>Who can read this project</h3>
+        {#- The heading lives *inside* the container rather than above it,
+            so the grey block and its Save button are visibly one thing
+            that belongs to this heading. Outside, the container read as
+            orphaned and its button as though it might save the table
+            above. -#}
         <form id="access-form" class="settings-form" novalidate>
+          <h3>People who are not signed in</h3>
+          <p class="hint">
+            This is the only part of Access with a Save button: it is one
+            setting for the whole project, rather than a change to
+            somebody in particular.
+          </p>
           <label class="settings-field checkbox">
             <input type="checkbox" id="require-auth">
             Require a login to read the catalog
@@ -214,7 +236,7 @@
               is public.
             </span>
           </label>
-          <button type="submit">Save access settings</button>
+          <button type="submit">Save</button>
           <span id="access-status" class="pick-status"></span>
         </form>
 

@@ -59,17 +59,31 @@
       and one per group. `base` is the API prefix the items hang off, so a
       new merged product is a line here and works at every scope at once.
       `project` is passed in for the same reason as `profile` above. -#}
+  {#- Each entry is gated on the caller's download scope, and the menu
+      disappears when nothing is left in it: a control that answers with an
+      error is a worse way to learn about a permission than never having
+      been offered one.
+
+      "Layer points" additionally needs a signed-in user. A merged download
+      covers one person's picks, and an anonymous reader has no "mine" to
+      resolve -- offering it would produce a request the server can only
+      refuse. -#}
   {% macro download_menu(id, base, label, summary, project) %}
+  {%- set merged_points = project and current_user and can_download_derived -%}
+  {% if merged_points or can_download_all %}
   <details class="site-menu download-menu" id="download-menu-{{ id }}"
            data-download-base="{{ base }}" data-download-label="{{ label }}">
     <summary>{{ summary }}</summary>
     <ul>
-      {% if project %}
+      {% if merged_points %}
         <li><button type="button" data-download="level2">Layer points</button></li>
       {% endif %}
-      <li><button type="button" data-download="track.geojson">Tracks (GeoJSON)</button></li>
+      {% if can_download_all %}
+        <li><button type="button" data-download="track.geojson">Tracks (GeoJSON)</button></li>
+      {% endif %}
     </ul>
   </details>
+  {% endif %}
   {% endmacro %}
 
   <h1>Radargram catalog</h1>

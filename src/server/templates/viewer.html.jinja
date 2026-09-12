@@ -39,19 +39,45 @@
     {#- A menu rather than a button: there are five things to download and
         they are not variations of one another. Lives in this row, not the
         picking toolbar, because a radargram, its track and an image are
-        downloadable from a read-only catalog with no project at all. -#}
+        downloadable from a read-only catalog with no project at all.
+
+        Each entry is gated on the caller's download scope, and the menu
+        itself disappears when nothing is left in it. An entry that answers
+        with an error dialog is a worse way to learn about a permission
+        than never having been offered it -- the opposite of the rule the
+        picking toolbar follows below, and deliberately so: picking is the
+        point of the page, so its absence needs explaining, while a
+        download someone was never granted is not a feature they are
+        missing.
+
+        The two pick downloads additionally need a signed-in user, because
+        both are downloads of *your own* picks and an anonymous reader has
+        none to name. -#}
+    {%- set own_picks = project and current_user -%}
+    {%- set show_download = (own_picks and (can_download_derived or can_download_picks))
+                            or can_download_derived or can_download_all -%}
+    {% if show_download %}
     <details class="site-menu download-menu" id="download-menu">
       <summary>Download</summary>
       <ul>
-        {% if project %}
+        {% if own_picks and can_download_derived %}
           <li><button type="button" id="dl-points">Layer points</button></li>
+        {% endif %}
+        {% if own_picks and can_download_picks %}
           <li><button type="button" id="dl-raw">Raw picks (gprinterp)</button></li>
         {% endif %}
-        <li><button type="button" id="dl-track">Track (GeoJSON)</button></li>
-        <li><button type="button" id="dl-image">Rendered image</button></li>
-        <li><button type="button" id="dl-radargram">Radargram (NetCDF)</button></li>
+        {% if can_download_all %}
+          <li><button type="button" id="dl-track">Track (GeoJSON)</button></li>
+        {% endif %}
+        {% if can_download_derived %}
+          <li><button type="button" id="dl-image">Rendered image</button></li>
+        {% endif %}
+        {% if can_download_all %}
+          <li><button type="button" id="dl-radargram">Radargram (NetCDF)</button></li>
+        {% endif %}
       </ul>
     </details>
+    {% endif %}
     <span id="cursor-readout"></span>
   </div>
 

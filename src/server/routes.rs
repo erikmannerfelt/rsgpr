@@ -676,6 +676,19 @@ fn caller_context(caller: &Caller) -> minijinja::Value {
         // both true under `--read-only`, but only the first tells someone
         // what to do about it.
         read_only_server => matches!(caller.cap, Some(super::auth::RoleCap::ReadOnlyServer)),
+        // What this caller may take away, as the three questions the
+        // download menus actually ask. A control the caller cannot use is
+        // removed rather than left to fail on click: a menu entry is a
+        // promise, and one that answers with an error dialog is a worse
+        // way to learn about a permission than never having been offered
+        // it. This is the opposite of the rule the picking toolbar
+        // follows, and deliberately so -- picking is the point of the
+        // page, so its absence needs explaining, while a download someone
+        // was never granted is not a feature they are missing.
+        can_download_picks => caller.may_download(crate::project::users::DownloadScope::Picks),
+        can_download_derived =>
+            caller.may_download(crate::project::users::DownloadScope::Derived),
+        can_download_all => caller.may_download(crate::project::users::DownloadScope::All),
     }
 }
 

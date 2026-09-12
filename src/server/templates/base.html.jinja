@@ -45,13 +45,18 @@
               is shown there rather than something wrong. -#}
           {% if authentication_configured %}
             {% if current_user %}
-              <li class="site-menu-identity">
-                Signed in as <strong>{{ current_user }}</strong>
-                <span class="hint">{{ current_role }}</span>
+              {#- A caption for the item below it, not a menu item of its
+                  own: it is the only line here that cannot be clicked, so
+                  it is set apart by a rule and muted rather than left to
+                  look like a link that stopped working. -#}
+              <li class="site-menu-note">
+                <span class="site-menu-note-label">Signed in as</span>
+                <strong>{{ current_user }}</strong>
+                <span class="site-menu-note-label">({{ current_role }})</span>
               </li>
               <li><a href="/login">Sign out</a></li>
             {% else %}
-              <li><a href="/login">Sign in</a></li>
+              <li class="site-menu-separated"><a href="/login">Sign in</a></li>
             {% endif %}
           {% endif %}
         </ul>

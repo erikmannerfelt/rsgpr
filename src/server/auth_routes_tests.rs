@@ -862,6 +862,97 @@ async fn download_scope_gates_the_downloads_and_not_the_viewer() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn a_download_the_caller_may_not_have_is_not_offered() {
+    // The API refusing is necessary and not sufficient. A menu entry is a
+    // promise; one that answers with an error dialog teaches someone about
+    // a permission in the worst possible way, and looks like a bug rather
+    // than a policy.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![
+        activated("everything", Role::Picker, DownloadScope::All, &hash),
+        activated("derived", Role::Picker, DownloadScope::Derived, &hash),
+        activated("nothing", Role::Picker, DownloadScope::None, &hash),
+    ]);
+
+    let viewer_uri = format!("/view/{RADARGRAM}");
+
+    let full = sign_in(&app, "everything").await;
+    let page = get(&app, &viewer_uri, Some(&full)).await;
+    for control in [
+        "dl-points",
+        "dl-raw",
+        "dl-track",
+        "dl-image",
+        "dl-radargram",
+    ] {
+        assert!(page.text.contains(control), "{control} should be offered");
+    }
+
+    // `derived` keeps the level 2 points and the rendered image, and loses
+    // the two that are the underlying data.
+    let partial = sign_in(&app, "derived").await;
+    let page = get(&app, &viewer_uri, Some(&partial)).await;
+    for control in ["dl-points", "dl-raw", "dl-image"] {
+        assert!(page.text.contains(control), "{control} should be offered");
+    }
+    for control in ["dl-track", "dl-radargram"] {
+        assert!(!page.text.contains(control), "{control} should be hidden");
+    }
+
+    // `none` loses the menu itself rather than being shown an empty one.
+    let barred = sign_in(&app, "nothing").await;
+    let page = get(&app, &viewer_uri, Some(&barred)).await;
+    assert!(!page.text.contains("id=\"download-menu\""), "{}", page.text);
+    // And the page still works -- the viewer is not a download.
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text.contains("RIDAL_VIEWER"), "the viewer still loads");
+
+    // The catalog's merged downloads follow the same rule.
+    let index = get(&app, "/", Some(&barred)).await;
+    assert!(!index.text.contains("data-download="), "{}", index.text);
+    let index = get(&app, "/", Some(&full)).await;
+    assert!(index.text.contains(r#"data-download="level2""#));
+    assert!(index.text.contains(r#"data-download="track.geojson""#));
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_anonymous_reader_is_not_offered_a_download_of_their_own_picks() {
+    // A merged download covers one person's picks, and an anonymous reader
+    // has no "mine" to resolve -- the route can only answer 400. Rather
+    // than let the catalog offer a button that always fails, the control
+    // is absent, which is what Erik saw and reported.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![activated(
+        "erik",
+        Role::Admin,
+        DownloadScope::All,
+        &hash,
+    )]);
+
+    let index = get(&app, "/", None).await;
+    assert!(
+        !index.text.contains(r#"data-download="level2""#),
+        "a reader with no account cannot download 'their' picks: {}",
+        index.text
+    );
+    // The track is theirs to take under the default anonymous scope, so
+    // that one stays.
+    assert!(index.text.contains(r#"data-download="track.geojson""#));
+
+    // Signing in brings it back.
+    let session = sign_in(&app, "erik").await;
+    let index = get(&app, "/", Some(&session)).await;
+    assert!(index.text.contains(r#"data-download="level2""#));
+
+    // The viewer's own pick downloads follow the same rule.
+    let page = get(&app, &format!("/view/{RADARGRAM}"), None).await;
+    assert!(!page.text.contains("dl-points"), "{}", page.text);
+    assert!(!page.text.contains("dl-raw"), "{}", page.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn an_anonymous_reader_downloads_what_the_project_allows_them() {
     let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with_set(UserSet {

@@ -179,11 +179,11 @@
     const addForm = byId("add-user");
     if (addForm) {
       fillNames(addForm.elements.role, access.roles || [], "picker");
-      fillNames(
-        addForm.elements.download,
-        access.download_scopes || [],
-        "derived",
-      );
+      // `all` to match what the API does when the field is omitted, and
+      // what the README says a new account gets. The form always submits
+      // its selection, so a different preselection here would silently
+      // be the real default and the documented one would be fiction.
+      fillNames(addForm.elements.download, access.download_scopes || [], "all");
     }
     fillNames(
       byId("anonymous-download"),
@@ -210,28 +210,31 @@
     name.textContent = user.name;
     row.appendChild(name);
 
-    const role = document.createElement("td");
-    const roleSelect = document.createElement("select");
-    fillNames(roleSelect, access.roles || [], user.role);
-    roleSelect.addEventListener("change", () =>
-      updateUser(user.name, { role: roleSelect.value }, roleSelect, user.role),
-    );
-    role.appendChild(roleSelect);
-    row.appendChild(role);
+    /* Both selects apply on change rather than waiting for a Save, so
+     * each carries its own confirmation: there is no button to go quiet
+     * afterwards, and the only Save button on this page belongs to a
+     * different setting entirely. */
+    const cellWithSelect = (options, selected, change) => {
+      const cell = document.createElement("td");
+      const select = document.createElement("select");
+      fillNames(select, options, selected);
+      const status = document.createElement("span");
+      status.className = "row-status";
+      select.addEventListener("change", () =>
+        updateUser(user.name, change(select.value), select, selected, status),
+      );
+      cell.append(select, status);
+      return cell;
+    };
 
-    const download = document.createElement("td");
-    const downloadSelect = document.createElement("select");
-    fillNames(downloadSelect, access.download_scopes || [], user.download);
-    downloadSelect.addEventListener("change", () =>
-      updateUser(
-        user.name,
-        { download: downloadSelect.value },
-        downloadSelect,
-        user.download,
-      ),
+    row.appendChild(
+      cellWithSelect(access.roles || [], user.role, (value) => ({ role: value })),
     );
-    download.appendChild(downloadSelect);
-    row.appendChild(download);
+    row.appendChild(
+      cellWithSelect(access.download_scopes || [], user.download, (value) => ({
+        download: value,
+      })),
+    );
 
     const status = document.createElement("td");
     // Three states worth telling apart: never activated, active, and active
@@ -245,31 +248,46 @@
     }
     row.appendChild(status);
 
+    /* One shape for both, differing only in colour: they are the same
+     * kind of control and one of them is more serious, which is what the
+     * colour is for. */
     const actions = document.createElement("td");
+    const group = document.createElement("div");
+    group.className = "row-actions";
+
     const reset = document.createElement("button");
     reset.type = "button";
     reset.textContent = user.activated ? "Reset password" : "New invite link";
     reset.addEventListener("click", () => reissue(user.name));
-    actions.appendChild(reset);
+    group.appendChild(reset);
 
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "danger";
     remove.textContent = "Remove";
     remove.addEventListener("click", () => removeUser(user.name));
-    actions.appendChild(remove);
+    group.appendChild(remove);
+
+    actions.appendChild(group);
     row.appendChild(actions);
 
     return row;
   }
 
-  async function updateUser(name, change, select, previous) {
+  async function updateUser(name, change, select, previous, status) {
     clearError();
+    if (status) status.textContent = "Saving…";
     try {
       await send("PUT", `/api/v1/users/${encodeURIComponent(name)}`, change);
+      // Redrawn from the server's answer, which also replaces this row --
+      // so the "Saved" below is set on a row that is about to go. It is
+      // still worth setting: a refusal leaves the old row in place, and
+      // the difference between the two outcomes is the point.
+      if (status) status.textContent = "Saved";
       await loadAccess();
     } catch (error) {
       showError(error.message);
+      if (status) status.textContent = "";
       // Put the control back to what the server still believes, so the page
       // never shows a role that was refused.
       select.value = previous;
