@@ -235,7 +235,42 @@ impl DocumentStore {
                 ),
             });
         }
-        Ok(self.root.join(relative))
+        let candidate = self.root.join(relative);
+
+        // Symlinks are the gap the component check above cannot close. If
+        // `interpretations/` were a symlink out of the project, every path
+        // under it would escape while every component still looked
+        // perfectly normal.
+        //
+        // Resolve as far as the path exists -- a document being created
+        // does not yet, so the deepest existing ancestor is what there is
+        // to check -- and require that to stay under the resolved root.
+        //
+        // Two extra stats per document operation, on small JSON files
+        // written at human speed. The expensive concurrent work in this
+        // server is rendering, which never touches the store.
+        let root = self.root.canonicalize().map_err(|source| StoreError::Io {
+            path: self.root.clone(),
+            source,
+        })?;
+        let anchor = candidate
+            .ancestors()
+            .find(|p| p.exists())
+            .unwrap_or(self.root.as_path());
+        let resolved = anchor.canonicalize().map_err(|source| StoreError::Io {
+            path: anchor.to_path_buf(),
+            source,
+        })?;
+        if !resolved.starts_with(&root) {
+            return Err(StoreError::Io {
+                path: candidate,
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "document path resolves outside the project",
+                ),
+            });
+        }
+        Ok(candidate)
     }
 
     /// Read a document, or `None` if it does not exist.
@@ -580,6 +615,32 @@ mod tests {
         assert_eq!(store.read(&doc("a.json")).unwrap().unwrap().text, "one");
         let count = std::fs::read_dir(dir.path()).unwrap().count();
         assert_eq!(count, 1, "a refused write left debris behind");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_directory_cannot_smuggle_writes_out_of_the_project() {
+        // Every component of `escape//doc.json` is Normal, so the component
+        // check alone passes it. The containment check is what catches it.
+        let project = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), project.path().join("escape")).unwrap();
+
+        let store = DocumentStore::new(project.path().to_path_buf());
+        let err = store
+            .write(Path::new("escape/doc.json"), "{}", &Expectation::Any)
+            .expect_err("must refuse to follow the symlink out");
+        assert!(err.to_string().contains("outside the project"), "{err}");
+        assert!(
+            !elsewhere.path().join("doc.json").exists(),
+            "nothing was written outside the project"
+        );
+
+        // An ordinary nested path is unaffected.
+        store
+            .write(Path::new("inside/doc.json"), "{}", &Expectation::Any)
+            .unwrap();
+        assert!(project.path().join("inside/doc.json").exists());
     }
 
     #[test]
