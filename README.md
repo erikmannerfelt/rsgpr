@@ -8,6 +8,7 @@ https://github.com/erikmannerfelt/ridal/actions/workflows/rust.yml
 # ![](https://raw.githubusercontent.com/erikmannerfelt/ridal/v0.5.0/images/logo.svg) Ridal — Speeding up Ground Penetrating Radar (GPR) processing
 The aim of `ridal` is to quickly and accurately process GPR data.
 In one command, most data can be processed in pre-set profiles or with custom filter settings, and batch modes allow for sequences of datasets to be processed with the same settings.
+Once processed, the results can be browsed and inspected in a [browser GUI](#browser-gui).
 Built in [rust](https://rust-lang.org/) with a high focus on testing and performance, `ridal` may be for you if large data volumes and strange fileformats are common issues.
 
 The name is a take on the loosely defined "Data Abstraction Library" (DAL) projects like [GDAL](https://gdal.org) and [PDAL](https://pdal.org), but for radar.
@@ -118,6 +119,25 @@ A rudimentary profile renderer is available with the `-r` argument.
 This will be saved in the same location as the output file as a JPG if another filename is not given.
 
 
+### Browser GUI
+
+Processed files can be browsed in a local web GUI:
+```bash
+ridal gui path/to/processed/
+```
+This opens a browser on every Ridal `.nc` file it can find below that directory, grouped by survey, each group with a map of its tracks.
+Opening one gives a pan/zoom view of the radargram where the cursor reports trace number, distance and two-way travel time, alongside a second map showing where on the ground that cursor is.
+Radargrams are rendered server-side in tiles as they are needed, so a file larger than memory is no obstacle.
+
+Four rendering profiles are available (`default`, `positive`, `abslog` and `high-contrast`), since the settings that make a bed reflector legible rarely make the internal layers legible too.
+
+For something longer-lived than `ridal gui`, which picks an ephemeral port and opens a browser, `ridal server start` binds a fixed port and stays up:
+```bash
+ridal server start path/to/processed/ --port 8080
+```
+That is the mode to put behind a reverse proxy or run as a systemd service.
+There is no authentication yet, so anyone who can reach the port can read everything it serves.
+
 ### Interpreting layers
 
 Reflectors can be picked in the GUI and exported as evenly spaced geographic points.
@@ -176,9 +196,17 @@ Ridal does not terminate TLS, so **put a TLS-terminating reverse proxy in front 
 > **Download scope is not a boundary against a determined reader.** The viewer draws a radargram by fetching image chunks over HTTP and the catalog draws tracks on a map, so anyone who can open a page can reassemble both regardless. It stops casual bulk export and states an intent. If the underlying data must not leave, do not grant read access to it.
 
 
+Neither the GUI nor interpretation is in a release yet; both landed after `v0.5.2`.
+For now they need a git install:
+```bash
+cargo install --git https://github.com/erikmannerfelt/ridal
+```
+
+
 ## Papers using Ridal
 
 - [Kleber et al. (2023): Groundwater springs formed during glacial retreat are a large source of methane in the high Arctic](https://doi.org/10.1038/s41561-023-01210-6)
 - [Harcourt et al. (2026): Surging glaciers in Svalbard: Observing their distribution, characteristics and evolution](https://doi.org/10.1016/j.earscirev.2026.105410)
+- [Kleber et al. (2026): Subglacial geology and thermal conditions regulate methane emissions from Svalbard glaciers](https://doi.org/10.1038/s41467-026-77190-z)
 
 ... and many others in preparation/review
