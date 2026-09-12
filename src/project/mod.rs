@@ -600,19 +600,21 @@ mod tests {
         );
 
         // An absolute root is how a project indexes an archive it does not
-        // contain.
+        // contain. Built from a real temporary directory rather than a
+        // literal like "/mnt/archive": that is not absolute on Windows, so
+        // `resolve` would correctly join it to the project root and the
+        // assertion would fail for the wrong reason.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let absolute = elsewhere.path().to_str().unwrap();
         let text = format!(
-            "[radargrams]\nroots = [\"inside\", \"{}\"]\n",
-            "/mnt/archive/svalbard"
+            "[radargrams]\nroots = [\"inside\", {}]\n",
+            toml_string(absolute)
         );
         std::fs::write(dir.path().join(MARKER), text).unwrap();
         let project = Project::open(dir.path()).unwrap();
         assert_eq!(
             project.radargram_roots(),
-            vec![
-                dir.path().join("inside"),
-                PathBuf::from("/mnt/archive/svalbard")
-            ]
+            vec![dir.path().join("inside"), PathBuf::from(absolute)]
         );
     }
 
@@ -627,14 +629,20 @@ mod tests {
     #[test]
     fn the_cache_directory_can_be_moved_off_the_project() {
         // The daemon case: project on a network share, cache on local disk.
+        //
+        // A real temporary directory rather than a literal "/var/cache":
+        // that is not an absolute path on Windows, where `resolve` would
+        // rightly treat it as relative to the project.
         let dir = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let absolute = cache.path().to_str().unwrap();
         std::fs::write(
             dir.path().join(MARKER),
-            "[cache]\ndir = \"/var/cache/ridal\"\n",
+            format!("[cache]\ndir = {}\n", toml_string(absolute)),
         )
         .unwrap();
         let project = Project::open(dir.path()).unwrap();
-        assert_eq!(project.cache_dir(), PathBuf::from("/var/cache/ridal"));
+        assert_eq!(project.cache_dir(), PathBuf::from(absolute));
     }
 
     #[test]
