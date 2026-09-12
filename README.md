@@ -143,6 +143,39 @@ ridal interp export line.nc picks.gprinterp.json -o points.geojson --spacing 25
 Each point carries its layer, trace and sample, distance along the profile, two-way travel time, depth, and both projected and WGS84 coordinates — along with which radargram and which processing revision it came from, since depth depends on how the radargram was processed.
 
 
+### Sharing a project with other people
+
+A project with no accounts behaves as it always has: everyone using it is the user `default`, and `ridal gui` needs no login step.
+Accounts switch on the first time one is created, which has to happen from the command line — there is no administrator yet to authorise it, and no default password to forget to change:
+```bash
+ridal project user add erik --role admin
+```
+That prints a one-time invite link, valid for a week. Send it however you already talk to that person; opening it is what sets their password, so nobody else ever knows it. A password reset is the same command (`ridal project user reset`), because it is the same mechanism.
+
+Two independent things are set per person. **Role** is what they may do, as a ladder:
+
+| role | adds |
+|---|---|
+| `viewer` | read the catalog and open radargrams; read the layer vocabulary; set their own preferences |
+| `picker` | write their own interpretation |
+| `operator` | modify the layer vocabulary; set the project-wide defaults |
+| `admin` | users, roles, download scopes, and the access settings |
+
+**Download scope** (`none`, `picks`, `derived`, `all`) is what they may take away, and is deliberately not folded into the role: a picker who may not export the underlying data and a viewer who may export everything are both reasonable. `derived` — the level 2 point product — is usually the line a project is actually deciding about.
+
+Interpretations are strictly per person. One user cannot modify another's picks, and **not even an admin can** — that is a property of the data model rather than a permission. Removing an account keeps the picks it authored, since those are attributed scientific data.
+
+Serving this beyond localhost:
+```bash
+ridal server start my-survey --host 127.0.0.1 --port 8000
+```
+Ridal does not terminate TLS, so **put a TLS-terminating reverse proxy in front and leave Ridal on loopback** — that is the supported arrangement. Binding a public address refuses to start unless the project has accounts, and refuses password logins unless you pass `--allow-insecure-login` to say you know what is in front of that address.
+
+`--read-only` still works and now means "cap everyone at `viewer`", whatever their account says.
+
+> **Download scope is not a boundary against a determined reader.** The viewer draws a radargram by fetching image chunks over HTTP and the catalog draws tracks on a map, so anyone who can open a page can reassemble both regardless. It stops casual bulk export and states an intent. If the underlying data must not leave, do not grant read access to it.
+
+
 ## Papers using Ridal
 
 - [Kleber et al. (2023): Groundwater springs formed during glacial retreat are a large source of methane in the high Arctic](https://doi.org/10.1038/s41561-023-01210-6)
