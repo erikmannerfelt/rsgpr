@@ -155,33 +155,37 @@ const RIDAL = Object.freeze({
    * string, so the profile is read when the popup opens. The viewer's
    * profile can change without a page reload, and a popup built at load
    * time would keep showing the profile that was active then. */
-  /** Escape text for interpolation into an HTML string.
+  /** Build a track popup as DOM nodes rather than an HTML string.
    *
-   * `label` is a radargram's display name -- free text from the NetCDF's
-   * metadata or its filename -- and it is interpolated into markup below.
-   * Unescaped, a file whose display name contains a tag runs script in
-   * every viewer that opens its popup. That is a small risk while one
-   * person fills their own catalog and a real one as soon as several
-   * people can add radargrams to a shared server. */
-  escapeHtml(text) {
-    return String(text)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  },
-
+   * Leaflet assigns a string popup with `innerHTML` and appends an element
+   * with `appendChild` (see `_updateContent` in the vendored build), so
+   * returning a node means nothing here is ever parsed as HTML. That
+   * removes the escaping question rather than answering it: `label` is
+   * free text from a radargram's metadata, and the profile comes from a
+   * <select> whose value a scanner cannot prove is constrained.
+   *
+   * Callers should pass this to `bindPopup` as a function rather than a
+   * string, so the profile is read when the popup opens. The viewer's
+   * profile can change without a page reload, and a popup built at load
+   * time would keep showing the profile that was active then. */
   popupContent(radargramId, label, profile) {
     const query = profile ? `?profile=${encodeURIComponent(profile)}` : "";
-    return (
-      `<a class="popup-link" href="/view/${encodeURIComponent(radargramId)}${query}">` +
-      `${RIDAL.escapeHtml(label)}` +
-      '<img class="popup-thumb" ' +
-      `src="/api/v1/datasets/${encodeURIComponent(radargramId)}/views/standard/overview${query}" ` +
-      'loading="lazy" alt="">' +
-      '</a>'
-    );
+    const id = encodeURIComponent(radargramId);
+
+    const link = document.createElement("a");
+    link.className = "popup-link";
+    link.href = `/view/${id}${query}`;
+    // A text node: markup in a display name is shown, never run.
+    link.appendChild(document.createTextNode(label));
+
+    const thumb = document.createElement("img");
+    thumb.className = "popup-thumb";
+    thumb.src = `/api/v1/datasets/${id}/views/standard/overview${query}`;
+    thumb.loading = "lazy";
+    thumb.alt = "";
+    link.appendChild(thumb);
+
+    return link;
   },
 
   /** Wire up a track's hover/popup highlighting, and -- if `card` is
