@@ -160,6 +160,102 @@ pub fn sidecar_path(input: &Path, profile: &RenderProfile) -> std::path::PathBuf
 mod tests {
     use super::*;
 
+    /// A small radargram with real structure: a bright band near the top
+    /// and a sloping reflector, so the amplitude range is not degenerate
+    /// and the percentile estimate has something to work with.
+    fn synthetic(width: usize, height: usize) -> ndarray::Array2<f32> {
+        ndarray::Array2::from_shape_fn((height, width), |(row, col)| {
+            let direct = if row < 3 { 40.0 } else { 0.0 };
+            let bed = height as f32 * 0.6 + (col as f32 * 0.05).sin() * 4.0;
+            let reflector = if (row as f32 - bed).abs() < 1.5 {
+                25.0
+            } else {
+                0.0
+            };
+            let noise = ((row * 7 + col * 13) % 11) as f32 - 5.0;
+            direct + reflector + noise
+        })
+    }
+
+    #[test]
+    fn an_in_memory_array_renders_to_a_real_image() {
+        // The whole point of the module: the same pipeline the server uses,
+        // driven from an array with no NetCDF involved.
+        let dir = tempfile::tempdir().unwrap();
+        let data = synthetic(120, 40);
+        let source = crate::source::ArraySource::new(data.view());
+        let out = dir.path().join("out.png");
+
+        let (w, h) = render_to_file(
+            &source,
+            &out,
+            &RenderRequest {
+                profile: &profile(),
+                width: Some(60),
+                quality: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!((w, h), (60, 20), "half width, aspect preserved");
+        // Decoded from the file, not inferred from the return value: this
+        // asserts that what was written is a readable image of that size.
+        assert_eq!(image::image_dimensions(&out).unwrap(), (60, 20));
+        assert!(std::fs::metadata(&out).unwrap().len() > 100);
+    }
+
+    #[test]
+    fn a_width_beyond_the_source_clamps_rather_than_upsampling() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = synthetic(50, 20);
+        let source = crate::source::ArraySource::new(data.view());
+        let out = dir.path().join("wide.png");
+
+        let (w, h) = render_to_file(
+            &source,
+            &out,
+            &RenderRequest {
+                profile: &profile(),
+                width: Some(5000),
+                quality: None,
+            },
+        )
+        .unwrap();
+        assert_eq!((w, h), (50, 20), "a wider image cannot show more data");
+        assert_eq!(image::image_dimensions(&out).unwrap(), (50, 20));
+    }
+
+    #[test]
+    fn the_jpeg_path_writes_a_jpeg_and_honours_quality() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = synthetic(80, 30);
+        let source = crate::source::ArraySource::new(data.view());
+
+        let mut sizes = Vec::new();
+        for quality in [40, 95] {
+            let out = dir.path().join(format!("q{quality}.jpg"));
+            render_to_file(
+                &source,
+                &out,
+                &RenderRequest {
+                    profile: &profile(),
+                    width: None,
+                    quality: Some(quality),
+                },
+            )
+            .unwrap();
+            // Readable as a JPEG specifically, so the extension and the
+            // encoder agree.
+            let decoded = image::open(&out).unwrap();
+            assert_eq!((decoded.width(), decoded.height()), (80, 30));
+            sizes.push(std::fs::metadata(&out).unwrap().len());
+        }
+        assert!(
+            sizes[0] < sizes[1],
+            "quality 40 should be smaller than 95, got {sizes:?}"
+        );
+    }
+
     fn profile() -> RenderProfile {
         RenderProfile::default_profile()
     }
