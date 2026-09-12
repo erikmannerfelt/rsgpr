@@ -24,30 +24,36 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 
-use super::app::{AppState, DownloadScope};
+use super::app::{AppState, MergeScope};
+use super::auth::Caller;
 use super::routes::{lookup_dataset, ApiError};
 use crate::identity::{RadargramId, UserId};
 use crate::interp::checks;
 use crate::project::store::{Expectation, StoreError, Version};
+use crate::project::users::{DownloadScope, Role};
 use crate::project::{interpretations, layers, Project};
 
-/// The project, if this server has one and writes are allowed.
-fn writable_project(state: &AppState) -> Result<&Project, ApiError> {
-    let Some(project) = state.project.as_ref() else {
-        return Err(ApiError::conflict(
+/// The project, if this server has one and `caller` may do `action` in it.
+///
+/// One function for both questions because they fail together in practice
+/// and the caller's effective role already encodes the second: a catalog
+/// with no project caps every role at `viewer`, so `require` answers "there
+/// is nowhere to write" without this having to ask separately.
+fn project_for<'a>(
+    state: &'a AppState,
+    caller: &Caller,
+    needed: Role,
+    action: &str,
+) -> Result<&'a Project, ApiError> {
+    caller.require(needed, action)?;
+    state.project.as_ref().ok_or_else(|| {
+        ApiError::conflict(
             "not_a_project",
             "This catalog is not a Ridal project, so there is nowhere to save \
-             interpretations. Run `ridal project init` in the directory you are \
+             anything. Run `ridal project init` in the directory you are \
              serving, then restart.",
-        ));
-    };
-    if !state.writable {
-        return Err(ApiError::conflict(
-            "read_only",
-            "This server was started read-only, so interpretations cannot be saved.",
-        ));
-    }
-    Ok(project)
+        )
+    })
 }
 
 /// The project for reading. Reads do not require writes to be enabled.
@@ -94,35 +100,27 @@ fn parse_user(raw: &str) -> Result<UserId, ApiError> {
     UserId::new(raw).map_err(|e| ApiError::bad_request("invalid_user", e))
 }
 
-/// Who the caller is.
-///
-/// The single place that answers that question, so authentication replaces
-/// this function body rather than being threaded through every route. It
-/// will gain the request headers when sessions land -- a signed cookie is
-/// read from there -- which is a mechanical change to the handful of call
-/// sites below.
-///
-/// Until then, everyone is [`crate::identity::DEFAULT_USER`], which is the
-/// single-user behaviour Ridal has always had.
-pub(super) fn current_user(_state: &AppState) -> Result<UserId, ApiError> {
-    UserId::new(crate::identity::DEFAULT_USER)
-        .map_err(|e| ApiError::internal("invalid_default_user", e))
-}
-
 /// The user a write is allowed to target, given the one named in the path.
 ///
 /// Interpretations are per-user by design: one person cannot modify
 /// another's picks, and that is a property of the data rather than a
-/// permission an administrator could grant. Without this check the path
-/// parameter *is* the authorisation -- `PUT .../interpretations/alice`
-/// would write Alice's document for anyone who asked.
+/// permission an administrator could grant -- **not even an admin may edit
+/// someone else's picks**, which is why this check consults the caller's
+/// identity and never their role. Without it the path parameter *is* the
+/// authorisation: `PUT .../interpretations/alice` would write Alice's
+/// document for anyone who asked.
 ///
 /// The path keeps naming the user rather than being dropped from write
-/// URLs, so reads and writes share one URL shape and adding
-/// authentication changes no route at all.
-fn writing_as(state: &AppState, path_user: &str) -> Result<UserId, ApiError> {
+/// URLs, so reads and writes share one URL shape and authentication landing
+/// changed no route at all.
+fn writing_as(caller: &Caller, path_user: &str) -> Result<UserId, ApiError> {
     let requested = parse_user(path_user)?;
-    let current = current_user(state)?;
+    let current = caller.user.clone().ok_or_else(|| {
+        ApiError::unauthorized(
+            "authentication_required",
+            "Sign in to save an interpretation.",
+        )
+    })?;
     if requested != current {
         return Err(ApiError::forbidden(
             "not_your_interpretation",
@@ -177,6 +175,7 @@ fn layer_error(error: layers::LayerError) -> ApiError {
 pub async fn list_interpretations(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
+    caller: Caller,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = readable_project(&state)?;
     let radargram = parse_radargram(&radargram_id)?;
@@ -185,7 +184,7 @@ pub async fn list_interpretations(
     Ok(Json(serde_json::json!({
         "radargram_id": radargram.as_str(),
         "users": users,
-        "writable": state.writable,
+        "writable": caller.may(Role::Picker),
     })))
 }
 
@@ -223,12 +222,13 @@ pub async fn get_interpretation(
 pub async fn put_interpretation(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
+    caller: Caller,
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let project = writable_project(&state)?;
+    let project = project_for(&state, &caller, Role::Picker, "save an interpretation")?;
     let radargram = parse_radargram(&radargram_id)?;
-    let user = writing_as(&state, &user)?;
+    let user = writing_as(&caller, &user)?;
 
     // The dataset must be in this catalog. Otherwise a typo in the URL
     // silently creates an interpretation directory for a radargram that does
@@ -300,11 +300,12 @@ pub async fn put_interpretation(
 pub async fn delete_interpretation(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
+    caller: Caller,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
-    let project = writable_project(&state)?;
+    let project = project_for(&state, &caller, Role::Picker, "delete an interpretation")?;
     let radargram = parse_radargram(&radargram_id)?;
-    let user = writing_as(&state, &user)?;
+    let user = writing_as(&caller, &user)?;
 
     // Conditional like the write, so a client holding a stale version
     // cannot delete picks drawn after it last read. Deleting is the one
@@ -330,7 +331,10 @@ pub async fn delete_interpretation(
 /// A catalog with no project returns an empty vocabulary rather than a 404:
 /// the viewer asks for this on every page load, and a read-only catalog
 /// having no layers is a normal answer, not a failure.
-pub async fn get_layers(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, ApiError> {
+pub async fn get_layers(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+) -> Result<impl IntoResponse, ApiError> {
     let Some(project) = state.project.as_ref() else {
         return Ok((
             [(header::ETAG, String::new())],
@@ -349,7 +353,10 @@ pub async fn get_layers(State(state): State<Arc<AppState>>) -> Result<impl IntoR
         [(header::ETAG, etag)],
         Json(serde_json::json!({
             "layers": set.layers,
-            "writable": state.writable,
+            // Readable by a viewer, changeable by an operator: a picker
+            // *uses* layers but does not get to invent them, or a project
+            // accumulates `bed`, `Bed` and `bedrock` within a week.
+            "writable": caller.may(Role::Operator),
         })),
     ))
 }
@@ -364,7 +371,9 @@ pub async fn get_layers(State(state): State<Arc<AppState>>) -> Result<impl IntoR
 pub async fn get_interpretation_raw(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
+    caller: Caller,
 ) -> Result<impl IntoResponse, ApiError> {
+    caller.require_download(DownloadScope::Picks, "raw picks")?;
     let project = readable_project(&state)?;
     let radargram = parse_radargram(&radargram_id)?;
     let user = parse_user(&user)?;
@@ -425,13 +434,23 @@ pub struct Level2Query {
     /// Ignored for CSV, which carries both regardless.
     #[serde(default)]
     crs: Option<String>,
+    /// Whose picks a *merged* download covers. Ignored by the single-user
+    /// route, which names its user in the path.
+    ///
+    /// Defaults to the caller's own, which is what "download my level 2
+    /// points for this group" means and what the button in the UI sends. An
+    /// anonymous reader has no "own", so they have to name someone.
+    #[serde(default)]
+    user: Option<String>,
 }
 
 pub async fn interpretation_level2(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
+    caller: Caller,
     axum::extract::Query(query): axum::extract::Query<Level2Query>,
 ) -> Result<impl IntoResponse, ApiError> {
+    caller.require_download(DownloadScope::Derived, "level 2 points")?;
     let project = readable_project(&state)?;
     let radargram = parse_radargram(&radargram_id)?;
     let user = parse_user(&user)?;
@@ -533,22 +552,55 @@ pub async fn interpretation_level2(
 ///
 /// Answers for a non-project catalog too, with `project: false` and no
 /// values, so the page can explain itself rather than 404.
-pub async fn get_settings(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn get_settings(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+) -> Result<impl IntoResponse, ApiError> {
     let profiles: Vec<String> = crate::server::render::profile::RenderProfile::built_in_profiles()
         .into_iter()
         .map(|p| p.name)
         .collect();
     let project = state.project.as_ref();
-    Json(serde_json::json!({
+
+    // The caller's own preferences, which are what the "My settings"
+    // section edits. An anonymous reader has nowhere to keep any, so they
+    // get the empty set and the section is not offered.
+    let mine = match (project, caller.user.as_ref()) {
+        (Some(project), Some(user)) => crate::project::preferences::read(project.documents(), user)
+            .map_err(|e| ApiError::internal("preferences_read_failed", e.to_string()))?,
+        _ => crate::project::preferences::Preferences::default(),
+    };
+
+    let access = match project {
+        Some(project) => crate::project::users::read(project.documents())
+            .map_err(|e| ApiError::internal("users_read_failed", e.to_string()))?
+            .map(|(set, _)| set),
+        None => None,
+    };
+
+    Ok(Json(serde_json::json!({
         "project": project.is_some(),
-        "writable": state.writable,
+        // What each section may do, answered once here rather than inferred
+        // in JavaScript from a role string it would have to rank itself.
+        "can_edit_project": caller.may(Role::Operator),
+        "can_edit_access": caller.may(Role::Admin),
+        "user": caller.user.as_ref().map(|u| u.as_str()),
+        "role": caller.role.as_str(),
+        "download": caller.download.as_str(),
+        "authentication_configured": caller.authentication_configured,
         "name": project.and_then(|p| p.config().project.name.clone()),
         "root": project.map(|p| p.root().display().to_string()),
         "default_profile": project.and_then(|p| p.default_profile()),
         "profiles": profiles,
         "default_xscale": project.and_then(|p| p.default_xscale()),
         "xscales": crate::server::routes::x_scale_options(),
-    }))
+        "my_profile": mine.render_profile,
+        "my_xscale": mine.x_scale,
+        "require_auth_to_read": access.as_ref().map(|set| set.require_auth_to_read),
+        "anonymous_download": access
+            .as_ref()
+            .map(|set| set.anonymous_download.as_str()),
+    })))
 }
 
 #[derive(serde::Deserialize)]
@@ -566,9 +618,15 @@ pub struct SettingsUpdate {
 /// `PUT /api/v1/project/settings`
 pub async fn put_settings(
     State(state): State<Arc<AppState>>,
+    caller: Caller,
     Json(update): Json<SettingsUpdate>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let project = writable_project(&state)?;
+    let project = project_for(
+        &state,
+        &caller,
+        Role::Operator,
+        "change the project's settings",
+    )?;
 
     // Validated here rather than in `Project`: which profiles exist is a
     // server concept, and a CLI-only build has no way to check it. Storing
@@ -635,25 +693,29 @@ pub async fn put_settings(
 pub async fn group_level2(
     State(state): State<Arc<AppState>>,
     Path(group): Path<String>,
+    caller: Caller,
     axum::extract::Query(query): axum::extract::Query<Level2Query>,
 ) -> Result<impl IntoResponse, ApiError> {
-    merged_level2(&state, &DownloadScope::Group(group), query)
+    merged_level2(&state, &caller, &MergeScope::Group(group), query)
 }
 
 /// `GET /api/v1/catalog/level2` -- every interpreted radargram the server
 /// knows about, merged. The catalog-wide half of [`merged_level2`].
 pub async fn catalog_level2(
     State(state): State<Arc<AppState>>,
+    caller: Caller,
     axum::extract::Query(query): axum::extract::Query<Level2Query>,
 ) -> Result<impl IntoResponse, ApiError> {
-    merged_level2(&state, &DownloadScope::Catalog, query)
+    merged_level2(&state, &caller, &MergeScope::Catalog, query)
 }
 
 fn merged_level2(
     state: &AppState,
-    scope: &DownloadScope,
+    caller: &Caller,
+    scope: &MergeScope,
     query: Level2Query,
 ) -> Result<(HeaderMap, String), ApiError> {
+    caller.require_download(DownloadScope::Derived, "level 2 points")?;
     let project = readable_project(state)?;
     let entries = scope.entries(state);
     if entries.is_empty() {
@@ -663,11 +725,20 @@ fn merged_level2(
         ));
     }
 
-    // Whose picks a merged download contains. Once several people can
-    // interpret one radargram this becomes a choice rather than a lookup --
-    // "mine", "everyone's", or a named user -- but it resolves through the
-    // same function either way.
-    let user = current_user(state)?;
+    // Whose picks a merged download contains: the caller's own unless the
+    // request names someone. An anonymous reader has no "own", so rather
+    // than guessing -- and silently producing an empty download -- they are
+    // asked to say.
+    let user = match query.user.as_deref() {
+        Some(name) => parse_user(name)?,
+        None => caller.user.clone().ok_or_else(|| {
+            ApiError::bad_request(
+                "user_required",
+                "A merged download covers one person's picks. Add ?user=<name> \
+                 to say whose, or sign in to download your own.",
+            )
+        })?,
+    };
     let spacing = crate::cli::parse_spacing(query.spacing.as_deref().unwrap_or("auto"))
         .map_err(|e| ApiError::bad_request("invalid_spacing", e))?;
     let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
@@ -766,18 +837,26 @@ fn merged_level2(
     // One header carrying both kinds of caveat: omitted members and stale
     // ones. Separate `Warning` headers would be legal but only the first
     // tends to survive a round trip through a browser download.
+    // Whole sentences rather than the terse fragments these were, now that
+    // the browser shows them to a person: they used to travel only in a
+    // header nobody read, so "not yet interpreted, omitted: x" was a note
+    // to a developer rather than something anyone had to understand.
     let mut notes = Vec::new();
     if !skipped.is_empty() {
         // A merged file that quietly omits half a survey looks complete.
         notes.push(format!(
-            "not yet interpreted, omitted: {}",
-            skipped.join(" ")
+            "{} of the {} radargrams here are not in this file, because nobody \
+             has interpreted them yet: {}",
+            skipped.len(),
+            entries.len(),
+            skipped.join(", ")
         ));
     }
     if !stale.is_empty() {
         notes.push(format!(
-            "drawn on an older revision, indices may not line up: {}",
-            stale.join(" ")
+            "Some of these picks were drawn on an earlier version of their \
+             radargram, so they may not line up with it any more: {}",
+            stale.join(", ")
         ));
     }
     if !notes.is_empty() {
@@ -853,10 +932,16 @@ pub async fn layer_usage(
 /// `PUT /api/v1/layers` -- replace the vocabulary.
 pub async fn put_layers(
     State(state): State<Arc<AppState>>,
+    caller: Caller,
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let project = writable_project(&state)?;
+    let project = project_for(
+        &state,
+        &caller,
+        Role::Operator,
+        "change the layer vocabulary",
+    )?;
 
     // Accept either a bare array of layers or the full document. The GUI
     // only ever has the list; requiring it to reconstruct the envelope would

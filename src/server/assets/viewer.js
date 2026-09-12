@@ -554,9 +554,12 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
 
   const datasetUrl = RIDAL.apiPath("datasets", RADARGRAM_ID);
   const picksUrl = `${datasetUrl}/interpretations/${CFG.user}`;
+  /* Fetched rather than navigated to, so a refusal is shown on this page
+   * rather than throwing the viewer away to render the error envelope as
+   * a document. `dl-radargram` is the exception and says why. */
   const go = (url) => {
     menu.open = false;
-    window.location.href = url;
+    return RIDAL.download(url, 'download-error');
   };
 
   /* The two pick downloads are derived from what is *saved*. Offering them
@@ -581,7 +584,14 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
   };
 
   bind('dl-track', () => go(`${datasetUrl}/track.geojson`));
-  bind('dl-radargram', () => go(`${datasetUrl}/download`));
+  /* The one download left as a navigation. A radargram reaches 145 MB and
+   * the server streams it precisely so nothing holds it whole, which
+   * fetching into a blob here would undo. It also has no failure a person
+   * can act on: the permission cases never reach the menu. */
+  bind('dl-radargram', () => {
+    menu.open = false;
+    window.location.href = `${datasetUrl}/download`;
+  });
   bind('dl-raw', () => {
     if (!picksAreStale()) go(`${picksUrl}/raw`);
   });

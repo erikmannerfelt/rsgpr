@@ -9,7 +9,8 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 
-use super::app::{validate_radargram_id, AppState, DownloadScope, NO_GROUP_ID};
+use super::app::{validate_radargram_id, AppState, MergeScope, NO_GROUP_ID};
+use super::auth::Caller;
 use super::render::grid::{ChunkGrid, OverviewSpec, ViewerRaster};
 use super::render::profile::{DatasetView, RenderProfile};
 use super::templates;
@@ -71,6 +72,12 @@ impl ApiError {
         Self::new(StatusCode::FORBIDDEN, code, message)
     }
 
+    /// Nobody is signed in, and signing in would help. The one refusal that
+    /// is worth retrying, which is what separates it from a 403.
+    pub(super) fn unauthorized(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, code, message)
+    }
+
     /// A conditional write whose condition no longer holds.
     pub(super) fn precondition_failed(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::PRECONDITION_FAILED, code, message)
@@ -80,6 +87,19 @@ impl ApiError {
     /// retrying it later may well succeed.
     fn service_unavailable(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, code, message)
+    }
+
+    /// For the permission tests in [`super::auth`], which build errors and
+    /// then assert on what they became. Not needed in the response path,
+    /// where `IntoResponse` reads the fields directly.
+    #[cfg(test)]
+    pub(super) fn status_code(&self) -> StatusCode {
+        self.status
+    }
+
+    #[cfg(test)]
+    pub(super) fn message(&self) -> &str {
+        &self.message
     }
 }
 
@@ -100,7 +120,7 @@ impl IntoResponse for ApiError {
 
 /// Same error information, rendered as an HTML page for page routes
 /// rather than JSON for API routes.
-pub struct PageError(ApiError);
+pub struct PageError(pub(super) ApiError);
 
 impl IntoResponse for PageError {
     fn into_response(self) -> Response {
@@ -221,29 +241,68 @@ pub fn is_offered_x_scale(scale: f64) -> bool {
     X_SCALES.iter().any(|s| (s - scale).abs() < 1e-9)
 }
 
+/// How every preference resolves:
+///
+/// ```text
+/// request parameter  ->  the user's own  ->  the project default  ->  built-in
+///    ?profile=abslog      preferences/         ridal.toml             "default"
+///    (this page only)     erik.json            [render]
+/// ```
+///
+/// A one-liner, and named anyway: writing the rule down once is what keeps
+/// every setting resolving the same way, and it makes adding the next
+/// preference a call rather than a fourth chance to get the order wrong.
+///
+/// Deliberately *not* a settings registry with per-key metadata. With two
+/// preferences that would be more machinery than subject. Revisit when the
+/// per-setting code actually repeats.
+fn cascade<T>(requested: Option<T>, user: Option<T>, project: Option<T>, built_in: T) -> T {
+    requested.or(user).or(project).unwrap_or(built_in)
+}
+
+/// The caller's own preferences, or the empty set.
+///
+/// Anonymous readers have no user layer, since there is nowhere to keep one:
+/// they fall through to the project default and can still override per page
+/// with `?profile=`. Preferences are one more thing signing in gets you,
+/// rather than a reason to require it.
+///
+/// A malformed preferences document costs that person their choice rather
+/// than every page they open -- the settings page reads it strictly, so the
+/// fault is visible where it can be fixed.
+fn my_preferences(state: &AppState, caller: &Caller) -> crate::project::preferences::Preferences {
+    match (state.project.as_ref(), caller.user.as_ref()) {
+        (Some(project), Some(user)) => {
+            crate::project::preferences::read_lenient(project.documents(), user)
+        }
+        _ => crate::project::preferences::Preferences::default(),
+    }
+}
+
 /// The horizontal stretch a radargram should open at.
 ///
-/// The project's default, or 1x. A stored value that is no longer offered
-/// falls back rather than failing: the viewer would otherwise open with a
-/// dropdown showing nothing selected and a stretch nobody could undo.
-fn resolve_x_scale(state: &AppState) -> f64 {
-    state
-        .project
-        .as_ref()
-        .and_then(|p| p.default_xscale())
-        .filter(|s| is_offered_x_scale(*s))
-        .unwrap_or(DEFAULT_X_SCALE)
+/// A stored value that is no longer offered is skipped rather than failing:
+/// the viewer would otherwise open with a dropdown showing nothing selected
+/// and a stretch nobody could undo. Applied at every layer, so one stale
+/// value does not shadow a good one below it.
+fn resolve_x_scale(state: &AppState, caller: &Caller, requested: Option<f64>) -> f64 {
+    let offered = |scale: Option<f64>| scale.filter(|s| is_offered_x_scale(*s));
+    cascade(
+        offered(requested),
+        offered(my_preferences(state, caller).x_scale),
+        offered(state.project.as_ref().and_then(|p| p.default_xscale())),
+        DEFAULT_X_SCALE,
+    )
 }
 
 /// The profile a page should render with.
-///
-/// The request wins, then the project's configured default, then the
-/// built-in one. Three pages used to hardcode the last of those, which is
-/// what made a project-wide default impossible to express.
-fn resolve_profile(state: &AppState, requested: Option<String>) -> String {
-    requested
-        .or_else(|| state.project.as_ref().and_then(|p| p.default_profile()))
-        .unwrap_or_else(|| "default".to_string())
+fn resolve_profile(state: &AppState, caller: &Caller, requested: Option<String>) -> String {
+    cascade(
+        requested,
+        my_preferences(state, caller).render_profile,
+        state.project.as_ref().and_then(|p| p.default_profile()),
+        "default".to_string(),
+    )
 }
 
 fn to_summary(entry: &super::catalog::CatalogEntry) -> DatasetSummary {
@@ -357,9 +416,19 @@ fn lookup_profile(name: &str) -> Result<RenderProfile, ApiError> {
     })
 }
 
+/// The per-page overrides of the two viewing preferences.
+///
+/// Both are "this page only": they never touch what is stored, which is
+/// what makes a link with a profile in it shareable without changing
+/// anything for the person who opens it.
 #[derive(Deserialize)]
 pub struct ProfileQuery {
     profile: Option<String>,
+    /// Horizontal stretch for this page. Fell out of naming the cascade:
+    /// with the chain in one function, the parameter the profile already
+    /// had was one line rather than a fourth place to get the order wrong.
+    #[serde(default)]
+    xscale: Option<f64>,
 }
 
 fn image_response(bytes: Vec<u8>, profile: &RenderProfile) -> Response {
@@ -551,16 +620,18 @@ struct GroupSummary {
     entries: Vec<DatasetSummary>,
 }
 
-/// The project settings page.
+/// The settings page.
 ///
-/// Thin on purpose: one setting today, and the shape to hang the rest on
-/// when multi-user and deployment settings arrive. Renders for a
-/// non-project catalog too, explaining why there is nothing to configure.
+/// Three sections, each gated on a different thing: everyone's own
+/// preferences, the project defaults an operator sets, and the access
+/// controls only an admin sees. Renders for a non-project catalog too,
+/// explaining why there is nothing to configure.
 pub async fn settings_page(
     State(state): State<Arc<AppState>>,
+    caller: Caller,
     Query(query): Query<ProfileQuery>,
 ) -> Result<impl IntoResponse, PageError> {
-    let active_profile = resolve_profile(&state, query.profile);
+    let active_profile = resolve_profile(&state, &caller, query.profile);
     lookup_profile(&active_profile).map_err(PageError)?;
 
     let env = templates::environment();
@@ -570,7 +641,9 @@ pub async fn settings_page(
     let html = tmpl
         .render(minijinja::context! {
             project => state.project.is_some(),
-            writable => state.writable,
+            can_edit_project => caller.may(crate::project::users::Role::Operator),
+            can_edit_access => caller.may(crate::project::users::Role::Admin),
+            signed_in => caller.is_authenticated(),
             active_profile => active_profile,
             project_name => state
                 .project
@@ -580,9 +653,43 @@ pub async fn settings_page(
                 .project
                 .as_ref()
                 .map(|p| p.root().display().to_string()),
+            ..caller_context(&caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
+}
+
+/// The identity every page's header shows, as template variables.
+///
+/// One function so the sign-in control in `base.html.jinja` reads the same
+/// values everywhere rather than each page assembling its own near-miss.
+fn caller_context(caller: &Caller) -> minijinja::Value {
+    minijinja::context! {
+        current_user => caller.user.as_ref().map(|u| u.as_str()),
+        current_role => caller.role.as_str(),
+        // Whether to offer a sign-in link at all. A project with no
+        // accounts has nothing to sign in to, and a link to a login page
+        // that cannot succeed is worse than no link.
+        authentication_configured => caller.authentication_configured,
+        // Why a control is inert, when the reason is the server rather than
+        // the person. "This server is read-only" and "you are a viewer" are
+        // both true under `--read-only`, but only the first tells someone
+        // what to do about it.
+        read_only_server => matches!(caller.cap, Some(super::auth::RoleCap::ReadOnlyServer)),
+        // What this caller may take away, as the three questions the
+        // download menus actually ask. A control the caller cannot use is
+        // removed rather than left to fail on click: a menu entry is a
+        // promise, and one that answers with an error dialog is a worse
+        // way to learn about a permission than never having been offered
+        // it. This is the opposite of the rule the picking toolbar
+        // follows, and deliberately so -- picking is the point of the
+        // page, so its absence needs explaining, while a download someone
+        // was never granted is not a feature they are missing.
+        can_download_picks => caller.may_download(crate::project::users::DownloadScope::Picks),
+        can_download_derived =>
+            caller.may_download(crate::project::users::DownloadScope::Derived),
+        can_download_all => caller.may_download(crate::project::users::DownloadScope::All),
+    }
 }
 
 /// The layer management page.
@@ -595,13 +702,14 @@ pub async fn settings_page(
 /// edit -- a 404 here would be an odd answer to "show me the layers".
 pub async fn layers_page(
     State(state): State<Arc<AppState>>,
+    caller: Caller,
     Query(query): Query<ProfileQuery>,
 ) -> Result<impl IntoResponse, PageError> {
     // This page has nothing to render, but it carries the profile so the
     // menu's links out of it keep the viewing preference the user arrived
     // with. An unknown profile is rejected rather than passed on, so a bad
     // value cannot propagate silently through the menu.
-    let active_profile = resolve_profile(&state, query.profile);
+    let active_profile = resolve_profile(&state, &caller, query.profile);
     lookup_profile(&active_profile).map_err(PageError)?;
 
     let env = templates::environment();
@@ -611,8 +719,14 @@ pub async fn layers_page(
     let html = tmpl
         .render(minijinja::context! {
             project => state.project.is_some(),
-            writable => state.writable,
+            // The page is built for exactly this: it renders the vocabulary
+            // and explains why it cannot be changed, rather than hiding the
+            // controls, following the same rule as the picking toolbar --
+            // a missing control reads as a missing feature.
+            writable => caller.may(crate::project::users::Role::Operator),
+            can_pick => caller.may(crate::project::users::Role::Picker),
             active_profile => active_profile,
+            ..caller_context(&caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
@@ -620,9 +734,10 @@ pub async fn layers_page(
 
 pub async fn index_page(
     State(state): State<Arc<AppState>>,
+    caller: Caller,
     Query(query): Query<ProfileQuery>,
 ) -> Result<impl IntoResponse, PageError> {
-    let active_profile = resolve_profile(&state, query.profile);
+    let active_profile = resolve_profile(&state, &caller, query.profile);
     lookup_profile(&active_profile).map_err(PageError)?;
     let profiles: Vec<String> = RenderProfile::built_in_profiles()
         .into_iter()
@@ -724,6 +839,7 @@ pub async fn index_page(
             profiles => profiles,
             active_profile => active_profile,
             project => state.project.is_some(),
+            ..caller_context(&caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
@@ -732,10 +848,11 @@ pub async fn index_page(
 pub async fn viewer_page(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
+    caller: Caller,
     Query(query): Query<ProfileQuery>,
 ) -> Result<impl IntoResponse, PageError> {
     let entry = lookup_dataset(&state, &radargram_id).map_err(PageError)?;
-    let active_profile = resolve_profile(&state, query.profile);
+    let active_profile = resolve_profile(&state, &caller, query.profile);
     lookup_profile(&active_profile).map_err(PageError)?;
 
     let radargram = state
@@ -750,7 +867,6 @@ pub async fn viewer_page(
     let (height, width) = radargram.shape;
     let raster = ViewerRaster::new(width, height);
     let grid = ChunkGrid::new(raster);
-    let viewer_user = super::interp_routes::current_user(&state).map_err(PageError)?;
 
     let profiles: Vec<String> = RenderProfile::built_in_profiles()
         .into_iter()
@@ -775,10 +891,12 @@ pub async fn viewer_page(
             shape_height => height,
             shape_width => width,
             project => state.project.is_some(),
-            writable => state.writable,
-            // Who the viewer will save as. Resolved rather than assumed,
-            // so the page shows the right name the moment logins exist.
-            user => viewer_user.as_str(),
+            // Whether *this caller* may pick, which is what the toolbar is
+            // asking. Not a property of the server any more.
+            writable => caller.may(crate::project::users::Role::Picker),
+            // Who the viewer will save as. Empty for an anonymous reader,
+            // who cannot save anything -- the toolbar says so instead.
+            user => caller.user.as_ref().map(|u| u.as_str()).unwrap_or(""),
             profiles => profiles,
             active_profile => active_profile,
             chunk_size => super::render::grid::CHUNK_SIZE,
@@ -787,7 +905,8 @@ pub async fn viewer_page(
             viewer_width => raster.width,
             viewer_height => raster.height,
             x_scales => x_scale_options(),
-            active_x_scale => resolve_x_scale(&state),
+            active_x_scale => resolve_x_scale(&state, &caller, query.xscale),
+            ..caller_context(&caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
@@ -899,11 +1018,21 @@ pub struct ImageQuery {
 pub async fn dataset_image(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, view)): Path<(String, String)>,
+    caller: Caller,
     Query(query): Query<ImageQuery>,
 ) -> Result<Response, ApiError> {
+    // The whole-radargram image is a download; the 256x256 chunks the
+    // viewer draws with are not, and are deliberately left open. Gating
+    // those would break the viewer for everyone below `all`, which defeats
+    // the point of having a viewer -- and anyone who can see the page can
+    // script the chunk requests anyway. See `DownloadScope`.
+    caller.require_download(
+        crate::project::users::DownloadScope::Derived,
+        "the rendered image",
+    )?;
     let entry = lookup_dataset(&state, &radargram_id)?;
     let dataset_view = lookup_view(&view)?;
-    let base = lookup_profile(&resolve_profile(&state, query.profile))?;
+    let base = lookup_profile(&resolve_profile(&state, &caller, query.profile))?;
 
     let radargram = state
         .radargrams
@@ -1028,7 +1157,9 @@ fn attachment(filename: &str) -> (header::HeaderName, String) {
 pub async fn dataset_track_geojson(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
+    caller: Caller,
 ) -> Result<Response, ApiError> {
+    caller.require_download(crate::project::users::DownloadScope::All, "the track")?;
     let entry = lookup_dataset(&state, &radargram_id)?;
     let path = state
         .absolute_path(entry)
@@ -1067,19 +1198,26 @@ pub async fn dataset_track_geojson(
 pub async fn group_track_geojson(
     State(state): State<Arc<AppState>>,
     Path(group): Path<String>,
+    caller: Caller,
 ) -> Result<Response, ApiError> {
-    merged_track_geojson(&state, &DownloadScope::Group(group))
+    merged_track_geojson(&state, &caller, &MergeScope::Group(group))
 }
 
 /// `GET /api/v1/catalog/track.geojson` -- every track the server knows
 /// about, in one file. The catalog-wide half of [`merged_track_geojson`].
 pub async fn catalog_track_geojson(
     State(state): State<Arc<AppState>>,
+    caller: Caller,
 ) -> Result<Response, ApiError> {
-    merged_track_geojson(&state, &DownloadScope::Catalog)
+    merged_track_geojson(&state, &caller, &MergeScope::Catalog)
 }
 
-fn merged_track_geojson(state: &AppState, scope: &DownloadScope) -> Result<Response, ApiError> {
+fn merged_track_geojson(
+    state: &AppState,
+    caller: &Caller,
+    scope: &MergeScope,
+) -> Result<Response, ApiError> {
+    caller.require_download(crate::project::users::DownloadScope::All, "tracks")?;
     let entries = scope.entries(state);
     if entries.is_empty() {
         return Err(ApiError::not_found(
@@ -1162,7 +1300,12 @@ fn track_features(
 pub async fn dataset_download(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
+    caller: Caller,
 ) -> Result<Response, ApiError> {
+    caller.require_download(
+        crate::project::users::DownloadScope::All,
+        "the radargram itself",
+    )?;
     let entry = lookup_dataset(&state, &radargram_id)?;
     let path = state
         .absolute_path(entry)

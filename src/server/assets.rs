@@ -66,6 +66,7 @@ embedded_asset!(index_js, "index.js", "text/javascript");
 embedded_asset!(viewer_js, "viewer.js", "text/javascript");
 embedded_asset!(layers_js, "layers.js", "text/javascript");
 embedded_asset!(settings_js, "settings.js", "text/javascript");
+embedded_asset!(login_js, "login.js", "text/javascript");
 embedded_asset!(picker_js, "picker.js", "text/javascript");
 
 // Repo-root, first-party. Shown beside the "Ridal" wordmark in the shared

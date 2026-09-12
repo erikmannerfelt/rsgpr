@@ -31,6 +31,16 @@ pub fn environment() -> Environment<'static> {
     )
     .expect("settings template must parse");
     env.add_template(
+        "login.html.jinja",
+        include_str!("templates/login.html.jinja"),
+    )
+    .expect("login template must parse");
+    env.add_template(
+        "invite.html.jinja",
+        include_str!("templates/invite.html.jinja"),
+    )
+    .expect("invite template must parse");
+    env.add_template(
         "error.html.jinja",
         include_str!("templates/error.html.jinja"),
     )
@@ -54,10 +64,56 @@ mod tests {
             "viewer.html.jinja",
             "layers.html.jinja",
             "settings.html.jinja",
+            "login.html.jinja",
+            "invite.html.jinja",
             "error.html.jinja",
         ] {
             assert!(env.get_template(name).is_ok(), "missing template {name}");
         }
+    }
+
+    #[test]
+    fn interpolated_values_are_html_escaped() {
+        // Load-bearing, and not obvious from the filenames: minijinja
+        // decides auto-escaping from the extension, and treats a trailing
+        // `.jinja` as ignorable -- so `invite.html.jinja` is escaped as
+        // `.html` would be. Rename these templates to `.tmpl` and every
+        // interpolation below silently becomes an injection point.
+        //
+        // The invite page is the sharpest case: its token comes straight
+        // from the URL path and the page is deliberately reachable without
+        // signing in.
+        let env = environment();
+        let hostile = "\" onmouseover=alert(1) x=\"";
+        let out = env
+            .get_template("invite.html.jinja")
+            .unwrap()
+            .render(minijinja::context! {
+                token => hostile,
+                min_password_len => 10,
+            })
+            .unwrap();
+        // The property is that the quotes cannot close the attribute, not
+        // that the payload's characters are absent: they stay, inert,
+        // inside the value.
+        assert!(
+            out.contains(r#"data-token="&quot; onmouseover=alert(1) x=&quot;""#),
+            "the quotes must be escaped so the attribute cannot be closed: {out}"
+        );
+
+        // And a free-text project name, which reaches the settings page
+        // from `ridal.toml` rather than from a request.
+        let out = env
+            .get_template("settings.html.jinja")
+            .unwrap()
+            .render(minijinja::context! {
+                project => true,
+                project_name => "<script>alert(1)</script>",
+                project_root => "/tmp",
+            })
+            .unwrap();
+        assert!(!out.contains("<script>alert(1)</script>"), "{out}");
+        assert!(out.contains("&lt;script&gt;"), "{out}");
     }
 
     #[test]

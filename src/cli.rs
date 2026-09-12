@@ -46,6 +46,100 @@ pub enum ProjectCommand {
     Init(ProjectInitArgs),
     /// Show what a project contains
     Info(ProjectInfoArgs),
+    /// Manage who may use the project's server
+    User(ProjectUserArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProjectUserArgs {
+    #[command(subcommand)]
+    pub command: ProjectUserCommand,
+}
+
+/// Account management from the command line.
+///
+/// This exists because of the chicken-and-egg at the start: a project's
+/// first administrator cannot be created through the browser, since there is
+/// no administrator to authorise it. It happens on the machine itself, which
+/// is the one place where access already implies authority.
+///
+/// Deliberately no `set-password`. A password is set by its owner through a
+/// one-time link, so it is never known to two people and there is no default
+/// to forget to change; a command that took one would undo that.
+#[derive(Debug, Subcommand)]
+pub enum ProjectUserCommand {
+    /// Create an account and print a one-time invite link
+    Add(ProjectUserAddArgs),
+    /// List the accounts and what each may do
+    List(ProjectUserListArgs),
+    /// Change someone's role or download scope
+    Set(ProjectUserSetArgs),
+    /// Issue a fresh invite link, for a password reset or a lost one
+    Reset(ProjectUserResetArgs),
+    /// Remove an account. Their interpretations are kept.
+    Remove(ProjectUserRemoveArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProjectUserAddArgs {
+    /// The account name. Lowercase letters, digits, '-' and '_'; it is used
+    /// as a filename inside the project.
+    pub name: String,
+
+    /// What they may do: viewer, picker, operator or admin. Each level
+    /// includes the ones below it.
+    #[arg(long, default_value = "picker")]
+    pub role: String,
+
+    /// What they may download: none, picks, derived or all.
+    #[arg(long, default_value = "all")]
+    pub download: String,
+
+    /// A path inside the project. The project is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProjectUserListArgs {
+    /// A path inside the project. The project is found by searching upwards.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProjectUserSetArgs {
+    pub name: String,
+
+    /// New role: viewer, picker, operator or admin.
+    #[arg(long)]
+    pub role: Option<String>,
+
+    /// New download scope: none, picks, derived or all.
+    #[arg(long)]
+    pub download: Option<String>,
+
+    /// A path inside the project. The project is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProjectUserResetArgs {
+    pub name: String,
+
+    /// A path inside the project. The project is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProjectUserRemoveArgs {
+    pub name: String,
+
+    /// A path inside the project. The project is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
 }
 
 #[derive(Debug, clap::Args)]
@@ -171,17 +265,20 @@ pub struct ServerStartArgs {
     #[arg(long)]
     pub open_browser: bool,
 
-    /// Serve a project without accepting any writes.
+    /// Serve a project without accepting any writes. Caps every caller at
+    /// the "viewer" role, whatever their account says.
     #[arg(long)]
     pub read_only: bool,
 
-    /// Accept writes while bound to a non-loopback address.
+    /// Accept password logins while bound to a non-loopback address.
     ///
-    /// Ridal has no authentication yet, so this makes interpretations
-    /// editable by anyone who can reach the address. Prefer binding loopback
-    /// behind a reverse proxy that authenticates.
+    /// Ridal does not terminate TLS, so a password sent to a non-loopback
+    /// address travels in the clear unless something in front of it is
+    /// doing so. Use this only when you know what that something is; the
+    /// supported arrangement is to bind loopback behind a TLS-terminating
+    /// reverse proxy.
     #[arg(long)]
-    pub allow_remote_writes: bool,
+    pub allow_insecure_login: bool,
 
     /// In-memory cache budget for encoded chunk/overview images, in MB.
     #[arg(long)]
@@ -504,6 +601,13 @@ pub fn run(arguments: Args) -> Result<(), String> {
         Commands::Project(args) => match args.command {
             ProjectCommand::Init(args) => project_init_command(&args),
             ProjectCommand::Info(args) => project_info_command(&args),
+            ProjectCommand::User(args) => match args.command {
+                ProjectUserCommand::Add(args) => project_user_add_command(&args),
+                ProjectUserCommand::List(args) => project_user_list_command(&args),
+                ProjectUserCommand::Set(args) => project_user_set_command(&args),
+                ProjectUserCommand::Reset(args) => project_user_reset_command(&args),
+                ProjectUserCommand::Remove(args) => project_user_remove_command(&args),
+            },
         },
         #[cfg(feature = "server")]
         Commands::Gui(args) => gui_command(args),
@@ -553,7 +657,7 @@ fn server_command(args: ServerArgs) -> Result<(), String> {
                 start_args.port,
                 start_args.open_browser,
                 start_args.read_only,
-                start_args.allow_remote_writes,
+                start_args.allow_insecure_login,
                 config,
             )
         }
@@ -871,6 +975,245 @@ mod tests {
     use super::*;
     use clap::Parser;
 
+    /// A project to run `ridal project user` against.
+    fn project_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        crate::project::Project::init(dir.path(), Some("test")).unwrap();
+        dir
+    }
+
+    fn accounts(dir: &tempfile::TempDir) -> crate::project::users::UserSet {
+        let project = crate::project::Project::open(dir.path()).unwrap();
+        crate::project::users::read(project.documents())
+            .unwrap()
+            .map(|(set, _)| set)
+            .unwrap_or_default()
+    }
+
+    fn add(dir: &tempfile::TempDir, name: &str, role: &str) -> Result<(), String> {
+        super::project_user_add_command(&ProjectUserAddArgs {
+            name: name.to_string(),
+            role: role.to_string(),
+            download: "all".to_string(),
+            path: dir.path().to_path_buf(),
+        })
+    }
+
+    #[test]
+    fn adding_the_first_administrator_is_what_turns_authentication_on() {
+        // The bootstrap, and the only way out of the chicken-and-egg: there
+        // is no administrator to authorise creating the first one, so it
+        // happens on the machine itself.
+        let dir = project_dir();
+        assert!(!dir.path().join("users.json").exists());
+
+        add(&dir, "erik", "admin").unwrap();
+
+        let set = accounts(&dir);
+        assert_eq!(set.users.len(), 1);
+        assert_eq!(set.users[0].role, crate::project::users::Role::Admin);
+        // Created without a password, with an invite outstanding. There is
+        // deliberately no default password to forget to change.
+        assert!(!set.users[0].is_activated());
+        assert!(set.users[0].invite.is_some());
+    }
+
+    #[test]
+    fn the_first_account_must_be_able_to_administer_the_project() {
+        // Creating any account switches authentication on for the whole
+        // project. Typing the default role would otherwise produce a
+        // project nobody can manage from the browser, reachable by
+        // omitting a flag.
+        let dir = project_dir();
+        let error = add(&dir, "student", "picker").unwrap_err();
+        assert!(
+            error.contains("only account") || error.contains("first account"),
+            "{error}"
+        );
+        assert!(error.contains("--role admin"), "{error}");
+        // And nothing was written, so the project is still open rather
+        // than half-converted.
+        assert!(!dir.path().join("users.json").exists());
+
+        // With an administrator in place, the same command is fine.
+        add(&dir, "erik", "admin").unwrap();
+        add(&dir, "student", "picker").unwrap();
+        assert_eq!(accounts(&dir).users.len(), 2);
+    }
+
+    #[test]
+    fn a_duplicate_name_is_refused_rather_than_replacing_the_account() {
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+        let error = add(&dir, "erik", "picker").unwrap_err();
+        assert!(error.contains("already"), "{error}");
+        assert_eq!(
+            accounts(&dir).users[0].role,
+            crate::project::users::Role::Admin,
+            "the existing account must be untouched"
+        );
+    }
+
+    #[test]
+    fn an_unknown_role_or_scope_lists_the_ones_that_exist() {
+        let dir = project_dir();
+        let error = add(&dir, "erik", "editor").unwrap_err();
+        // `editor` is the one someone will reach for, and the message has to
+        // point at `operator` rather than just saying no.
+        assert!(error.contains("operator"), "{error}");
+
+        let error = super::project_user_add_command(&ProjectUserAddArgs {
+            name: "erik".to_string(),
+            role: "picker".to_string(),
+            download: "everything".to_string(),
+            path: dir.path().to_path_buf(),
+        })
+        .unwrap_err();
+        assert!(error.contains("derived"), "{error}");
+    }
+
+    #[test]
+    fn a_reset_replaces_the_outstanding_invite_rather_than_adding_one() {
+        // Two live tokens for one account would make "single use" a lie.
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+        let first = accounts(&dir).users[0].invite.clone().unwrap();
+
+        super::project_user_reset_command(&ProjectUserResetArgs {
+            name: "erik".to_string(),
+            path: dir.path().to_path_buf(),
+        })
+        .unwrap();
+
+        let second = accounts(&dir).users[0].invite.clone().unwrap();
+        assert_ne!(first.token_hash, second.token_hash);
+    }
+
+    #[test]
+    fn changing_a_role_signs_their_sessions_out() {
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+        add(&dir, "student", "picker").unwrap();
+        let before = accounts(&dir).users[1].credential_version;
+
+        super::project_user_set_command(&ProjectUserSetArgs {
+            name: "student".to_string(),
+            role: Some("viewer".to_string()),
+            download: None,
+            path: dir.path().to_path_buf(),
+        })
+        .unwrap();
+
+        let after = &accounts(&dir).users[1];
+        assert_eq!(after.role, crate::project::users::Role::Viewer);
+        assert!(
+            after.credential_version > before,
+            "a demotion must reach an open session"
+        );
+    }
+
+    #[test]
+    fn setting_nothing_is_refused_rather_than_silently_doing_nothing() {
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+        let error = super::project_user_set_command(&ProjectUserSetArgs {
+            name: "erik".to_string(),
+            role: None,
+            download: None,
+            path: dir.path().to_path_buf(),
+        })
+        .unwrap_err();
+        assert!(error.contains("--role"), "{error}");
+    }
+
+    #[test]
+    fn the_last_administrator_cannot_be_demoted_or_removed_from_the_command_line_either() {
+        // The same guard the HTTP route applies. Without it here, the
+        // command line would be a way around the check rather than the
+        // place it is most likely to be needed.
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+        add(&dir, "student", "picker").unwrap();
+
+        let error = super::project_user_set_command(&ProjectUserSetArgs {
+            name: "erik".to_string(),
+            role: Some("operator".to_string()),
+            download: None,
+            path: dir.path().to_path_buf(),
+        })
+        .unwrap_err();
+        assert!(error.contains("only administrator"), "{error}");
+
+        let error = super::project_user_remove_command(&ProjectUserRemoveArgs {
+            name: "erik".to_string(),
+            path: dir.path().to_path_buf(),
+        })
+        .unwrap_err();
+        assert!(error.contains("only administrator"), "{error}");
+    }
+
+    #[test]
+    fn removing_an_account_keeps_the_interpretations_it_authored() {
+        // Attributed scientific data. The person leaving does not unmake it.
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+        add(&dir, "student", "picker").unwrap();
+
+        let project = crate::project::Project::open(dir.path()).unwrap();
+        let radargram = crate::identity::RadargramId::new("line-01").unwrap();
+        let user = crate::identity::UserId::new("student").unwrap();
+        project
+            .documents()
+            .write(
+                std::path::Path::new("interpretations/line-01/student.gprinterp.json"),
+                r#"{"key":"line-01","features":[]}"#,
+                &crate::project::store::Expectation::Any,
+            )
+            .unwrap();
+
+        super::project_user_remove_command(&ProjectUserRemoveArgs {
+            name: "student".to_string(),
+            path: dir.path().to_path_buf(),
+        })
+        .unwrap();
+
+        assert!(accounts(&dir).get(&user).is_none());
+        assert_eq!(
+            crate::project::interpretations::list_users(project.documents(), &radargram).unwrap(),
+            vec!["student".to_string()],
+            "the picks must outlive the account"
+        );
+    }
+
+    #[test]
+    fn a_user_command_outside_a_project_says_how_to_make_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = add(&dir, "erik", "admin").unwrap_err();
+        assert!(error.contains("ridal project init"), "{error}");
+    }
+
+    #[test]
+    fn user_subcommands_parse() {
+        let args = Args::parse_from(["ridal", "project", "user", "add", "erik", "--role", "admin"]);
+        match args.command {
+            Commands::Project(project) => match project.command {
+                ProjectCommand::User(user) => match user.command {
+                    ProjectUserCommand::Add(add) => {
+                        assert_eq!(add.name, "erik");
+                        assert_eq!(add.role, "admin");
+                        // The default that matters: a new account can
+                        // download everything unless someone decides
+                        // otherwise, which is what every Ridal did before.
+                        assert_eq!(add.download, "all");
+                    }
+                    other => panic!("{other:?}"),
+                },
+                other => panic!("{other:?}"),
+            },
+            _ => panic!("expected a project command"),
+        }
+    }
+
     #[cfg(feature = "server")]
     #[test]
     fn n_workers_zero_is_rejected_not_silently_clamped() {
@@ -1117,11 +1460,20 @@ fn project_info_command(args: &ProjectInfoArgs) -> Result<(), String> {
         println!("Radargram root: {}", root.display());
     }
     println!("Cache: {}", project.cache_dir().display());
+    // Both halves of the project layer of the preference cascade, so
+    // "why does it open like that?" is answerable without the browser.
     println!(
         "Default render profile: {}",
         project
             .default_profile()
             .unwrap_or_else(|| "(unset, Ridal's built-in default)".to_string())
+    );
+    println!(
+        "Default horizontal scale: {}",
+        match project.default_xscale() {
+            Some(scale) => format!("{scale}x"),
+            None => "(unset, 1x)".to_string(),
+        }
     );
 
     let (layers, _) =
@@ -1184,5 +1536,310 @@ fn project_info_command(args: &ProjectInfoArgs) -> Result<(), String> {
     if total == 0 {
         println!("Interpretations: none yet");
     }
+
+    // Said here too, because "who can reach this" is the first question
+    // anyone asks about a project they are about to serve, and the answer
+    // for a project with no accounts is "everyone who can reach the port".
+    match crate::project::users::read(project.documents()).map_err(|e| e.to_string())? {
+        Some((set, _)) => {
+            println!("Accounts: {}", set.users.len());
+            for user in &set.users {
+                let state = if user.is_activated() {
+                    "active"
+                } else if user.invite.is_some() {
+                    "invited"
+                } else {
+                    "no password, no invite"
+                };
+                println!(
+                    "  {} ({}, downloads: {}, {state})",
+                    user.name, user.role, user.download
+                );
+            }
+            println!(
+                "Public read: {}",
+                if set.require_auth_to_read {
+                    "no, a login is required"
+                } else {
+                    "yes"
+                }
+            );
+        }
+        None => println!(
+            "Accounts: none -- everyone is '{}'. Create the first with \
+             `ridal project user add <name> --role admin`.",
+            crate::identity::DEFAULT_USER
+        ),
+    }
+    Ok(())
+}
+
+/// Open the project containing `path`, or say how to make one.
+fn open_project(path: &std::path::Path) -> Result<crate::project::Project, String> {
+    crate::project::Project::discover(path)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "No Ridal project at or above {}. Run `ridal project init` to create one.",
+                path.display()
+            )
+        })
+}
+
+fn parse_role(value: &str) -> Result<crate::project::users::Role, String> {
+    crate::project::users::Role::parse(value)
+}
+
+fn parse_download(value: &str) -> Result<crate::project::users::DownloadScope, String> {
+    crate::project::users::DownloadScope::parse(value)
+}
+
+/// Print an invite link the way it can actually be used.
+///
+/// The path, plus an example of what to prefix it with. This command has no
+/// idea what address the server will be reached on -- it may not even be
+/// running -- so inventing a hostname would be inventing one, and a link
+/// that looks authoritative and is wrong is worse than one that is
+/// obviously a fragment.
+fn print_invite(name: &str, token: &str, expires: i64) {
+    let days = crate::project::users::INVITE_TTL_DAYS;
+    println!("Invite link for '{name}' (valid {days} days, single use):");
+    println!("  /invite/{token}");
+    println!("Prefix it with the address the server is reached on, e.g.");
+    println!("  http://localhost:8000/invite/{token}");
+    if let Some(when) = chrono::DateTime::from_timestamp(expires, 0) {
+        println!("Expires {}", when.format("%Y-%m-%d %H:%M UTC"));
+    }
+    println!();
+    println!(
+        "This is the only time it is shown -- only its hash is stored. It is as \
+         sensitive as a password until it is used or expires, so send it the way \
+         you would send one."
+    );
+}
+
+fn project_user_add_command(args: &ProjectUserAddArgs) -> Result<(), String> {
+    let project = open_project(&args.path)?;
+    let name = crate::identity::UserId::new(args.name.clone())?;
+    let role = parse_role(&args.role)?;
+    let download = parse_download(&args.download)?;
+
+    let existing =
+        crate::project::users::is_configured(project.documents()).map_err(|e| e.to_string())?;
+    let (token, invite) = crate::project::users::mint_invite(chrono::Utc::now().timestamp())
+        .map_err(|e| e.to_string())?;
+
+    crate::project::users::update(project.documents(), |set| {
+        if set.get(&name).is_some() {
+            return Err(crate::project::users::UserError::Duplicate(
+                name.to_string(),
+            ));
+        }
+        // Creating any account switches authentication on for the whole
+        // project. If that first one cannot administer, the project becomes
+        // one where nobody can manage accounts or access policy from the
+        // browser -- recoverable only by coming back to this command, which
+        // is a strange state to reach by typing the default role.
+        if role < crate::project::users::Role::Admin
+            && !set
+                .users
+                .iter()
+                .any(|user| user.role == crate::project::users::Role::Admin)
+        {
+            return Err(crate::project::users::UserError::Rejected(format!(
+                "'{name}' would be the first account, and a {role} cannot manage \
+                 accounts or access settings. Creating it would switch \
+                 authentication on for this project with nobody able to \
+                 administer it. Create an administrator first:\n  \
+                 ridal project user add {name} --role admin"
+            )));
+        }
+        let mut user = crate::project::users::User::new(name.clone(), role, download);
+        user.invite = Some(invite.clone());
+        set.users.push(user);
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
+
+    println!("Created '{name}' as {role} (downloads: {download}).");
+    println!();
+    print_invite(name.as_str(), &token, invite.expires);
+
+    // The moment a project stops being open, which is a bigger change than
+    // "one account exists" and is worth saying out loud once.
+    if !existing {
+        println!();
+        println!(
+            "This project now requires authentication. Anyone who was writing as \
+             '{}' will need an account; their existing interpretations are \
+             untouched and still stored under that name.",
+            crate::identity::DEFAULT_USER
+        );
+        // Deliberately *not* "restart the server". A running server reads
+        // the account file on every request, so this has already taken
+        // effect -- and telling an operator to restart invites them to
+        // believe it has not and go looking for why.
+        println!(
+            "A server already running on this project picks that up on its next \
+             request; there is nothing to restart."
+        );
+    }
+    Ok(())
+}
+
+fn project_user_list_command(args: &ProjectUserListArgs) -> Result<(), String> {
+    let project = open_project(&args.path)?;
+    let Some((set, _)) =
+        crate::project::users::read(project.documents()).map_err(|e| e.to_string())?
+    else {
+        println!(
+            "This project has no accounts, so everyone using its server is '{}'.",
+            crate::identity::DEFAULT_USER
+        );
+        println!("Create the first with `ridal project user add <name> --role admin`.");
+        return Ok(());
+    };
+
+    if set.users.is_empty() {
+        println!("No accounts. Nobody can sign in, including to create one.");
+        println!("Add one with `ridal project user add <name> --role admin`.");
+    }
+    for user in &set.users {
+        let state = if user.is_activated() {
+            if user.invite.is_some() {
+                "active, reset pending"
+            } else {
+                "active"
+            }
+        } else if user.invite.is_some() {
+            "invited, not yet activated"
+        } else {
+            "no password and no invite -- issue one with `ridal project user reset`"
+        };
+        println!(
+            "{}\t{}\tdownloads: {}\t{state}",
+            user.name, user.role, user.download
+        );
+    }
+    println!();
+    println!(
+        "Public read: {}",
+        if set.require_auth_to_read {
+            "no, a login is required"
+        } else {
+            "yes"
+        }
+    );
+    println!("Anonymous downloads: {}", set.anonymous_download);
+    Ok(())
+}
+
+fn project_user_set_command(args: &ProjectUserSetArgs) -> Result<(), String> {
+    if args.role.is_none() && args.download.is_none() {
+        return Err("Nothing to change. Pass --role, --download, or both.".to_string());
+    }
+    let project = open_project(&args.path)?;
+    let name = crate::identity::UserId::new(args.name.clone())?;
+    let role = args.role.as_deref().map(parse_role).transpose()?;
+    let download = args.download.as_deref().map(parse_download).transpose()?;
+
+    let updated = crate::project::users::update(project.documents(), |set| {
+        // The same guard the HTTP route applies: demoting the last
+        // administrator locks the access settings away from everyone.
+        if role.is_some_and(|role| role < crate::project::users::Role::Admin)
+            && set
+                .get(&name)
+                .is_some_and(|user| user.role == crate::project::users::Role::Admin)
+            && !set.has_another_admin(&name)
+        {
+            return Err(crate::project::users::UserError::Rejected(format!(
+                "'{name}' is the only administrator. Promote someone else first."
+            )));
+        }
+        let user = set
+            .get_mut(&name)
+            .ok_or_else(|| crate::project::users::UserError::NotFound(name.to_string()))?;
+        let mut changed = false;
+        if let Some(role) = role {
+            changed |= user.role != role;
+            user.role = role;
+        }
+        if let Some(download) = download {
+            changed |= user.download != download;
+            user.download = download;
+        }
+        // Bumped so the change reaches an already signed-in person on their
+        // next request rather than when their cookie ages out.
+        if changed {
+            user.credential_version += 1;
+        }
+        Ok(user.clone())
+    })
+    .map_err(|e| e.to_string())?;
+
+    println!(
+        "'{}' is now {} (downloads: {}).",
+        updated.name, updated.role, updated.download
+    );
+    if updated.credential_version > 1 {
+        println!("Any session they had open has been signed out.");
+    }
+    Ok(())
+}
+
+fn project_user_reset_command(args: &ProjectUserResetArgs) -> Result<(), String> {
+    let project = open_project(&args.path)?;
+    let name = crate::identity::UserId::new(args.name.clone())?;
+    let (token, invite) = crate::project::users::mint_invite(chrono::Utc::now().timestamp())
+        .map_err(|e| e.to_string())?;
+
+    crate::project::users::update(project.documents(), |set| {
+        let user = set
+            .get_mut(&name)
+            .ok_or_else(|| crate::project::users::UserError::NotFound(name.to_string()))?;
+        // Replaces any outstanding invite rather than adding one, so
+        // "send another link" cannot leave two live tokens for one account.
+        user.invite = Some(invite.clone());
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
+
+    print_invite(name.as_str(), &token, invite.expires);
+    println!();
+    println!(
+        "Their current password keeps working until this link is used. \
+         Redeeming it sets a new one and signs out any session they had open."
+    );
+    Ok(())
+}
+
+fn project_user_remove_command(args: &ProjectUserRemoveArgs) -> Result<(), String> {
+    let project = open_project(&args.path)?;
+    let name = crate::identity::UserId::new(args.name.clone())?;
+
+    crate::project::users::update(project.documents(), |set| {
+        let Some(user) = set.get(&name) else {
+            return Err(crate::project::users::UserError::NotFound(name.to_string()));
+        };
+        if user.role == crate::project::users::Role::Admin && !set.has_another_admin(&name) {
+            return Err(crate::project::users::UserError::Rejected(format!(
+                "'{name}' is the only administrator. Promote someone else first."
+            )));
+        }
+        set.users.retain(|user| user.name != name);
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
+
+    let _ = crate::project::preferences::remove(project.documents(), &name);
+
+    println!("Removed the account '{name}'.");
+    // Worth stating rather than leaving to be discovered: a departed user's
+    // picks are attributed scientific data and the account going away does
+    // not unmake them.
+    println!(
+        "Their interpretations are kept, still stored under '{name}'. Only the \
+         account and their personal settings are gone."
+    );
     Ok(())
 }

@@ -268,9 +268,22 @@ object on failure.
 
 Durable, load-bearing decisions rather than oversights:
 
-- **No authentication of any kind.** `server start` binds loopback by
-  default; binding elsewhere is an explicit flag, but deploying beyond
-  localhost requires a reverse proxy that provides auth.
+- **Ridal never terminates TLS, and the guardrails are keyed on the
+  bind address because of it.** Behind a TLS-terminating proxy the
+  server sees plain HTTP on loopback, which is correct and safe, so
+  "is this connection TLS?" always answers no and is useless as a
+  check. A loopback bind is therefore trusted; a public one refuses to
+  serve writes with no accounts configured, and refuses password
+  logins without `--allow-insecure-login`. The reverse proxy is the
+  supported way to serve this remotely (#131).
+- **Sessions are a signed cookie, with no server-side table.**
+  `blake3::keyed_hash` over `user|version|expiry`, verified by
+  constant-time `blake3::Hash` comparison against a 32-byte key file.
+  The credential version in the cookie is what makes a stateless
+  session revocable: changing a password, role or download scope bumps
+  it on the account and the outstanding cookie stops verifying. A
+  project with no `users.json` has not opted into any of this and
+  behaves exactly as it did before authentication existed.
 - **Amplitude limits are global per revision+profile**, which is what
   keeps chunks seamless — a radargram with strongly varying gain
   down-profile cannot be locally renormalised without breaking that

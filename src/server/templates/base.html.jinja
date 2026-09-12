@@ -35,7 +35,30 @@
         <ul>
           <li><a href="/{{ profile_query }}">Radargram catalog</a></li>
           <li><a href="/layers{{ profile_query }}">Layers</a></li>
-          <li><a href="/settings{{ profile_query }}">Project settings</a></li>
+          <li><a href="/settings{{ profile_query }}">Settings</a></li>
+          {#- The sign-in control is offered only where signing in can
+              succeed. A project with no accounts has nothing to sign in to,
+              and a link to a login page that always fails is worse than no
+              link -- the same rule the picking toolbar follows. Both
+              variables are undefined on pages that do not resolve a caller
+              (the error page), which minijinja treats as falsy, so nothing
+              is shown there rather than something wrong. -#}
+          {% if authentication_configured %}
+            {% if current_user %}
+              {#- A caption for the item below it, not a menu item of its
+                  own: it is the only line here that cannot be clicked, so
+                  it is set apart by a rule and muted rather than left to
+                  look like a link that stopped working. -#}
+              <li class="site-menu-note">
+                <span class="site-menu-note-label">Signed in as</span>
+                <strong>{{ current_user }}</strong>
+                <span class="site-menu-note-label">({{ current_role }})</span>
+              </li>
+              <li><a href="/login">Sign out</a></li>
+            {% else %}
+              <li class="site-menu-separated"><a href="/login">Sign in</a></li>
+            {% endif %}
+          {% endif %}
         </ul>
       </details>
     </nav>

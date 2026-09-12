@@ -16,8 +16,16 @@
 //!       default.gprinterp.json              one document per user
 //!   layers/
 //!     layers.json                           project-scoped layer vocabulary
+//!   users.json                              accounts and access policy (0600)
+//!   session.key                             signs session cookies (0600)
+//!   preferences/
+//!     erik.json                             one person's viewing preferences
 //!   cache/                                  derived data; safe to delete
 //! ```
+//!
+//! `users.json` and `session.key` are absent until a project opts into
+//! authentication, which is what keeps every project that predates it
+//! working exactly as it did (#131).
 //!
 //! # Why an explicit marker
 //!
@@ -52,7 +60,9 @@
 
 pub mod interpretations;
 pub mod layers;
+pub mod preferences;
 pub mod store;
+pub mod users;
 
 use std::path::{Path, PathBuf};
 
@@ -67,6 +77,8 @@ pub const MARKER: &str = "ridal.toml";
 pub const INTERPRETATIONS_DIR: &str = "interpretations";
 /// Store directory for layer definitions.
 pub const LAYERS_DIR: &str = "layers";
+/// Store directory for per-user viewing preferences.
+pub const PREFERENCES_DIR: &str = "preferences";
 /// Default location for derived data.
 pub const DEFAULT_CACHE_DIR: &str = "cache";
 /// Default directory scanned for radargrams when the config says nothing.

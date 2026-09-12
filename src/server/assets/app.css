@@ -219,6 +219,25 @@ code {
   padding: 0 var(--space-1);
 }
 
+/* The in-flow sibling of .error-overlay, for reporting something that
+ * has no empty container to sit over -- a download that did not happen.
+ * Same colour language; laid out as a block that pushes the page down
+ * rather than as an overlay that could cover the control just used. */
+.page-problem {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  max-width: 60rem;
+}
+
+/* A download that succeeded with something worth reading attached, which
+ * is not a failure and should not borrow the colour of one. */
+.page-problem-note {
+  background: var(--color-surface-sunken);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
 /* Same colour language inside the metadata dialog, which is a table
  * rather than a positioned container, so it needs no overlay. */
 .error-text {
@@ -794,6 +813,72 @@ button.danger:hover {
   border-color: var(--color-accent);
 }
 
+/* Actions inside a table row.
+ *
+ * One shape for every one of them, so a row reads as a set of choices
+ * rather than as controls borrowed from two different pages. `danger`
+ * then differs only in colour, which is the one thing it should differ
+ * in: it is the same kind of button doing a more serious thing, and a
+ * difference in size as well reads as an accident rather than as
+ * emphasis.
+ *
+ * Smaller than a form's submit button, because a row is not a form. */
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.row-actions button {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.row-actions button:hover {
+  border-color: var(--color-accent);
+}
+
+.row-actions button.danger {
+  /* Colour only. Padding, size and shape come from the rule above, which
+     this deliberately does not override. */
+  border-color: var(--color-warning-border);
+  color: var(--color-warning-text);
+  background: var(--color-warning-bg);
+}
+
+/* Per-row confirmation that a select applied. These save on change, so
+ * there is no button to go quiet afterwards and nothing else on the row
+ * would otherwise move. */
+.row-status {
+  margin-left: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* The Access section stacks three blocks that arrived from two different
+ * places -- a form styled like the layers page's and one styled like the
+ * settings page's -- and they were laid out to different widths and with
+ * no gap, so two grey panels of different sizes met edge to edge and read
+ * as one broken thing. One width, one gap. */
+#access-section .add-layer,
+#access-section .settings-form,
+#access-section .warning {
+  max-width: 44rem;
+}
+
+#access-section .add-layer,
+#access-section .settings-form {
+  margin-top: var(--space-5);
+  margin-bottom: var(--space-5);
+}
+
 /* --- Picking toolbar (viewer page) --------------------------------------- */
 
 .picker-controls {
@@ -1088,6 +1173,35 @@ button.danger:hover {
   background: var(--color-surface-sunken);
 }
 
+/* The account block at the foot of the menu.
+ *
+ * Its first row is a caption rather than a link, which is the one thing in
+ * this list that cannot be clicked. Left unstyled it inherited neither the
+ * links' horizontal padding nor their colour, so it sat out of alignment
+ * between two identical-looking rows and read as a link that had broken.
+ * Same padding, muted, and a rule above the whole block so the boundary
+ * between "where to go" and "who you are" is visible rather than implied. */
+.site-menu-note,
+.site-menu-separated {
+  margin-top: var(--space-1);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--color-border);
+}
+
+.site-menu-note {
+  padding-right: var(--space-3);
+  padding-bottom: var(--space-1);
+  padding-left: var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--line-base);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.site-menu-note-label {
+  color: var(--color-text-muted);
+}
+
 /* --- Back link -----------------------------------------------------------
  *
  * Styled as a control rather than a bare link: it sits alone above the
@@ -1171,6 +1285,49 @@ button.danger:hover {
 
 .settings-summary {
   margin-bottom: var(--space-5);
+}
+
+/* The three areas of the settings page: my preferences, the project
+ * defaults, and access. Separated by a rule rather than by spacing alone,
+ * because "who may change this" differs between them and a reader should
+ * be able to see where one authority ends and the next begins. */
+.settings-section {
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings-section:last-child {
+  border-bottom: none;
+}
+
+.settings-section h2 {
+  font-size: var(--text-lg);
+}
+
+.settings-section h3 {
+  font-size: var(--text-base);
+}
+
+/* A checkbox reads as one line, not as a stacked label over a control. */
+.settings-field.checkbox {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.settings-field.checkbox .hint {
+  flex-basis: 100%;
+}
+
+/* The invite link is the one string on this page that must be selected
+ * and copied exactly, so it wraps on any character rather than overflowing
+ * or breaking only at spaces it does not contain. */
+#invite-link {
+  display: inline-block;
+  overflow-wrap: anywhere;
+  user-select: all;
 }
 
 .settings-form {

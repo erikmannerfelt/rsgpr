@@ -123,6 +123,133 @@ const RIDAL = Object.freeze({
     host.appendChild(box);
   },
 
+  /** Show `message` as a dismissible box inside `hostId`.
+   *
+   * The sibling of `reportError`, for hosts that are not maps. That one
+   * positions itself absolutely over a container that would otherwise be
+   * mysteriously empty; this one is an ordinary block that pushes the page
+   * down, because the things it reports on -- a download that did not
+   * happen -- have no empty container to sit over.
+   *
+   * `tone` is 'problem' or 'note': a download that failed, or one that
+   * succeeded with a caveat worth reading. */
+  reportProblem(hostId, message, tone) {
+    const host = document.getElementById(hostId);
+    if (!host) {
+      console.error(message);
+      return;
+    }
+    const box = document.createElement('div');
+    box.className = 'warning page-problem';
+    box.setAttribute('role', 'status');
+    if (tone === 'note') box.classList.add('page-problem-note');
+
+    const text = document.createElement('span');
+    text.textContent = message;
+
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'error-overlay-dismiss';
+    dismiss.textContent = '×';
+    dismiss.setAttribute('aria-label', 'Dismiss');
+    dismiss.addEventListener('click', () => box.remove());
+
+    box.append(text, dismiss);
+    host.replaceChildren(box);
+  },
+
+  /** Download `url`, reporting a failure into `hostId` instead of
+   * navigating to it.
+   *
+   * `window.location.href = url` is the obvious way to start a download
+   * and it has one bad failure mode: when the server refuses, the browser
+   * leaves the page and renders the JSON error envelope as the document.
+   * Asking for layer points of a radargram nobody has interpreted yet
+   * threw away the viewer and replaced it with `{"error":{...}}`, which
+   * is a poor way to learn something as ordinary as "there are no picks
+   * here".
+   *
+   * Fetching instead keeps the page, so the refusal can be shown where
+   * the user already is -- and lets the `Warning` header be read, which a
+   * navigation silently discarded. The server sets it on a merged export
+   * that omitted radargrams nobody has picked yet, and "this file looks
+   * complete and is not" is exactly the thing worth surfacing.
+   *
+   * Deliberately not used for the radargram NetCDF: those reach 145 MB
+   * and are streamed by the server precisely so nothing has to hold them
+   * whole, which a blob here would undo. That download has no failure
+   * mode a person can act on anyway -- the permission cases are gone from
+   * the menu before they can be clicked. */
+  async download(url, hostId) {
+    let response;
+    try {
+      response = await fetch(url);
+    } catch (networkError) {
+      RIDAL.reportProblem(
+        hostId,
+        `Could not reach the server: ${networkError.message}`,
+      );
+      return;
+    }
+
+    if (!response.ok) {
+      let message = `The download failed (${response.status}).`;
+      try {
+        const body = await response.json();
+        if (body && body.error && body.error.message) message = body.error.message;
+      } catch {
+        // A non-JSON body from a failing download is not worth reporting
+        // over the status code it came with.
+      }
+      RIDAL.reportProblem(hostId, message);
+      return;
+    }
+
+    const blob = await response.blob();
+    const href = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = href;
+    anchor.download = RIDAL.filenameFrom(response.headers.get('content-disposition'));
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    // Next tick: revoking synchronously cancels the download in Safari.
+    setTimeout(() => URL.revokeObjectURL(href), 0);
+
+    const caveat = response.headers.get('warning');
+    if (caveat) {
+      // Said to have downloaded, because the box otherwise reads as a
+      // failure: the caveat alone gives no clue that a file just arrived.
+      RIDAL.reportProblem(
+        hostId,
+        `Downloaded. ${RIDAL.warningText(caveat)}`,
+        'note',
+      );
+    }
+  },
+
+  /** The filename a `Content-Disposition` asks for, or '' to let the
+   * browser derive one from the URL.
+   *
+   * Every one Ridal sends is built from validated slugs, so this does not
+   * try to handle the quoting and encoding the header allows in general. */
+  filenameFrom(disposition) {
+    const match = /filename="([^"]*)"/.exec(disposition || '');
+    return match ? match[1] : '';
+  },
+
+  /** The human part of an HTTP `Warning` header, as a sentence.
+   *
+   * Ridal sends `199 ridal "<text>"`; the code and agent are ceremony the
+   * reader does not need. The capital is applied here rather than at the
+   * source because one of these texts is shared with the CLI, which
+   * prints it mid-sentence after a prefix of its own. */
+  warningText(header) {
+    const match = /^\s*\d{3}\s+\S+\s+"(.*)"\s*$/.exec(header);
+    const text = match ? match[1] : header;
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  },
+
   /** Add the shared basemap layer to `map` and return it. */
   basemap(map) {
     L.tileLayer(RIDAL.tileUrl, {

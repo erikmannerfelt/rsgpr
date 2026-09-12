@@ -312,6 +312,37 @@ impl DocumentStore {
         text: &str,
         expected: &Expectation,
     ) -> Result<Version, StoreError> {
+        self.write_with_mode(relative, text, expected, None)
+    }
+
+    /// [`Self::write`], but leaving the document readable only by its owner.
+    ///
+    /// For the two documents that are secrets rather than data: the user
+    /// file, which holds password hashes, and the session-signing key, which
+    /// is a forgery kit for every account. Everything else in a project is
+    /// meant to be read by whoever can read the directory.
+    ///
+    /// The mode is applied to the temporary file *before* the rename, so the
+    /// document is never momentarily world-readable at its real path. Unix
+    /// only; elsewhere this is an ordinary write, which is why the callers
+    /// treat restrictive permissions as one defence and never as the reason
+    /// a secret is safe.
+    pub fn write_private(
+        &self,
+        relative: &Path,
+        text: &str,
+        expected: &Expectation,
+    ) -> Result<Version, StoreError> {
+        self.write_with_mode(relative, text, expected, Some(0o600))
+    }
+
+    fn write_with_mode(
+        &self,
+        relative: &Path,
+        text: &str,
+        expected: &Expectation,
+        mode: Option<u32>,
+    ) -> Result<Version, StoreError> {
         let path = self.path_of(relative)?;
         let _guard = self.write_lock.lock().map_err(|_| StoreError::Poisoned)?;
 
@@ -348,10 +379,7 @@ impl DocumentStore {
             path: temp_path(&path),
             keep: false,
         };
-        std::fs::write(&temp.path, text).map_err(|source| StoreError::Io {
-            path: temp.path.clone(),
-            source,
-        })?;
+        write_file(&temp.path, text, mode)?;
         std::fs::rename(&temp.path, &path).map_err(|source| StoreError::Io {
             path: path.clone(),
             source,
@@ -449,6 +477,43 @@ impl DocumentStore {
         stems.sort();
         Ok(stems)
     }
+}
+
+/// Write `text` to a new file, created with `mode` if one is given.
+///
+/// The mode is applied **as the file is created**, not afterwards. Writing
+/// first and chmod-ing second leaves a window in which the bytes are on
+/// disk under the process umask -- `0644` on a typical system -- and for
+/// the two documents that use this, those bytes are password hashes or the
+/// session-signing key. A local reader who wins that race gets them.
+///
+/// `create_new` for the same reason it would be used for any lock file:
+/// the caller has already chosen a unique name, so an existing file means
+/// something is wrong and silently truncating it would be the wrong answer.
+///
+/// Unix only for the permissions half; elsewhere this is an ordinary
+/// create-and-write, which is why [`DocumentStore::write_private`]
+/// documents that its callers must not depend on the mode for secrecy.
+fn write_file(path: &Path, text: &str, mode: Option<u32>) -> Result<(), StoreError> {
+    use std::io::Write;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode);
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+
+    let io = |source| StoreError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    let mut file = options.open(path).map_err(io)?;
+    file.write_all(text.as_bytes()).map_err(io)?;
+    file.sync_all().map_err(io)
 }
 
 /// A unique temporary sibling, keeping the real extension last so anything
@@ -630,6 +695,55 @@ mod tests {
             .write(&doc("a.json"), "same", &Expectation::Version(first.clone()))
             .unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_private_write_is_never_briefly_world_readable() {
+        // The window this closes: writing the bytes first and chmod-ing
+        // second leaves password hashes on disk at the umask default for
+        // as long as that takes. The mode has to be applied as the file is
+        // created, which can only be observed here by watching the
+        // temporary file rather than the finished document -- so the test
+        // reaches for the directory during the write via a serializer that
+        // cannot see it, and instead pins the two things that imply it:
+        // the final mode, and that no other file was left behind at a
+        // laxer one.
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, store) = store();
+        store
+            .write_private(&doc("secret.json"), "{\"hash\":\"x\"}", &Expectation::Any)
+            .unwrap();
+
+        let mut checked = 0;
+        for entry in std::fs::read_dir(dir.path()).unwrap().flatten() {
+            let mode = entry.metadata().unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode,
+                0o600,
+                "{} was left at {mode:o}",
+                entry.file_name().to_string_lossy()
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 1, "expected exactly the one document");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_ordinary_write_is_not_forced_private() {
+        // Interpretations and layers are meant to be readable by whoever
+        // can read the project directory; only the two secrets are not.
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, store) = store();
+        store
+            .write(&doc("layers.json"), "[]", &Expectation::Any)
+            .unwrap();
+        let mode = std::fs::metadata(dir.path().join("layers.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_ne!(mode & 0o077, 0, "an ordinary document should not be 0600");
     }
 
     #[test]

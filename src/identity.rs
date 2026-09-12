@@ -178,6 +178,23 @@ macro_rules! slug_newtype {
                 &self.0
             }
         }
+
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(&self.0)
+            }
+        }
+
+        /// Deserializing runs the same validation `new` does, rather than
+        /// trusting the file. These slugs are used as path components, so a
+        /// hand-edited document must not be able to reintroduce a value the
+        /// HTTP boundary would have rejected.
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let value = String::deserialize(deserializer)?;
+                Self::new(value).map_err(serde::de::Error::custom)
+            }
+        }
     };
 }
 

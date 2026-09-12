@@ -57,6 +57,16 @@ minijinja = { version = "2", optional = true }
 # the server's cache invalidation and `ridal interp`'s level 2 provenance,
 # which must agree on the same string for the same file.
 blake3 = "1"
+# Random bytes for invite tokens and the session-signing key (#131). Not
+# optional: `ridal project user add` mints an invite from the command line,
+# which is how a project's first admin is created, so a CLI-only build needs
+# randomness too.
+getrandom = "0.4"
+# Password hashing (feature "server"). Argon2id, per #131 -- not bcrypt, not
+# PBKDF2, nothing hand-rolled. Only the server ever hashes or verifies one:
+# passwords are set through an invite link in the browser, and no command
+# ever accepts one, so a CLI-only build has nothing to do with them.
+argon2 = { version = "0.6", optional = true }
 walkdir = { version = "2", optional = true }  # Recursive catalog discovery
 lru = { version = "0.12", optional = true }  # Wrapped in a byte-bounded cache
 webbrowser = { version = "1", optional = true }  # `ridal gui` browser opening
@@ -94,6 +104,7 @@ default = ["cli", "python", "server"]
 cli = []
 python = ["pyo3", "numpy"]
 server = [
+    "argon2",
     "axum",
     "tokio",
     "tokio-util",

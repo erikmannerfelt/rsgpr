@@ -1,0 +1,64 @@
+{% extends "base.html.jinja" %}
+{% block title %}Sign in - Ridal{% endblock %}
+{% block content %}
+  <h1>Sign in</h1>
+
+  {% if not project %}
+    <div class="warning">
+      <p>
+        This catalog is not a Ridal project, so it has no accounts. It is
+        served read-only to everyone.
+      </p>
+    </div>
+  {% elif not authentication_configured %}
+    {#- Said plainly rather than shown as a form that always fails: a project
+        with no user file is one where everybody is the local default user,
+        and there is nothing to sign in to. -#}
+    <div class="warning">
+      <p>
+        This project has no accounts, so there is nothing to sign in to.
+        Everyone here is <code>{{ current_user }}</code>.
+      </p>
+      <p>
+        An administrator creates the first account from the command line, on
+        the machine serving this project:
+      </p>
+      <pre><code>ridal project user add &lt;name&gt; --role admin</code></pre>
+    </div>
+  {% elif already_signed_in %}
+    <p class="lede">
+      You are signed in as <strong>{{ current_user }}</strong>
+      ({{ current_role }}).
+    </p>
+    <form id="logout-form" class="settings-form">
+      <button type="submit">Sign out</button>
+      <span id="login-status" class="pick-status"></span>
+    </form>
+  {% else %}
+    <div id="login-error" class="warning" role="status" aria-live="polite" hidden></div>
+
+    <form id="login-form" class="settings-form" novalidate>
+      <label class="settings-field">
+        <span class="settings-label">Name</span>
+        <input type="text" id="login-name" name="name" autocomplete="username"
+               autocapitalize="none" spellcheck="false" required>
+      </label>
+      <label class="settings-field">
+        <span class="settings-label">Password</span>
+        <input type="password" id="login-password" name="password"
+               autocomplete="current-password" required>
+      </label>
+      <button type="submit">Sign in</button>
+      <span id="login-status" class="pick-status"></span>
+    </form>
+
+    <p class="hint">
+      If you have been invited but never set a password, open the invite link
+      you were sent instead &mdash; that is what sets it the first time. An
+      administrator can issue a new link if yours has expired.
+    </p>
+  {% endif %}
+{% endblock %}
+{% block extrascript %}
+  <script src="/static/login.js"></script>
+{% endblock %}
