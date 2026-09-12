@@ -41,17 +41,13 @@ serde_json = "1"
 
 # The level 1 interpretation format (`ridal interp`).
 #
-# DEVELOPMENT ONLY -- this must not merge as a path dependency. gprinterp is
-# a separate repository (github.com/erikmannerfelt/gprinterp) cloned beside
-# this one and git-ignored here, so a path dependency builds nowhere except
-# a machine that happens to have that clone. Swap it for a git revision once
-# the gprinterp branch is pushed:
+# A separate repository, pinned to an exact revision rather than a branch so
+# a build is reproducible and cannot change under us.
 #
-#   gprinterp = { git = "https://github.com/erikmannerfelt/gprinterp", rev = "..." }
-#
-# and for a published version before the next `cargo publish` of ridal,
-# which rejects both path and bare-git dependencies.
-gprinterp = { path = "gprinterp" }
+# Must become a published version before the next `cargo publish` of ridal:
+# crates.io rejects git dependencies, so `cargo publish --dry-run` will fail
+# until gprinterp is released and this reads `gprinterp = "0.1"`.
+gprinterp = { git = "https://github.com/erikmannerfelt/gprinterp", rev = "7447f5120f8a7a41b246004a31cf782c130b3863" }
 
 # Web server and browser GUI (feature "server"). See tracking issue #115.
 axum = { version = "0.8", optional = true }
