@@ -26,7 +26,22 @@ use crate::project::users::{self, DownloadScope, Invite, Role, User, UserSet};
 use crate::project::Project;
 
 const RADARGRAM: &str = "line-01";
-const PASSWORD: &str = "correct horse battery";
+
+/// The passphrase every account in this file is activated with.
+///
+/// Generated once per run rather than written down. Nothing here asserts
+/// on the value -- only on what signing in with it and without it does --
+/// and the code scanner over this repository cannot tell a fixture from a
+/// credential shipped by mistake, so a literal costs a real alert
+/// somewhere else its attention.
+fn password() -> &'static str {
+    static PASSWORD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PASSWORD.get_or_init(|| {
+        let mut bytes = [0u8; 12];
+        getrandom::fill(&mut bytes).expect("system randomness");
+        format!("passphrase-{:x?}", bytes)
+    })
+}
 
 fn write_test_nc(path: &StdPath, radargram_id: &str) {
     let mut file = netcdf::create(path).unwrap();
@@ -170,7 +185,7 @@ async fn sign_in(app: &Router, name: &str) -> String {
     let response = post(
         app,
         "/api/v1/auth/login",
-        &json!({"name": name, "password": PASSWORD}),
+        &json!({"name": name, "password": password()}),
         None,
     )
     .await;
@@ -202,7 +217,7 @@ async fn an_invite_is_the_only_way_a_password_is_ever_set() {
     // (created from the command line, simulated here by writing the file),
     // creates an account, hands over a link, and the link is what sets the
     // password. No password is ever known to two people.
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -247,7 +262,7 @@ async fn an_invite_is_the_only_way_a_password_is_ever_set() {
     let redeemed = post(
         &app,
         "/api/v1/auth/invite",
-        &json!({"token": token, "password": "a longer passphrase"}),
+        &json!({"token": token, "password": format!("{}-new", password())}),
         None,
     )
     .await;
@@ -263,7 +278,7 @@ async fn an_invite_is_the_only_way_a_password_is_ever_set() {
     let again = post(
         &app,
         "/api/v1/auth/invite",
-        &json!({"token": token, "password": "another passphrase"}),
+        &json!({"token": token, "password": format!("{}-again", password())}),
         None,
     )
     .await;
@@ -278,7 +293,7 @@ async fn an_invite_is_the_only_way_a_password_is_ever_set() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_expired_invite_is_refused() {
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let mut stale = activated("student", Role::Picker, DownloadScope::All, &hash);
     stale.password_hash = None;
     stale.invite = Some(Invite {
@@ -294,7 +309,7 @@ async fn an_expired_invite_is_refused() {
     let response = post(
         &app,
         "/api/v1/auth/invite",
-        &json!({"token": "stale-token", "password": "a longer passphrase"}),
+        &json!({"token": "stale-token", "password": format!("{}-new", password())}),
         None,
     )
     .await;
@@ -307,7 +322,7 @@ async fn an_expired_invite_is_refused() {
 async fn a_wrong_password_and_an_unknown_name_are_refused_identically() {
     // Otherwise the login form is a way to enumerate who has an account and
     // who has not signed up yet.
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -318,14 +333,14 @@ async fn a_wrong_password_and_an_unknown_name_are_refused_identically() {
     let wrong = post(
         &app,
         "/api/v1/auth/login",
-        &json!({"name": "erik", "password": "not the password"}),
+        &json!({"name": "erik", "password": format!("{}x", password())}),
         None,
     )
     .await;
     let unknown = post(
         &app,
         "/api/v1/auth/login",
-        &json!({"name": "nobody", "password": PASSWORD}),
+        &json!({"name": "nobody", "password": password()}),
         None,
     )
     .await;
@@ -339,7 +354,7 @@ async fn a_wrong_password_and_an_unknown_name_are_refused_identically() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_password_hash_never_leaves_the_process() {
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -377,7 +392,7 @@ async fn a_password_hash_never_leaves_the_process() {
 async fn picks_belong_to_the_person_who_drew_them_and_not_even_an_admin_may_edit_them() {
     // Per-user by design, and a property of the data rather than a
     // permission: there is deliberately no role that can overrule it.
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Admin, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -420,7 +435,7 @@ async fn the_path_parameter_is_no_longer_the_authorisation() {
     // Without a session the path used to be all the authorisation there
     // was: `PUT .../interpretations/erik` would write Erik's document for
     // anyone who asked.
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Picker,
@@ -442,7 +457,7 @@ async fn the_path_parameter_is_no_longer_the_authorisation() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_forged_cookie_is_not_a_session() {
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -461,7 +476,7 @@ async fn a_forged_cookie_is_not_a_session() {
 #[serial_test::serial(netcdf)]
 async fn a_viewer_reads_a_picker_writes_and_an_operator_curates() {
     // The ladder, at the three places it actually bites.
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("watcher", Role::Viewer, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -544,7 +559,7 @@ async fn a_demotion_takes_effect_on_the_next_request_not_when_the_cookie_expires
     // What the credential version in the cookie buys: user management that
     // actually manages, rather than taking effect at some point in the next
     // fortnight.
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Admin, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -590,7 +605,7 @@ async fn a_demotion_takes_effect_on_the_next_request_not_when_the_cookie_expires
 #[serial_test::serial(netcdf)]
 async fn a_departed_users_picks_survive_the_account() {
     // Attributed scientific data. Removing the person must not destroy it.
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (dir, app) = app_with(vec![
         activated("erik", Role::Admin, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -644,7 +659,7 @@ async fn a_departed_users_picks_survive_the_account() {
 async fn the_last_administrator_cannot_be_demoted_or_removed() {
     // Either would lock the access settings away from everyone, with no way
     // back short of editing users.json by hand.
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Admin, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -693,7 +708,7 @@ async fn download_scope_gates_the_downloads_and_not_the_viewer() {
     // and states an intent. It cannot stop someone who can open the page,
     // and gating what the viewer draws with would break the viewer for
     // everyone below "all".
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("nothing", Role::Picker, DownloadScope::None, &hash),
         activated("picks", Role::Picker, DownloadScope::Picks, &hash),
@@ -794,7 +809,7 @@ async fn download_scope_gates_the_downloads_and_not_the_viewer() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_anonymous_reader_downloads_what_the_project_allows_them() {
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with_set(UserSet {
         anonymous_download: DownloadScope::Derived,
         users: vec![activated("erik", Role::Admin, DownloadScope::All, &hash)],
@@ -843,7 +858,7 @@ async fn an_anonymous_reader_downloads_what_the_project_allows_them() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn requiring_a_login_to_read_hides_everything_but_the_way_in() {
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with_set(UserSet {
         require_auth_to_read: true,
         users: vec![activated("erik", Role::Admin, DownloadScope::All, &hash)],
@@ -885,7 +900,7 @@ async fn requiring_a_login_to_read_hides_everything_but_the_way_in() {
 async fn preferences_sit_between_the_request_and_the_project_default() {
     // The cascade, all four layers, against the value a page actually
     // renders with.
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Operator, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -955,7 +970,7 @@ async fn an_admin_setting_the_project_default_does_not_overwrite_anyone() {
     // The alternative -- a project default that stamps over personal
     // choices -- would make the operator's save button destructive in a way
     // nothing in the UI could warn about convincingly.
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Operator, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -985,7 +1000,7 @@ async fn an_admin_setting_the_project_default_does_not_overwrite_anyone() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_anonymous_reader_has_nowhere_to_keep_a_preference() {
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -1011,7 +1026,7 @@ async fn an_anonymous_reader_has_nowhere_to_keep_a_preference() {
 async fn a_merged_download_asks_whose_picks_when_nobody_is_signed_in() {
     // "Mine" has no meaning for an anonymous reader, and guessing would
     // hand back an empty file that looks complete.
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -1028,7 +1043,7 @@ async fn a_merged_download_asks_whose_picks_when_nobody_is_signed_in() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn signing_out_clears_the_cookie_and_the_session_with_it() {
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -1053,7 +1068,7 @@ async fn signing_out_clears_the_cookie_and_the_session_with_it() {
 async fn a_session_survives_a_restart() {
     // The reason a signed cookie is the smaller option: the key is on disk,
     // so nothing about sessions has to be.
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
     write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
@@ -1152,7 +1167,7 @@ async fn a_project_with_no_accounts_offers_no_login_and_still_writes() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_read_only_server_caps_even_an_administrator() {
-    let hash = users::hash_password(PASSWORD).unwrap();
+    let hash = users::hash_password(password()).unwrap();
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
     write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);

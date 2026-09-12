@@ -561,6 +561,20 @@ mod tests {
         User::new(UserId::new(name).unwrap(), role, DownloadScope::All)
     }
 
+    /// A passphrase for one test, generated rather than written down.
+    ///
+    /// Two reasons, and the second is the smaller one. A test that depends
+    /// on a particular magic string is weaker than one that does not --
+    /// nothing below asserts on the *value*, only on what hashing and
+    /// verifying it do. And the code scanner over this repository cannot
+    /// tell a fixture from a credential shipped by mistake, so a literal
+    /// here costs a real alert somewhere else its attention.
+    fn passphrase() -> String {
+        let mut bytes = [0u8; 12];
+        getrandom::fill(&mut bytes).expect("system randomness");
+        format!("passphrase-{}", to_hex(&bytes))
+    }
+
     #[test]
     fn roles_form_a_ladder_weakest_first() {
         // Permission checks are written as `role >= required`, so the
@@ -730,9 +744,12 @@ mod tests {
 
     #[test]
     fn a_short_password_is_refused_with_a_reason() {
-        let error = check_password("short").unwrap_err();
+        let too_short = "x".repeat(MIN_PASSWORD_LEN - 1);
+        let error = check_password(&too_short).unwrap_err();
         assert!(error.to_string().contains("at least"), "{error}");
-        check_password("correct horse battery").unwrap();
+        // And the boundary itself is allowed, rather than being off by one.
+        check_password(&"x".repeat(MIN_PASSWORD_LEN)).unwrap();
+        check_password(&passphrase()).unwrap();
     }
 
     #[test]
@@ -801,11 +818,15 @@ mod tests {
     #[cfg(feature = "server")]
     #[test]
     fn a_hashed_password_verifies_and_a_wrong_one_does_not() {
+        let secret = passphrase();
         let mut account = user("erik", Role::Admin);
-        account.password_hash = Some(hash_password("correct horse battery").unwrap());
+        account.password_hash = Some(hash_password(&secret).unwrap());
 
-        assert!(verify_password(&account, "correct horse battery"));
-        assert!(!verify_password(&account, "correct horse batterz"));
+        assert!(verify_password(&account, &secret));
+        // One character different, and the whole length again, so neither a
+        // near miss nor an empty guess gets in.
+        assert!(!verify_password(&account, &format!("{secret}x")));
+        assert!(!verify_password(&account, &passphrase()));
         assert!(!verify_password(&account, ""));
     }
 
@@ -814,8 +835,9 @@ mod tests {
     fn the_same_password_hashes_differently_every_time() {
         // Per-account salts: two people who choose the same passphrase must
         // not be visibly identical in the file.
-        let first = hash_password("correct horse battery").unwrap();
-        let second = hash_password("correct horse battery").unwrap();
+        let shared = passphrase();
+        let first = hash_password(&shared).unwrap();
+        let second = hash_password(&shared).unwrap();
         assert_ne!(first, second);
         assert!(first.starts_with("$argon2id$"), "{first}");
     }
@@ -828,7 +850,7 @@ mod tests {
         // accounts are still waiting on their invite.
         let account = user("erik", Role::Admin);
         assert!(!verify_password(&account, ""));
-        assert!(!verify_password(&account, "anything at all"));
+        assert!(!verify_password(&account, &passphrase()));
     }
 
     #[cfg(feature = "server")]
@@ -836,7 +858,7 @@ mod tests {
     fn a_corrupt_stored_hash_fails_closed() {
         let mut account = user("erik", Role::Admin);
         account.password_hash = Some("not a PHC string".to_string());
-        assert!(!verify_password(&account, "anything"));
+        assert!(!verify_password(&account, &passphrase()));
     }
 
     #[cfg(feature = "server")]
@@ -845,7 +867,7 @@ mod tests {
         // Otherwise an API that forgot to call `check_password` first would
         // silently store a hash of "a".
         assert!(matches!(
-            hash_password("short"),
+            hash_password(&"x".repeat(MIN_PASSWORD_LEN - 1)),
             Err(UserError::Rejected(_))
         ));
     }
