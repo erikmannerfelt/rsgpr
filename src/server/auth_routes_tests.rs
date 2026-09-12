@@ -19,11 +19,11 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use super::app::{build_router, AccessOptions, AppState};
-use super::render::service::RenderServiceConfig;
 use crate::identity::UserId;
 use crate::project::store::Expectation;
 use crate::project::users::{self, DownloadScope, Invite, Role, User, UserSet};
 use crate::project::Project;
+use crate::server::render_service::RenderServiceConfig;
 
 const RADARGRAM: &str = "line-01";
 

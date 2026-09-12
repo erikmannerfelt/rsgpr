@@ -693,7 +693,7 @@ pub async fn put_preferences(
     let render_profile = match body.render_profile.as_deref() {
         None | Some("") => None,
         Some(name) => {
-            if super::render::profile::RenderProfile::by_name(name).is_none() {
+            if crate::render::profile::RenderProfile::by_name(name).is_none() {
                 return Err(ApiError::bad_request(
                     "unknown_profile",
                     format!("There is no render profile called '{name}'."),
