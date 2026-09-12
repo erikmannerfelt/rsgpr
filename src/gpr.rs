@@ -202,10 +202,14 @@ impl GPRLocation {
             ]));
         }
 
+        // Euclidean norm of the (easting, northing, altitude) step. The
+        // `sqrt` is what makes this a length rather than a squared length;
+        // without it every velocity is scaled by the step length itself.
         let d = offsets
             .slice_axis(Axis(1), Slice::new(1, None, 1))
             .mapv(|f| f.powi(2))
-            .sum_axis(Axis(1));
+            .sum_axis(Axis(1))
+            .mapv(f64::sqrt);
 
         let vel = (d / offsets.column(0)).mapv(|f| if f.is_finite() { f } else { 0.0 });
 
@@ -226,10 +230,19 @@ impl GPRLocation {
             ]));
         }
 
+        // Per-step horizontal length, then a cumulative sum of those
+        // lengths. The `sqrt` must be applied per step, before the
+        // accumulation: cumulatively summing the squared steps yields a
+        // quantity that is not a distance at all, and whose error grows
+        // with the trace spacing rather than being a constant factor.
+        // Altitude is deliberately excluded (see the commented-out term
+        // above) -- this is distance along the ground track, not 3D path
+        // length, which is what `velocities` measures.
         let mut dist = offsets
             .slice_axis(Axis(1), Slice::new(1, None, 1))
             .mapv(|f| f.powi(2))
-            .sum_axis(Axis(1));
+            .sum_axis(Axis(1))
+            .mapv(f64::sqrt);
         dist.accumulate_axis_inplace(Axis(0), |prev, cur| *cur += prev);
 
         dist
@@ -2619,6 +2632,46 @@ pub mod tests {
         assert_eq!(distances[9], 9.);
     }
 
+    /// `distances` and `velocities` must take the square root of the summed
+    /// squared components.
+    ///
+    /// The unit-spacing fixture used by `test_gpr_location` cannot detect a
+    /// missing `sqrt`, because a step of length one is its own square. This
+    /// uses a 3-4-5 step, where the true per-step length (5) and the squared
+    /// length (25) differ, so only a correct implementation passes.
+    #[test]
+    fn test_distances_and_velocities_are_lengths_not_squared_lengths() {
+        // Steps of (3, 4) in (easting, northing) -- length exactly 5 -- with
+        // altitude held constant so the 3D step `velocities` measures is the
+        // same 5, and one second per step so speed equals step length.
+        let cor_points: Vec<CorPoint> = (0..5_u32)
+            .map(|i| CorPoint {
+                trace_n: i,
+                time_seconds: i as f64,
+                easting: 3. * i as f64,
+                northing: 4. * i as f64,
+                altitude: 0.,
+            })
+            .collect();
+        let location = GPRLocation {
+            cor_points,
+            correction: LocationCorrection::None,
+            crs: "EPSG:32633".to_string(),
+        };
+
+        let distances = location.distances();
+        assert_eq!(distances[0], 0.);
+        // Cumulative length, not a cumulative sum of squares (which would
+        // give 25, 50, 75, 100).
+        assert_eq!(distances.to_vec(), vec![0., 5., 10., 15., 20.]);
+        assert_eq!(location.length(), 20.);
+
+        // The first entry is 0 by construction (no preceding point); every
+        // later step covers 5 m in 1 s.
+        let velocities = location.velocities();
+        assert_eq!(velocities.to_vec(), vec![0., 5., 5., 5., 5.]);
+    }
+
     #[test]
     fn test_gpr_location_duration_since() {
         let gpr_location0 = make_gpr_location(10, Some(1.), None, None);
@@ -2740,8 +2793,27 @@ pub mod tests {
         }
         assert_eq!(gpr.width(), width);
         gpr.make_equidistant(None);
-        // Now, the N stationary points should be coerced into one
-        assert_eq!(gpr.width(), width - (n_stationary - 1));
+
+        // The stationary run collapses to a single trace: the whole cluster
+        // sits at distance 0, so only the first target-grid position can
+        // draw from it. This is the property the test is really about.
+        assert!(gpr.location.cor_points[1].easting > first.easting);
+
+        // The exact resulting width follows from the auto-step heuristic:
+        // the track covers 127 m (the 10 stacked traces contribute nothing,
+        // then 117 unit steps plus the 10 m jump out of the cluster), and
+        // 118 traces are classified as moving, giving a step of
+        // 127/118 ~= 1.076 m and 120 positions on the resampled grid.
+        //
+        // This previously read `width - (n_stationary - 1)` == 119, which
+        // held only because `distances`/`velocities` both returned squared
+        // lengths: the bogus max_distance (217) and the bogus step
+        // (217/118) shared the same squared units, so their ratio landed
+        // near the right trace count for this unit-spaced fixture. That
+        // cancellation is why the fixture could not detect the missing
+        // `sqrt` -- see
+        // `test_distances_and_velocities_are_lengths_not_squared_lengths`.
+        assert_eq!(gpr.width(), 120);
     }
 
     #[test]
